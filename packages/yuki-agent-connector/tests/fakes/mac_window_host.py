@@ -4,7 +4,8 @@ Usage: python mac_window_host.py <tag> <x> <y> <log>
 Opens two overlapping AppKit windows, "Yuki test <tag> A" and "... B" (B on top, covering
 A's lower right), each with a button, a text field, a scroll view and a custom-drawn pad that
 has no accessibility element. It never activates itself. Every event, button action and
-activation change goes to <log> as JSON lines; <log>.cmd takes "mini A" / "mini B".
+activation change goes to <log> as JSON lines; <log>.cmd takes "mini A" / "mini B" /
+"close A" / "close B".
 """
 
 import json
@@ -65,6 +66,11 @@ class Pad(NSView):
             x=point.x,
             y=point.y,
             clicks=int(event.clickCount()) if "Down" in name else None,
+            button=int(event.buttonNumber()) if "Mouse" in name else None,
+            shift=bool(event.modifierFlags() & (1 << 17)),
+            ctrl=bool(event.modifierFlags() & (1 << 18)),
+            alt=bool(event.modifierFlags() & (1 << 19)),
+            cmd=bool(event.modifierFlags() & (1 << 20)),
             chars=event.characters() if name == "keyDown" else None,
             dy=event.scrollingDeltaY() if name == "scroll" else None,
         )
@@ -84,6 +90,9 @@ class Pad(NSView):
 
     def rightMouseDown_(self, event):
         self._event("rightMouseDown", event)
+
+    def otherMouseDown_(self, event):
+        self._event("otherMouseDown", event)
 
     def keyDown_(self, event):
         self._event("keyDown", event)
@@ -110,6 +119,8 @@ class Delegate(NSObject):
         window = {"A": windows[0], "B": windows[1]}[words[1]]
         if words[0] == "mini":
             window.miniaturize_(None)
+        elif words[0] == "close":
+            window.close()
         log(ev="cmd", words=words)
 
 

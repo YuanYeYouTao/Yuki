@@ -23,6 +23,8 @@ flag lives in this process only: Desktop re-sends it after restarting the child.
 from __future__ import annotations
 
 import asyncio
+import json
+import secrets
 import shutil
 import threading
 import time
@@ -31,15 +33,40 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from . import actions
+from .actions import COORDINATES, INPUTS, POINTED, READS, OutOfRange, Parsed
+from .cdp import image_scale
 from .chrome import BrowserHost, capture_name
 from .config import private_path
-from .screen import Area, Backend, Display, Refused, Surface, Target, frame, parse_keys, to_global
-
-READS = frozenset({"screenshot", "resume"})
-INPUTS = frozenset(
-    {"click", "double_click", "right_click", "move", "drag", "type", "key", "scroll"}
+from .screen import (
+    Area,
+    Backend,
+    Display,
+    Node,
+    Refused,
+    Stale,
+    Surface,
+    Target,
+    frame,
+    to_global,
+    to_image,
 )
-POINTED = frozenset({"click", "double_click", "right_click", "move", "drag", "scroll"})
+
+# Published in the computer facts; the server refuses calls that need a missing one
+# before they reach this process (task book §6.10).
+FEATURES = frozenset(
+    {
+        "scale",
+        "zoom",
+        "elements",
+        "modifiers",
+        "triple_click",
+        "middle_click",
+        "key_repeat",
+        "route",
+        "cursor",
+    }
+)
 # Typed text is posted in runs so that a Desktop stop arriving meanwhile ends it.
 TYPE_RUN = 32
 # Reads the platform's permission preflight so Desktop and the server see a grant soon.
@@ -120,6 +147,8 @@ class Desk:
         self.permissions: tuple[bool, bool] | None = None
         self.permission_lock = threading.Lock()
         self.dirty = False
+        # The latest ``elements`` list of each window: its tag and nodes, in memory only.
+        self.nodes: dict[str, tuple[str, list[Node]]] = {}
 
     # Facts and Desktop lines
 
@@ -144,6 +173,7 @@ class Desk:
             "displays": [display.fact() for display in self.screen.displays()],
             # Phase 3b: ``window`` is captured alone and its input delivered in the background.
             "windows": True,
+            "features": sorted(FEATURES),
         }
 
     def announce(self) -> None:
@@ -196,30 +226,20 @@ class Desk:
                 "device_not_supported",
                 "这台电脑的连接器不能操作屏幕（只支持 macOS 14 及以上与 Windows）；"
                 "网页可用 browser。",
+                cause="platform",
             )
         if action not in READS | INPUTS:
             return failure("invalid_arguments", f"未知的动作：{action}")
-        keys = None
-        if action == "key":
-            try:
-                keys = parse_keys(args.get("text") or "")
-            except ValueError as error:
-                return failure("invalid_arguments", str(error))
-        if action in POINTED and (args.get("x") is None or args.get("y") is None):
-            return failure("invalid_arguments", f"{action} 需要 x 与 y。")
-        if action == "drag" and (args.get("x2") is None or args.get("y2") is None):
-            return failure("invalid_arguments", "drag 需要 x2 与 y2。")
+        try:
+            parsed = actions.validate(action, args)
+        except ValueError as error:
+            return failure("invalid_arguments", str(error))
         with self.lock:
-            return self._locked(command["id"], args, action, keys)
+            return self._locked(command["id"], args, parsed)
 
-    def _locked(
-        self,
-        identity: str,
-        args: dict[str, Any],
-        action: str,
-        keys: tuple[tuple[str, ...], str] | None,
-    ) -> dict[str, Any]:
+    def _locked(self, identity: str, args: dict[str, Any], parsed: Parsed) -> dict[str, Any]:
         assert self.screen is not None
+        action = parsed.action
         screen_granted, input_granted = self.check_permissions()
         if action == "resume":
             # The owner said so in chat; the server checked the device belongs to them.
@@ -248,7 +268,7 @@ class Desk:
             try:
                 target = self.screen.window(str(args["window"]))
             except Refused as refused:
-                return failure(refused.error, refused.message)
+                return refused.result()
             area = target.window
         else:
             display = self._display(args.get("display"))
@@ -258,24 +278,49 @@ class Desk:
                     f"找不到显示器 {args.get('display')}；可用的显示器见 get_environment。",
                 )
             area = display
-        max_dimension, max_pixels = args["max_dimension"], args["max_pixels"]
+        limits = args["max_dimension"], args["max_pixels"]
+        width, height = frame(area, *limits)
+        if action == "elements":
+            assert target is not None
+            if not target.actions:
+                return self._off_space()
+            try:
+                return {
+                    "status": "succeeded",
+                    "window": target.window.id,
+                    "elements": self._list(target, limits, parsed.scale, args.get("text")),
+                    "control": self.control.visible(),
+                }
+            except Refused as refused:
+                return refused.result()
         result: dict[str, Any] = {}
-        if action in INPUTS:
-            if not input_granted:
-                return failure(
-                    "input_permission_required",
-                    "这台 Mac 没有给 Yuki 辅助功能权限，输入会被系统丢弃；请本人在“系统设置 › "
-                    "隐私与安全性 › 辅助功能”中允许 Yuki。",
-                )
-            if self.control.holder == "owner":
-                return {"status": "failed", **self.control.held()}
-            if target is not None and action not in target.actions:
-                return failure(
-                    "device_not_supported",
-                    f"这台电脑现在不能在后台向这个窗口投递 {action}（平台没有这种后台途径，"
-                    "或窗口不在本人当前的桌面空间），输入没有执行；"
-                    "需要时省略 window，在前台操作整个屏幕。",
-                )
+        region: tuple[float, float, float, float] | None = None
+        if action == "zoom":
+            assert parsed.region is not None
+            try:
+                x0, y0, x1, y1 = actions.resolve_region(parsed.region, width, height, parsed.scale)
+            except OutOfRange as out:
+                return out.result
+            except ValueError as error:
+                return failure("invalid_arguments", str(error))
+            left, top = to_global(area, *limits, x0, y0)
+            right, bottom = to_global(area, *limits, x1, y1)
+            region = (left - area.x, top - area.y, right - left, bottom - top)
+            pixels = image_scale(area.pixel_width, area.pixel_height, *limits)
+            native = (round((x1 - x0) / pixels), round((y1 - y0) / pixels))
+            zoom = image_scale(*native, *limits)
+            result = {
+                "region": [x0, y0, x1, y1],
+                "frame": {"width": width, "height": height},
+                "coordinates": "zoom 图只用于查看；后续坐标仍用整张截图"
+                f"（宽 {width}、高 {height}）",
+            }
+            width, height = round(native[0] * zoom), round(native[1] * zoom)
+        elif action in INPUTS:
+            echo: dict[str, Any] = {}
+            denied = self._refuse_input(parsed, target)
+            if denied is not None:
+                return denied
             if (
                 self.observed is not None
                 # Even the earliest possible moment of the last input is after the baseline.
@@ -284,12 +329,38 @@ class Desk:
                 and (target is None or target.collides())
             ):
                 return self._yield()
-
-            def point(x_name: str, y_name: str) -> tuple[float, float]:
-                return to_global(area, max_dimension, max_pixels, args[x_name], args[y_name])
-
-            pointed = args.get("x") is not None and args.get("y") is not None
-            aim = point("x", "y") if pointed else None
+            aim: tuple[float, float] | None = None
+            aim2: tuple[float, float] | None = None
+            node: Node | None = None
+            try:
+                if args.get("x") is not None:
+                    point = actions.resolve_point(args["x"], args["y"], width, height, parsed.scale)
+                    echo["point"] = list(point)
+                    aim = to_global(area, *limits, *point)
+                if action == "drag":
+                    point2 = actions.resolve_point(
+                        args["x2"], args["y2"], width, height, parsed.scale
+                    )
+                    echo["point2"] = list(point2)
+                    aim2 = to_global(area, *limits, *point2)
+            except OutOfRange as out:
+                return out.result
+            if parsed.element is not None:
+                found = self._node(parsed.element, limits, parsed.scale)
+                if isinstance(found, dict):
+                    return found
+                node = found
+                try:
+                    bounds = node.bounds()
+                except Stale:
+                    return self._stale(parsed.element, limits, parsed.scale)
+                visible = self._visible(area, limits, bounds, width, height)
+                if isinstance(visible, dict):
+                    return visible
+                aim = visible
+                echo["element"] = str(args["element"])
+                echo["point"] = [round(value) for value in to_image(area, *limits, *aim)]
+            echo["scale"] = parsed.scale
             if (
                 target.elevated()
                 if target is not None
@@ -299,19 +370,29 @@ class Desk:
                     "target_elevated",
                     "目标窗口以管理员权限运行，系统不允许普通程序向它输入；输入没有执行。",
                 )
-            submitted = self._input(action, args, keys, aim, point, target)
+            if node is not None:
+                echo["hit"] = {"role": node.role, "name": node.name}
+            elif aim is not None and action in POINTED:
+                hit = target.hit(*aim) if target is not None else self.screen.hit(*aim)
+                if hit is not None:
+                    echo["hit"] = hit
+            submitted = self._input(parsed, args, aim, aim2, target, node)
             if "error" in submitted:
-                return submitted
-            result["submitted"] = True
-        width, height = frame(area, max_dimension, max_pixels)
+                return {**submitted, **echo}
+            result = {"submitted": True, **echo, **submitted}
         path = self.captures / f"{capture_name(identity)}.jpg"
         try:
             if target is not None:
-                target.capture(width, height, path)
+                target.capture(width, height, path, region)
             else:
                 assert display is not None
-                self.screen.capture(display, width, height, path)
-            if action in READS:
+                self.screen.capture(display, width, height, path, region)
+                pointer = self.screen.pointer() if region is None else None
+                if pointer is not None:
+                    x, y = (round(value) for value in to_image(display, *limits, *pointer))
+                    if 0 <= x < width and 0 <= y < height:
+                        result["cursor"] = [x, y]
+            if action in READS and action != "zoom":
                 result["windows"] = self.screen.windows()
         except OSError as error:
             if action in INPUTS:
@@ -326,18 +407,183 @@ class Desk:
                 "width": width,
                 "height": height,
             }
-        # After the picture: Yuki's events have been processed by now, and the model will
-        # act on what it shows, so only input after this is someone else's.
-        self.observed = self._baseline()
+        if action != "zoom":
+            # After the picture: Yuki's events have been processed by now, and the model will
+            # act on what it shows, so only input after this is someone else's.
+            self.observed = self._baseline()
         return {
             "status": "succeeded",
             "width": width,
             "height": height,
+            "coordinates": COORDINATES,
             **({"window": target.window.id} if target is not None else {}),
             **({"display": display.id} if display is not None else {}),
             "control": self.control.visible(),
             **result,
         }
+
+    def _refuse_input(self, parsed: Parsed, target: Target | None) -> dict[str, Any] | None:
+        """Facts that refuse an input before anything is posted: grants, the stop, routes."""
+        assert self.screen is not None
+        if not self.check_permissions()[1]:
+            return failure(
+                "input_permission_required",
+                "这台 Mac 没有给 Yuki 辅助功能权限，输入会被系统丢弃；请本人在“系统设置 › "
+                "隐私与安全性 › 辅助功能”中允许 Yuki。",
+            )
+        if self.control.holder == "owner":
+            return {"status": "failed", **self.control.held()}
+        if target is None:
+            return None
+        if not target.actions:
+            return self._off_space()
+        needed = {parsed.action, *(("modifiers",) if parsed.modifiers else ())}
+        if not needed <= target.actions:
+            return failure(
+                "device_not_supported",
+                f"这台电脑的平台没有把 {parsed.action}"
+                + ("（按住修饰键）" if parsed.modifiers else "")
+                + " 投递给后台窗口的途径，输入没有执行；需要时省略 window，在前台操作整个屏幕。",
+                cause="no_background_route",
+            )
+        return None
+
+    @staticmethod
+    def _off_space() -> dict[str, Any]:
+        return failure(
+            "device_not_supported",
+            "这个窗口不在本人当前的桌面空间，只能看不能操作，输入没有执行；"
+            "请本人切到它所在的桌面空间，或省略 window 在前台操作。",
+            cause="off_space",
+        )
+
+    # Accessibility nodes (task book §6.7)
+
+    def _list(
+        self, target: Target, limits: tuple[int, int], scale: int | None, text: Any
+    ) -> str:
+        """Register this window's nodes under a fresh tag and render them like a snapshot."""
+        area = target.window
+        width, height = frame(area, *limits)
+        kept: list[tuple[int, Node, tuple[int, int, int, int]]] = []
+        # Depth of the nearest kept ancestor at each platform depth.
+        stack: list[tuple[int, int]] = []
+        for node in target.elements():
+            while stack and stack[-1][0] >= node.depth:
+                stack.pop()
+            try:
+                bounds = node.bounds()
+            except Stale:
+                continue
+            box = self._box(area, limits, bounds, width, height)
+            if box is None or not node.visible or (node.container and not node.name):
+                continue
+            level = stack[-1][1] + 1 if stack else 0
+            stack.append((node.depth, level))
+            kept.append((level, node, box))
+        tag = secrets.token_hex(2)
+        self.nodes[area.id] = (tag, [node for _, node, _ in kept])
+        wanted = str(text).casefold() if text else None
+        shown = set(range(len(kept)))
+        if wanted is not None:
+            shown = set()
+            for index, (level, node, _) in enumerate(kept):
+                if wanted in node.name.casefold() or wanted in node.role.casefold():
+                    shown.add(index)
+                    # Its path: the nearest earlier node of each smaller level.
+                    need = level
+                    for earlier in range(index - 1, -1, -1):
+                        if kept[earlier][0] < need:
+                            shown.add(earlier)
+                            need = kept[earlier][0]
+        lines = []
+        for index, (level, node, box) in enumerate(kept):
+            if index not in shown:
+                continue
+            if scale == actions.SCALE:
+                box = (
+                    round(box[0] * actions.SCALE / width),
+                    round(box[1] * actions.SCALE / height),
+                    round(box[2] * actions.SCALE / width),
+                    round(box[3] * actions.SCALE / height),
+                )
+            name = json.dumps(node.name, ensure_ascii=False)
+            lines.append(
+                f"{'  ' * level}- {node.role} {name} [{area.id}.{tag}e{index + 1}] "
+                f"({box[0]},{box[1]},{box[2]},{box[3]})"
+            )
+        return "\n".join(lines)
+
+    @staticmethod
+    def _box(
+        area: Area,
+        limits: tuple[int, int],
+        bounds: tuple[float, float, float, float] | None,
+        width: int,
+        height: int,
+    ) -> tuple[int, int, int, int] | None:
+        """Node bounds as image pixels ``(x0, y0, x1, y1)``; None when empty or outside."""
+        if bounds is None or bounds[2] <= 0 or bounds[3] <= 0:
+            return None
+        x0, y0 = to_image(area, *limits, bounds[0], bounds[1])
+        x1, y1 = to_image(area, *limits, bounds[0] + bounds[2], bounds[1] + bounds[3])
+        box = (round(x0), round(y0), round(x1), round(y1))
+        if box[2] <= 0 or box[3] <= 0 or box[0] >= width or box[1] >= height:
+            return None
+        return box
+
+    def _node(
+        self, element: tuple[str, str, int], limits: tuple[int, int], scale: int | None
+    ) -> Node | dict[str, Any]:
+        window, tag, number = element
+        listed = self.nodes.get(window)
+        if listed is None or listed[0] != tag or not 0 < number <= len(listed[1]):
+            return self._stale(element, limits, scale)
+        return listed[1][number - 1]
+
+    def _stale(
+        self, element: tuple[str, str, int], limits: tuple[int, int], scale: int | None
+    ) -> dict[str, Any]:
+        """The id no longer names a node: answer with the window's fresh list, run nothing."""
+        assert self.screen is not None
+        stale = failure(
+            "element_stale",
+            f"节点 {element[0]}.{element[1]}e{element[2]} 已失效（窗口重新列出过节点、节点已销毁"
+            "或连接器重启过）；没有执行。请按下面的新列表重新选择。",
+            window=element[0],
+        )
+        try:
+            target = self.screen.window(element[0])
+            stale["elements"] = self._list(target, limits, scale, None)
+        except Refused as refused:
+            stale["elements_error"] = refused.message
+        return stale
+
+    def _visible(
+        self,
+        area: Area,
+        limits: tuple[int, int],
+        bounds: tuple[float, float, float, float] | None,
+        width: int,
+        height: int,
+    ) -> tuple[float, float] | dict[str, Any]:
+        """The centre of a node now, in global input coordinates, when it is inside ``area``."""
+        if bounds is not None and bounds[2] > 0 and bounds[3] > 0:
+            centre = (bounds[0] + bounds[2] / 2, bounds[1] + bounds[3] / 2)
+            x, y = to_image(area, *limits, *centre)
+            if 0 <= x < width and 0 <= y < height:
+                return centre
+        box = None
+        if bounds is not None:
+            x0, y0 = to_image(area, *limits, bounds[0], bounds[1])
+            x1, y1 = to_image(area, *limits, bounds[0] + bounds[2], bounds[1] + bounds[3])
+            box = [round(x0), round(y0), round(x1), round(y1)]
+        return failure(
+            "element_not_visible",
+            "这个节点现在不在画面内（已移出、被收起或尺寸为零），没有执行，也不会改按坐标点击；"
+            "先 screenshot 或 elements 重新看。",
+            bounds=box,
+        )
 
     def _yield(self) -> dict[str, Any]:
         """Someone used the computer since Yuki last looked: let them finish, run nothing."""
@@ -367,17 +613,18 @@ class Desk:
 
     def _input(
         self,
-        action: str,
+        parsed: Parsed,
         args: dict[str, Any],
-        keys: tuple[tuple[str, ...], str] | None,
         aim: tuple[float, float] | None,
-        point: Callable[[str, str], tuple[float, float]],
+        aim2: tuple[float, float] | None,
         window: Target | None,
+        node: Node | None,
     ) -> dict[str, Any]:
         assert self.screen is not None
+        action = parsed.action
         screen: Surface = window if window is not None else self.screen
-        target = aim if action in POINTED else None
         posted = 0
+        routes: list[str] = []
         activity = {
             "type": "activity",
             "tool": "computer",
@@ -386,59 +633,85 @@ class Desk:
         }
         self.report({**activity, "phase": "start"})
         try:
-            if window is not None and aim is not None and action in {"key", "type"}:
+            if node is not None and action in {"key", "type"}:
+                posted += 1
+                if window is not None:
+                    window.focus_element(node)
+                else:
+                    node.focus()
+                routes.append("accessibility")
+            elif window is not None and aim is not None and action in {"key", "type"}:
                 # Keys go to the app's focus: first make the field at x,y that focus.
                 posted += 1
-                window.focus(*aim)
-            if action in {"click", "double_click", "right_click"}:
-                assert target is not None
+                routes.append(window.focus(*aim))
+            if action in actions.CLICKS:
+                assert aim is not None
                 posted += 1
-                screen.click(
-                    *target,
-                    "right" if action == "right_click" else "left",
-                    2 if action == "double_click" else 1,
-                )
+                if (
+                    node is not None
+                    and action == "click"
+                    and not parsed.modifiers
+                    and node.press()
+                ):
+                    routes.append("accessibility")
+                else:
+                    routes.append(
+                        screen.click(*aim, parsed.button, parsed.count, parsed.modifiers)
+                    )
             elif action == "move":
-                assert target is not None
+                assert aim is not None
                 posted += 1
-                screen.move(*target)
+                routes.append(screen.move(*aim))
             elif action == "drag":
-                assert target is not None
+                assert aim is not None and aim2 is not None
                 posted += 1
-                screen.drag(*target, *point("x2", "y2"))
+                routes.append(screen.drag(*aim, *aim2, parsed.modifiers))
             elif action == "scroll":
-                assert target is not None
+                assert aim is not None
                 posted += 1
-                screen.scroll(*target, args.get("dx") or 0, args.get("dy") or 0)
+                routes.append(screen.scroll(*aim, parsed.dx, parsed.dy, parsed.modifiers))
             elif action == "key":
-                assert keys is not None
-                posted += 1
-                screen.key(*keys)
-            else:
+                assert parsed.keys is not None
+                for _ in range(parsed.repeat):
+                    if self.control.holder == "owner":
+                        # Desktop 「停止」 arrived while repeating: the rest is not sent.
+                        return {
+                            "status": "unknown" if posted else "failed",
+                            **self.control.held(),
+                            "route": list(dict.fromkeys(routes)),
+                        }
+                    posted += 1
+                    routes.append(screen.key(*parsed.keys))
+            elif action == "type":
                 text = args.get("text") or ""
                 for start in range(0, len(text), TYPE_RUN):
                     if self.control.holder == "owner":
                         # Desktop 「停止」 arrived while typing: the rest is not typed.
-                        return {"status": "unknown", **self.control.held()}
+                        return {
+                            "status": "unknown" if posted else "failed",
+                            **self.control.held(),
+                            "route": list(dict.fromkeys(routes)),
+                        }
                     posted += 1
-                    screen.type(text[start : start + TYPE_RUN])
+                    routes.append(screen.type(text[start : start + TYPE_RUN]))
         except Refused as refused:
             # That call delivered nothing; whatever was posted before it was delivered.
             posted -= 1
             return {
+                **refused.result(),
                 "status": "unknown" if posted else "failed",
-                "error": refused.error,
-                "message": refused.message,
+                "route": list(dict.fromkeys(routes)),
             }
         except OSError as error:
             return {
                 "status": "unknown" if posted else "failed",
                 "error": "input_failed",
                 "message": f"输入失败：{error}",
+                "route": list(dict.fromkeys(routes)),
             }
         finally:
             if posted:
                 # Yuki's own events are now the latest input; only later input is someone else's.
                 self.observed = self._baseline()
-            self.report({**activity, "phase": "end"})
-        return {}
+            self.report({**activity, "phase": "end", "route": list(dict.fromkeys(routes))})
+        return {"route": list(dict.fromkeys(routes))}

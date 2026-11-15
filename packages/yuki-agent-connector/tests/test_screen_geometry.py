@@ -1,4 +1,4 @@
-"""M6: image coordinates to the platform's input coordinates, and key combinations.
+"""M6: image coordinates to the platform's input coordinates and back.
 
 Written before the implementation (docs/operations/computer-browser-device-3a-20261110.md
 §1 M6). Pure functions, so every case runs on all three CI platforms.
@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from yuki_agent_connector.screen import Display, frame, parse_keys, to_global, to_virtual_desk
+from yuki_agent_connector.screen import Display, frame, to_global, to_image, to_virtual_desk
 
 # A Retina main display: 1512x982 points, 3024x1964 pixels.
 RETINA = Display("1", 0, 0, 1512, 982, 3024, 1964, primary=True, scale=2.0)
@@ -73,28 +73,8 @@ def test_coordinates_follow_the_current_geometry_not_a_saved_screenshot() -> Non
     )
 
 
-@pytest.mark.parametrize(
-    ("combo", "expected"),
-    [
-        ("Return", ((), "return")),
-        ("enter", ((), "return")),
-        ("ctrl+l", (("ctrl",), "l")),
-        ("Control+Shift+T", (("ctrl", "shift"), "t")),
-        ("cmd+space", (("cmd",), "space")),
-        ("super+e", (("cmd",), "e")),
-        ("alt+F4", (("alt",), "f4")),
-        ("option+Left", (("alt",), "left")),
-        ("Page_Down", ((), "pagedown")),
-        ("BackSpace", ((), "backspace")),
-        ("ctrl+/", (("ctrl",), "/")),
-        ("shift", ((), "shift")),
-    ],
-)
-def test_key_combinations(combo: str, expected: tuple[tuple[str, ...], str]) -> None:
-    assert parse_keys(combo) == expected
-
-
-@pytest.mark.parametrize("combo", ["", "ctrl+", "ctrl+nonsense", "ctrl+a+b", "F25"])
-def test_unknown_key_combinations_are_refused_before_any_input(combo: str) -> None:
-    with pytest.raises(ValueError):
-        parse_keys(combo)
+def test_global_points_back_to_image_pixels() -> None:
+    # The pointer and accessibility bounds are read in global input coordinates.
+    for display in (RETINA, LEFT, WIN_150):
+        x, y = to_global(display, 1568, 1_150_000, 321, 123)
+        assert to_image(display, 1568, 1_150_000, x, y) == pytest.approx((321, 123))

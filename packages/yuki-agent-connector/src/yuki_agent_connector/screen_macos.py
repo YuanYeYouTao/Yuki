@@ -30,7 +30,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from .screen import EVENT_TAG, Display, Refused, Window
+from .screen import EVENT_TAG, Display, Refused, Stale, Window
 
 assert sys.platform == "darwin"
 
@@ -125,6 +125,11 @@ BUTTONS = {
         Quartz.kCGEventRightMouseUp,
         Quartz.kCGMouseButtonRight,
     ),
+    "middle": (
+        Quartz.kCGEventOtherMouseDown,
+        Quartz.kCGEventOtherMouseUp,
+        Quartz.kCGMouseButtonCenter,
+    ),
 }
 
 
@@ -168,9 +173,29 @@ WINDOW_LOCAL = int(platform.mac_ver()[0].split(".")[0]) >= 27
 PRIMER_SECONDS = 0.03
 PRESS_SECONDS = 0.03
 TEXT_ROLES = frozenset({"AXTextField", "AXTextArea", "AXComboBox", "AXSearchField"})
+# Stamped events carry flags, click states and the other button too (task book §6.11).
 WINDOW_ACTIONS = frozenset(
-    {"click", "double_click", "right_click", "move", "drag", "type", "key", "scroll"}
+    {
+        "click",
+        "double_click",
+        "triple_click",
+        "right_click",
+        "middle_click",
+        "move",
+        "drag",
+        "type",
+        "key",
+        "scroll",
+        "modifiers",
+    }
 )
+# Roles that only group other nodes; listed only when they have a name.
+CONTAINER_ROLES = frozenset(
+    {"AXGroup", "AXScrollArea", "AXSplitGroup", "AXLayoutArea", "AXLayoutItem", "AXUnknown"}
+)
+# The system-wide hit test asks whatever app is under the point; a hung app must not stall
+# the input it only describes (P0 item 7: 0.2–0.5 ms warm, 25–33 ms cold).
+HIT_SECONDS = 0.25
 # Chromium builds its web accessibility tree after the switch is set (spike R12).
 ACCESSIBILITY_SECONDS = 4.0
 ACCESSIBLE: set[int] = set()
@@ -228,6 +253,23 @@ def frame(element: Any) -> tuple[float, float, float, float] | None:
     return point.x, point.y, extent.width, extent.height
 
 
+def role_name(raw: Any) -> str:
+    """``AXTextField`` → ``text field``."""
+    return re.sub(r"(?<!^)(?=[A-Z])", " ", str(raw or "AXUnknown").removeprefix("AX")).lower()
+
+
+def describe(element: Any) -> dict[str, str]:
+    name = attribute(element, "AXTitle") or attribute(element, "AXDescription") or ""
+    return {"role": role_name(attribute(element, "AXRole")), "name": str(name)}
+
+
+def flags_of(modifiers: tuple[str, ...]) -> int:
+    flags = 0
+    for name in modifiers:
+        flags |= FLAGS[name]
+    return flags
+
+
 def action_names(element: Any) -> list[str]:
     error, names = AX.AXUIElementCopyActionNames(element, None)
     return list(names or []) if error == 0 else []
@@ -276,10 +318,61 @@ def ax_window(pid: int, number: int) -> Any | None:
     return None
 
 
+@dataclass
+class MacNode:
+    """One AX element of a window, as listed by ``elements``."""
+
+    element: Any
+    depth: int
+    role: str
+    name: str
+    container: bool
+    visible: bool = True
+
+    def bounds(self) -> tuple[float, float, float, float] | None:
+        error, position = AX.AXUIElementCopyAttributeValue(self.element, "AXPosition", None)
+        if error == AX.kAXErrorInvalidUIElement:
+            raise Stale(self.name)
+        size = attribute(self.element, "AXSize")
+        if error != 0 or position is None or size is None:
+            return None
+        _, point = AX.AXValueGetValue(position, AX.kAXValueCGPointType, None)
+        _, extent = AX.AXValueGetValue(size, AX.kAXValueCGSizeType, None)
+        return point.x, point.y, extent.width, extent.height
+
+    def press(self) -> bool:
+        if "AXPress" not in action_names(self.element):
+            return False
+        check(AX.AXUIElementPerformAction(self.element, "AXPress"), "AXPress")
+        return True
+
+    def focus(self) -> None:
+        check(AX.AXUIElementSetAttributeValue(self.element, "AXFocused", True), "AXFocused")
+
+
+def nodes(root: Any) -> list[MacNode]:
+    """The subtree of ``root`` in tree order; an element is visited once even in a cycle."""
+    found: list[MacNode] = []
+    seen: set[Any] = set()
+    stack = [(root, 0)]
+    while stack:
+        element, depth = stack.pop()
+        if element in seen:
+            continue
+        seen.add(element)
+        raw = attribute(element, "AXRole")
+        node = describe(element)
+        found.append(MacNode(element, depth, node["role"], node["name"], raw in CONTAINER_ROLES))
+        children = attribute(element, "AXChildren") or []
+        stack.extend((child, depth + 1) for child in reversed(children))
+    return found
+
+
 class Keys:
     """Key presses and typed text from Yuki's private, tagged source; ``_post`` routes them."""
 
     source: Any
+    route = "global_input"
 
     def _post(self, event: Any) -> None:
         raise NotImplementedError
@@ -289,18 +382,23 @@ class Keys:
         Quartz.CGEventSetFlags(event, flags)
         self._post(event)
 
-    def key(self, modifiers: tuple[str, ...], key: str) -> None:
+    def key(self, modifiers: tuple[str, ...], key: str) -> str:
         flags = 0
-        for name in modifiers:
-            flags |= FLAGS[name]
-            self._keyboard(KEYCODES[name], True, flags)
-        self._keyboard(KEYCODES[key], True, flags)
-        self._keyboard(KEYCODES[key], False, flags)
-        for name in reversed(modifiers):
-            flags &= ~FLAGS[name]
-            self._keyboard(KEYCODES[name], False, flags)
+        pressed: list[str] = []
+        try:
+            for name in modifiers:
+                flags |= FLAGS[name]
+                self._keyboard(KEYCODES[name], True, flags)
+                pressed.append(name)
+            self._keyboard(KEYCODES[key], True, flags)
+            self._keyboard(KEYCODES[key], False, flags)
+        finally:
+            for name in reversed(pressed):
+                flags &= ~FLAGS[name]
+                self._keyboard(KEYCODES[name], False, flags)
+        return self.route
 
-    def type(self, text: str) -> None:
+    def type(self, text: str) -> str:
         for character in text:
             if character in "\r\n\t":
                 if character != "\r":
@@ -312,6 +410,7 @@ class Keys:
                 event = Quartz.CGEventCreateKeyboardEvent(self.source, 0, down)
                 Quartz.CGEventKeyboardSetUnicodeString(event, units, character)
                 self._post(event)
+        return self.route
 
 
 class MacScreen(Keys):
@@ -322,6 +421,8 @@ class MacScreen(Keys):
         # A private state source: Yuki's events neither read nor change the owner's
         # modifier state, and each carries EVENT_TAG for anyone observing events.
         self.source = Quartz.CGEventSourceCreate(Quartz.kCGEventSourceStatePrivate)
+        self.system = AX.AXUIElementCreateSystemWide()
+        AX.AXUIElementSetMessagingTimeout(self.system, HIT_SECONDS)
 
     def permissions(self) -> tuple[bool, bool]:
         return bool(Quartz.CGPreflightScreenCaptureAccess()), bool(
@@ -373,16 +474,37 @@ class MacScreen(Keys):
             }
         return None
 
-    def capture(self, display: Display, width: int, height: int, path: Path) -> None:
+    def capture(
+        self,
+        display: Display,
+        width: int,
+        height: int,
+        path: Path,
+        region: tuple[float, float, float, float] | None = None,
+    ) -> None:
         try:
-            image = self._screenshot(display, width, height)
+            image = self._screenshot(display, width, height, region)
         except (OSError, StopIteration) as error:
             # Deprecated since the macOS 15 SDK; kept only as the fallback (task book §5.7).
             logger.warning("ScreenCaptureKit capture failed (%s); using CGWindowList", error)
-            image = self._window_list(display, width, height)
+            image = self._window_list(display, width, height, region)
         write_jpeg(image, path)
 
-    def _screenshot(self, display: Display, width: int, height: int) -> Any:
+    def pointer(self) -> tuple[float, float] | None:
+        location = Quartz.CGEventGetLocation(Quartz.CGEventCreate(None))
+        return float(location.x), float(location.y)
+
+    def hit(self, x: float, y: float) -> dict[str, str] | None:
+        error, element = AX.AXUIElementCopyElementAtPosition(self.system, x, y, None)
+        return describe(element) if error == 0 and element is not None else None
+
+    def _screenshot(
+        self,
+        display: Display,
+        width: int,
+        height: int,
+        region: tuple[float, float, float, float] | None,
+    ) -> Any:
         import ScreenCaptureKit
 
         content = shareable()
@@ -395,6 +517,10 @@ class MacScreen(Keys):
         configuration.setWidth_(width)
         configuration.setHeight_(height)
         configuration.setShowsCursor_(True)
+        if region is not None:
+            # Points from the display's top-left; the output is never larger than the
+            # region's own pixels, which ScreenCaptureKit would pad instead (P0 item 8).
+            configuration.setSourceRect_(Quartz.CGRectMake(*region))
         manager = ScreenCaptureKit.SCScreenshotManager
         return wait(
             lambda finished: manager.captureImageWithFilter_configuration_completionHandler_(
@@ -403,9 +529,15 @@ class MacScreen(Keys):
         )
 
     @staticmethod
-    def _window_list(display: Display, width: int, height: int) -> Any:
+    def _window_list(
+        display: Display,
+        width: int,
+        height: int,
+        region: tuple[float, float, float, float] | None,
+    ) -> Any:
+        left, top, extent_x, extent_y = region or (0, 0, display.width, display.height)
         full = Quartz.CGWindowListCreateImage(
-            Quartz.CGRectMake(display.x, display.y, display.width, display.height),
+            Quartz.CGRectMake(display.x + left, display.y + top, extent_x, extent_y),
             Quartz.kCGWindowListOptionOnScreenOnly,
             Quartz.kCGNullWindowID,
             Quartz.kCGWindowImageDefault,
@@ -453,44 +585,62 @@ class MacScreen(Keys):
         Quartz.CGEventSetIntegerValueField(event, Quartz.kCGEventSourceUserData, EVENT_TAG)
         Quartz.CGEventPost(Quartz.kCGHIDEventTap, event)
 
-    def _mouse(self, kind: int, x: float, y: float, button: int, clicks: int = 1) -> None:
+    def _mouse(
+        self, kind: int, x: float, y: float, button: int, clicks: int = 1, flags: int = 0
+    ) -> None:
         event = Quartz.CGEventCreateMouseEvent(self.source, kind, (x, y), button)
         Quartz.CGEventSetIntegerValueField(event, Quartz.kCGMouseEventClickState, clicks)
+        # Modifiers ride on the events themselves: a private source holds no key state.
+        Quartz.CGEventSetFlags(event, flags)
         self._post(event)
 
-    def move(self, x: float, y: float) -> None:
+    def move(self, x: float, y: float) -> str:
         self._mouse(Quartz.kCGEventMouseMoved, x, y, Quartz.kCGMouseButtonLeft)
+        return self.route
 
-    def click(self, x: float, y: float, button: str, count: int) -> None:
+    def click(
+        self, x: float, y: float, button: str, count: int, modifiers: tuple[str, ...]
+    ) -> str:
         down, up, code = BUTTONS[button]
+        flags = flags_of(modifiers)
         self.move(x, y)
         for clicks in range(1, count + 1):
-            self._mouse(down, x, y, code, clicks)
-            self._mouse(up, x, y, code, clicks)
+            self._mouse(down, x, y, code, clicks, flags)
+            self._mouse(up, x, y, code, clicks, flags)
+        return self.route
 
-    def drag(self, x: float, y: float, x2: float, y2: float) -> None:
+    def drag(
+        self, x: float, y: float, x2: float, y2: float, modifiers: tuple[str, ...]
+    ) -> str:
+        flags = flags_of(modifiers)
         self.move(x, y)
-        self._mouse(Quartz.kCGEventLeftMouseDown, x, y, Quartz.kCGMouseButtonLeft)
-        steps = 12
-        for step in range(1, steps + 1):
-            # Applications track a drag from intermediate positions, not only its end.
-            time.sleep(0.01)
-            self._mouse(
-                Quartz.kCGEventLeftMouseDragged,
-                x + (x2 - x) * step / steps,
-                y + (y2 - y) * step / steps,
-                Quartz.kCGMouseButtonLeft,
-            )
-        self._mouse(Quartz.kCGEventLeftMouseUp, x2, y2, Quartz.kCGMouseButtonLeft)
+        self._mouse(Quartz.kCGEventLeftMouseDown, x, y, Quartz.kCGMouseButtonLeft, 1, flags)
+        try:
+            steps = 12
+            for step in range(1, steps + 1):
+                # Applications track a drag from intermediate positions, not only its end.
+                time.sleep(0.01)
+                self._mouse(
+                    Quartz.kCGEventLeftMouseDragged,
+                    x + (x2 - x) * step / steps,
+                    y + (y2 - y) * step / steps,
+                    Quartz.kCGMouseButtonLeft,
+                    1,
+                    flags,
+                )
+        finally:
+            self._mouse(Quartz.kCGEventLeftMouseUp, x2, y2, Quartz.kCGMouseButtonLeft, 1, flags)
+        return self.route
 
-    def scroll(self, x: float, y: float, dx: int, dy: int) -> None:
+    def scroll(self, x: float, y: float, dx: int, dy: int, modifiers: tuple[str, ...]) -> str:
         self.move(x, y)
         # Wheel 1 is vertical (positive scrolls up), wheel 2 horizontal (positive left).
-        self._post(
-            Quartz.CGEventCreateScrollWheelEvent2(
-                self.source, Quartz.kCGScrollEventUnitLine, 2, -dy, -dx, 0
-            )
+        event = Quartz.CGEventCreateScrollWheelEvent2(
+            self.source, Quartz.kCGScrollEventUnitLine, 2, -dy, -dx, 0
         )
+        Quartz.CGEventSetFlags(event, flags_of(modifiers))
+        self._post(event)
+        return self.route
 
     # One window (phase 3b)
 
@@ -574,6 +724,7 @@ class MacTarget(Keys):
     source: Any
     actions: frozenset[str] = field(default=WINDOW_ACTIONS)
     group: int = field(default_factory=lambda: time.time_ns() & 0x7FFFFFFF)
+    route = "window_events"
 
     def collides(self) -> bool:
         if front_pid() == self.pid:
@@ -596,7 +747,13 @@ class MacTarget(Keys):
     def elevated(self) -> bool:
         return False
 
-    def capture(self, width: int, height: int, path: Path) -> None:
+    def capture(
+        self,
+        width: int,
+        height: int,
+        path: Path,
+        region: tuple[float, float, float, float] | None = None,
+    ) -> None:
         import ScreenCaptureKit
 
         configuration = ScreenCaptureKit.SCStreamConfiguration.alloc().init()
@@ -604,6 +761,9 @@ class MacTarget(Keys):
         configuration.setHeight_(height)
         configuration.setShowsCursor_(False)
         configuration.setIgnoreShadowsSingleWindow_(True)
+        if region is not None:
+            # Points from the window's top-left (P0 item 8).
+            configuration.setSourceRect_(Quartz.CGRectMake(*region))
         manager = ScreenCaptureKit.SCScreenshotManager
         write_jpeg(
             wait(
@@ -664,13 +824,35 @@ class MacTarget(Keys):
             None,
         )
 
-    def key(self, modifiers: tuple[str, ...], key: str) -> None:
-        self._key_window()
-        super().key(modifiers, key)
+    def hit(self, x: float, y: float) -> dict[str, str] | None:
+        self._accessible()
+        node = next(self._ancestors(x, y), None)
+        return describe(node) if node is not None else None
 
-    def type(self, text: str) -> None:
+    def elements(self) -> list[MacNode]:
+        if self.element is None:
+            raise Refused(
+                "device_not_supported",
+                "这个窗口没有可读的无障碍信息（辅助功能找不到它），不能列出节点；"
+                "请按截图坐标操作。",
+                cause="no_accessibility",
+            )
+        self._accessible()
+        return nodes(self.element)
+
+    def focus_element(self, node: Any) -> None:
+        bounds = node.bounds()
+        if bounds is None:
+            raise Refused("element_not_visible", "这个节点现在没有位置，不能聚焦；没有执行。")
+        self._focus(node.element, bounds[0] + bounds[2] / 2, bounds[1] + bounds[3] / 2)
+
+    def key(self, modifiers: tuple[str, ...], key: str) -> str:
         self._key_window()
-        super().type(text)
+        return super().key(modifiers, key)
+
+    def type(self, text: str) -> str:
+        self._key_window()
+        return super().type(text)
 
     def _key_window(self) -> None:
         # Keys reach the app's key window, which can be another of its windows; with a
@@ -679,43 +861,48 @@ class MacTarget(Keys):
         if self.element is not None:
             check(AX.AXUIElementSetAttributeValue(self.element, "AXMain", True), "AXMain")
 
-    def focus(self, x: float, y: float) -> None:
+    def focus(self, x: float, y: float) -> str:
         self._accessible()
         editable = self._field(x, y)
         if editable is None:
             # Nothing accessibility calls a text field (a terminal, a canvas editor): a
             # stamped click there makes it the app's focus, as the owner's click would.
-            self._click(x, y, "left", 1)
-            return
-        self._focus(editable, x, y)
+            self._click(x, y, "left", 1, 0)
+            return "window_events"
+        return self._focus(editable, x, y)
 
-    def _focus(self, editable: Any, x: float, y: float) -> None:
+    def _focus(self, editable: Any, x: float, y: float) -> str:
         check(AX.AXUIElementSetAttributeValue(editable, "AXFocused", True), "AXFocused")
         if not attribute(editable, "AXFocused"):
             # An app that was never active has no key window, and AppKit then ignores the
             # request (measured); a stamped click on the field focuses it in the background.
-            self._click(x, y, "left", 1)
+            self._click(x, y, "left", 1, 0)
+            return "window_events"
+        return "accessibility"
 
-    def click(self, x: float, y: float, button: str, count: int) -> None:
-        if count == 1:
+    def click(
+        self, x: float, y: float, button: str, count: int, modifiers: tuple[str, ...]
+    ) -> str:
+        # Accessibility actions carry no modifiers, click states or other buttons (A7).
+        if count == 1 and not modifiers and button in {"left", "right"}:
             self._accessible()
             wanted = "AXShowMenu" if button == "right" else "AXPress"
             for node in self._ancestors(x, y):
                 if button == "left" and attribute(node, "AXRole") in TEXT_ROLES:
-                    self._focus(node, x, y)
-                    return
+                    return self._focus(node, x, y)
                 if wanted in action_names(node):
                     check(AX.AXUIElementPerformAction(node, wanted), wanted)
-                    return
-        self._click(x, y, button, count)
+                    return "accessibility"
+        self._click(x, y, button, count, flags_of(modifiers))
+        return "window_events"
 
-    def _click(self, x: float, y: float, button: str, count: int) -> None:
+    def _click(self, x: float, y: float, button: str, count: int, flags: int) -> None:
         down, up, code = BUTTONS[button]
         self._prime(x, y)
         for clicks in range(1, count + 1):
-            self._stamped(down, x, y, code, clicks)
+            self._stamped(down, x, y, code, clicks, flags)
             time.sleep(PRESS_SECONDS)
-            self._stamped(up, x, y, code, clicks)
+            self._stamped(up, x, y, code, clicks, flags)
 
     # Stamped events where accessibility has nothing
 
@@ -736,9 +923,12 @@ class MacTarget(Keys):
         )
         self._post(event)
 
-    def _stamped(self, kind: int, x: float, y: float, button: int, clicks: int = 1) -> None:
+    def _stamped(
+        self, kind: int, x: float, y: float, button: int, clicks: int = 1, flags: int = 0
+    ) -> None:
         event = Quartz.CGEventCreateMouseEvent(self.source, kind, (x, y), button)
         Quartz.CGEventSetIntegerValueField(event, Quartz.kCGMouseEventClickState, clicks)
+        Quartz.CGEventSetFlags(event, flags)
         self._stamp(event, x, y)
 
     def _prime(self, x: float, y: float) -> None:
@@ -746,27 +936,40 @@ class MacTarget(Keys):
         self._stamped(Quartz.kCGEventMouseMoved, x, y, Quartz.kCGMouseButtonLeft, 0)
         time.sleep(PRIMER_SECONDS)
 
-    def move(self, x: float, y: float) -> None:
+    def move(self, x: float, y: float) -> str:
         self._stamped(Quartz.kCGEventMouseMoved, x, y, Quartz.kCGMouseButtonLeft, 0)
+        return self.route
 
-    def drag(self, x: float, y: float, x2: float, y2: float) -> None:
+    def drag(
+        self, x: float, y: float, x2: float, y2: float, modifiers: tuple[str, ...]
+    ) -> str:
+        flags = flags_of(modifiers)
         self._prime(x, y)
-        self._stamped(Quartz.kCGEventLeftMouseDown, x, y, Quartz.kCGMouseButtonLeft)
-        steps = 12
-        for step in range(1, steps + 1):
-            time.sleep(0.01)
+        self._stamped(Quartz.kCGEventLeftMouseDown, x, y, Quartz.kCGMouseButtonLeft, 1, flags)
+        try:
+            steps = 12
+            for step in range(1, steps + 1):
+                time.sleep(0.01)
+                self._stamped(
+                    Quartz.kCGEventLeftMouseDragged,
+                    x + (x2 - x) * step / steps,
+                    y + (y2 - y) * step / steps,
+                    Quartz.kCGMouseButtonLeft,
+                    1,
+                    flags,
+                )
+        finally:
             self._stamped(
-                Quartz.kCGEventLeftMouseDragged,
-                x + (x2 - x) * step / steps,
-                y + (y2 - y) * step / steps,
-                Quartz.kCGMouseButtonLeft,
+                Quartz.kCGEventLeftMouseUp, x2, y2, Quartz.kCGMouseButtonLeft, 1, flags
             )
-        self._stamped(Quartz.kCGEventLeftMouseUp, x2, y2, Quartz.kCGMouseButtonLeft)
+        return self.route
 
-    def scroll(self, x: float, y: float, dx: int, dy: int) -> None:
+    def scroll(self, x: float, y: float, dx: int, dy: int, modifiers: tuple[str, ...]) -> str:
         self._prime(x, y)
         event = Quartz.CGEventCreateScrollWheelEvent2(
             self.source, Quartz.kCGScrollEventUnitLine, 2, -dy, -dx, 0
         )
         Quartz.CGEventSetLocation(event, (x, y))
+        Quartz.CGEventSetFlags(event, flags_of(modifiers))
         self._stamp(event, x, y)
+        return self.route

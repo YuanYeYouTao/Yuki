@@ -13,7 +13,14 @@ this backend. ``<state-dir>`` holds:
   process mid-execution), ``chrome`` (false: no Chrome installed), ``windows`` (each a
   ``screen.Window`` plus ``minimized``, ``front`` — the owner's frontmost app or the window
   under the owner's pointer is this window's — ``elevated`` and ``actions``, the inputs this
-  platform can deliver to a window in the background; omitted means all).
+  platform can deliver to a window in the background, ``modifiers`` included; omitted means
+  all), ``pointer`` (global ``[x, y]`` or null), ``hit`` (the ``{role, name}`` every hit test
+  answers, or null), ``key_delay`` (seconds each key takes), ``fail_input`` (posting raises
+  ``OSError`` after the event is recorded), ``refuse``/``refuse_cause`` (background delivery
+  refused while posting) and ``no_screen`` (a Connector that cannot operate a screen). A
+  window's ``elements`` are its accessibility nodes in global points, read on every call; a
+  node missing from the current script is destroyed.
+- ``captures.jsonl``: every capture with its size and region.
 - ``owner_last_input``: a wall-clock timestamp of the owner's latest deliberate input.
 - ``events.jsonl``: every input the Connector posted, in global input coordinates; input
   delivered to a window in the background carries ``window``.
@@ -25,6 +32,7 @@ import json
 import struct
 import sys
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -79,8 +87,30 @@ class FakeScreen:
     def unavailable(self) -> dict[str, Any] | None:
         return self.script().get("unavailable")  # type: ignore[no-any-return]
 
-    def capture(self, display: screen.Display, width: int, height: int, path: Path) -> None:
+    def capture(
+        self,
+        display: screen.Display,
+        width: int,
+        height: int,
+        path: Path,
+        region: tuple[float, float, float, float] | None = None,
+    ) -> None:
+        self._captured(display.id, width, height, region)
         path.write_bytes(jpeg(width, height))
+
+    def _captured(
+        self, source: str, width: int, height: int, region: tuple[float, ...] | None
+    ) -> None:
+        with (self.state / "captures.jsonl").open("a", encoding="utf-8") as stream:
+            facts = {"source": source, "width": width, "height": height}
+            stream.write(json.dumps({**facts, "region": region and list(region)}) + "\n")
+
+    def pointer(self) -> tuple[float, float] | None:
+        found = self.script().get("pointer")
+        return (found[0], found[1]) if found else None
+
+    def hit(self, x: float, y: float) -> dict[str, str] | None:
+        return self.script().get("hit")  # type: ignore[no-any-return]
 
     def _latest(self) -> float:
         owner = self.state / "owner_last_input"
@@ -109,28 +139,38 @@ class FakeScreen:
         with (self.state / "events.jsonl").open("a", encoding="utf-8") as stream:
             stream.write(json.dumps({"kind": kind, **facts}, ensure_ascii=False) + "\n")
 
-    def _post(self, kind: str, **facts: Any) -> None:
+    def _post(self, kind: str, **facts: Any) -> str:
         self._record(kind, **facts)
         # Global input is the session's latest input; background input is not (spike Q4).
         self.own = time.time()
+        if self.script().get("fail_input"):
+            raise OSError("posting failed")
+        return "global_input"
 
-    def move(self, x: float, y: float) -> None:
-        self._post("move", x=x, y=y)
+    def move(self, x: float, y: float) -> str:
+        return self._post("move", x=x, y=y)
 
-    def click(self, x: float, y: float, button: str, count: int) -> None:
-        self._post("click", x=x, y=y, button=button, count=count)
+    def click(
+        self, x: float, y: float, button: str, count: int, modifiers: tuple[str, ...]
+    ) -> str:
+        return self._post(
+            "click", x=x, y=y, button=button, count=count, modifiers=list(modifiers)
+        )
 
-    def drag(self, x: float, y: float, x2: float, y2: float) -> None:
-        self._post("drag", x=x, y=y, x2=x2, y2=y2)
+    def drag(
+        self, x: float, y: float, x2: float, y2: float, modifiers: tuple[str, ...]
+    ) -> str:
+        return self._post("drag", x=x, y=y, x2=x2, y2=y2, modifiers=list(modifiers))
 
-    def scroll(self, x: float, y: float, dx: int, dy: int) -> None:
-        self._post("scroll", x=x, y=y, dx=dx, dy=dy)
+    def scroll(self, x: float, y: float, dx: int, dy: int, modifiers: tuple[str, ...]) -> str:
+        return self._post("scroll", x=x, y=y, dx=dx, dy=dy, modifiers=list(modifiers))
 
-    def key(self, modifiers: tuple[str, ...], key: str) -> None:
-        self._post("key", modifiers=list(modifiers), key=key)
+    def key(self, modifiers: tuple[str, ...], key: str) -> str:
+        time.sleep(self.script().get("key_delay", 0))
+        return self._post("key", modifiers=list(modifiers), key=key)
 
-    def type(self, text: str) -> None:
-        self._post("type", text=text)
+    def type(self, text: str) -> str:
+        return self._post("type", text=text)
 
     def _windows(self) -> list[dict[str, Any]]:
         return list(self.script().get("windows", []))
@@ -151,17 +191,62 @@ class FakeScreen:
         return FakeTarget(self, screen.Window(**geometry), facts)
 
 
+ALL_ACTIONS = [
+    "click",
+    "double_click",
+    "triple_click",
+    "right_click",
+    "middle_click",
+    "move",
+    "drag",
+    "type",
+    "key",
+    "scroll",
+    "modifiers",
+]
+
+
+@dataclass
+class FakeNode:
+    """A node read from the current script by its window and key on every call."""
+
+    owner: FakeScreen
+    window: str
+    key: str
+    depth: int
+    role: str
+    name: str
+    container: bool
+    visible: bool
+
+    def _facts(self) -> dict[str, Any]:
+        for item in self.owner._windows():
+            if item["id"] == self.window:
+                for node in item.get("elements", []):
+                    if node["key"] == self.key:
+                        return node  # type: ignore[no-any-return]
+        raise screen.Stale(self.key)
+
+    def bounds(self) -> tuple[float, float, float, float] | None:
+        node = self._facts()
+        return node["x"], node["y"], node["width"], node["height"]
+
+    def press(self) -> bool:
+        if not self._facts().get("press", True):
+            return False
+        self.owner._record("press", window=self.window, element=self.key)
+        return True
+
+    def focus(self) -> None:
+        self.owner._record("focus_element", element=self.key)
+
+
 class FakeTarget:
     """One window: input to it is recorded with its id and never as global input."""
 
     def __init__(self, owner: FakeScreen, window: screen.Window, facts: dict[str, Any]) -> None:
         self.owner, self.window, self.facts = owner, window, facts
-        self.actions = frozenset(
-            facts.get(
-                "actions",
-                ["click", "double_click", "right_click", "move", "drag", "type", "key", "scroll"],
-            )
-        )
+        self.actions = frozenset(facts.get("actions", ALL_ACTIONS))
 
     def collides(self) -> bool:
         return bool(self.facts.get("front"))
@@ -169,41 +254,85 @@ class FakeTarget:
     def elevated(self) -> bool:
         return bool(self.facts.get("elevated"))
 
-    def capture(self, width: int, height: int, path: Path) -> None:
+    def capture(
+        self,
+        width: int,
+        height: int,
+        path: Path,
+        region: tuple[float, float, float, float] | None = None,
+    ) -> None:
+        self.owner._captured(self.window.id, width, height, region)
         path.write_bytes(jpeg(width, height))
 
-    def _post(self, kind: str, **facts: Any) -> None:
-        refused = self.owner.script().get("refuse")
-        if refused:
+    def hit(self, x: float, y: float) -> dict[str, str] | None:
+        return self.owner.hit(x, y)
+
+    def elements(self) -> list[FakeNode]:
+        if "elements" not in self.facts:
+            raise screen.Refused(
+                "device_not_supported", "这个窗口没有无障碍信息。", cause="no_accessibility"
+            )
+        return [
+            FakeNode(
+                self.owner,
+                self.window.id,
+                node["key"],
+                node["depth"],
+                node["role"],
+                node["name"],
+                node.get("container", False),
+                node.get("visible", True),
+            )
+            for node in self.facts["elements"]
+        ]
+
+    def focus_element(self, node: Any) -> None:
+        self._post("focus_element", element=node.key)
+
+    def _post(self, kind: str, **facts: Any) -> str:
+        script = self.owner.script()
+        if script.get("refuse"):
             # No background route for this input (e.g. no UI Automation pattern there).
-            raise screen.Refused(refused, "该处没有可在后台操作的控件。")
+            raise screen.Refused(
+                script["refuse"], "该处没有可在后台操作的控件。", cause=script.get("refuse_cause")
+            )
         self.owner._record(kind, window=self.window.id, **facts)
+        return "window_events"
 
-    def focus(self, x: float, y: float) -> None:
-        self._post("focus", x=x, y=y)
+    def focus(self, x: float, y: float) -> str:
+        return self._post("focus", x=x, y=y)
 
-    def move(self, x: float, y: float) -> None:
-        self._post("move", x=x, y=y)
+    def move(self, x: float, y: float) -> str:
+        return self._post("move", x=x, y=y)
 
-    def click(self, x: float, y: float, button: str, count: int) -> None:
-        self._post("click", x=x, y=y, button=button, count=count)
+    def click(
+        self, x: float, y: float, button: str, count: int, modifiers: tuple[str, ...]
+    ) -> str:
+        return self._post(
+            "click", x=x, y=y, button=button, count=count, modifiers=list(modifiers)
+        )
 
-    def drag(self, x: float, y: float, x2: float, y2: float) -> None:
-        self._post("drag", x=x, y=y, x2=x2, y2=y2)
+    def drag(
+        self, x: float, y: float, x2: float, y2: float, modifiers: tuple[str, ...]
+    ) -> str:
+        return self._post("drag", x=x, y=y, x2=x2, y2=y2, modifiers=list(modifiers))
 
-    def scroll(self, x: float, y: float, dx: int, dy: int) -> None:
-        self._post("scroll", x=x, y=y, dx=dx, dy=dy)
+    def scroll(self, x: float, y: float, dx: int, dy: int, modifiers: tuple[str, ...]) -> str:
+        return self._post("scroll", x=x, y=y, dx=dx, dy=dy, modifiers=list(modifiers))
 
-    def key(self, modifiers: tuple[str, ...], key: str) -> None:
-        self._post("key", modifiers=list(modifiers), key=key)
+    def key(self, modifiers: tuple[str, ...], key: str) -> str:
+        return self._post("key", modifiers=list(modifiers), key=key)
 
-    def type(self, text: str) -> None:
-        self._post("type", text=text)
+    def type(self, text: str) -> str:
+        return self._post("type", text=text)
 
 
 if __name__ == "__main__":
     state = Path(sys.argv[1])
-    screen.native_backend = lambda: FakeScreen(state)  # type: ignore[assignment,return-value]
-    if json.loads((state / "script.json").read_text()).get("chrome") is False:
+    facts = json.loads((state / "script.json").read_text())
+    screen.native_backend = (  # type: ignore[assignment]
+        (lambda: None) if facts.get("no_screen") else (lambda: FakeScreen(state))
+    )
+    if facts.get("chrome") is False:
         chrome.find_chrome = lambda: None
     raise SystemExit(cli.main(sys.argv[2:]))
