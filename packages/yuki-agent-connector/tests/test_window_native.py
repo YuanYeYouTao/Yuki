@@ -499,7 +499,7 @@ async def test_windows_window_through_ui_automation(tmp_path: Path) -> None:
 
         # W4: minimized → window_unavailable.
         log.with_suffix(".cmd").write_text("mini")
-        until(lambda: [e for e in host_events(log) if e["ev"] == "cmd"])
+        until(lambda: [e for e in host_events(log) if e.get("words") == ["mini"]])
         assert (await call("screenshot", window=str(main)))["error"] == "window_unavailable"
     finally:
         host.kill()
