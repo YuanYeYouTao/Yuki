@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -211,6 +212,18 @@ async def test_coordinates_echo_actions_zoom_and_pointer(tmp_path: Path) -> None
         script(state, hit=None)
         quiet = await call("click", "px-2", x=11, y=21)
         assert quiet["submitted"] is True and "hit" not in quiet
+        # R10: a hit test that hangs is given up after its own short limit; the input runs.
+        script(state, hit={"role": "button", "name": "slow"}, hit_delay=3)
+        started = time.monotonic()
+        slow = await call("click", "px-slow", x=12, y=22)
+        assert slow["submitted"] is True and "hit" not in slow
+        assert time.monotonic() - started < 2.5
+        script(state, hit=None, hit_delay=0)
+        # A19: type at x,y in the foreground clicks there first; point is that click.
+        count = len(events(state))
+        focused = await call("type", "type-at", x=40, y=50, text="hi")
+        assert focused["point"] == [40, 50] and focused["route"] == ["global_input"]
+        assert [event["kind"] for event in events(state)[count:]] == ["click", "type"]
         # The activity line names the route once the input ended.
         ends = [line for line in desktop_lines(process) if line.get("phase") == "end"]
         assert ends[-1]["route"] == ["global_input"]
@@ -271,6 +284,10 @@ async def test_coordinates_echo_actions_zoom_and_pointer(tmp_path: Path) -> None
         zoomed = await call("zoom", "zoom-1", region=[100, 50, 300, 150])
         assert zoomed["region"] == [100, 50, 300, 150]
         assert zoomed["frame"] == {"width": width, "height": height}
+        # X8: zoom is a read: the same key captures again, with a picture to read.
+        repeated = await call("zoom", "zoom-1", region=[100, 50, 300, 150])
+        data = await call.cloud.image(repeated["image"]["path"], "zoom-1-again")
+        assert jpeg_size(data) == (repeated["width"], repeated["height"])
         # Z1: native pixels of the region (3024/1330 ≈ 2.27 per image pixel), never upscaled.
         assert (zoomed["width"], zoomed["height"]) == (455, 227)
         assert "后续坐标仍用整张截图" in zoomed["coordinates"]
@@ -351,10 +368,14 @@ async def test_window_elements_and_reasons(tmp_path: Path) -> None:
         }
 
         # E2: click(element) re-reads the node, presses it through accessibility and echoes it.
+        # R12: hit is the real hit test at the point (here something covers the button),
+        # never the node's own role and name.
+        script(state, hit={"role": "group", "name": "cover"})
         pressed = await call("click", "press-1", window="4242", element=ids["保存"])
         assert pressed["route"] == ["accessibility"] and pressed["element"] == ids["保存"]
         assert pressed["point"] == [round(v) for v in to_image(geometry, **LIMITS, x=360, y=165)]
-        assert pressed["hit"] == {"role": "button", "name": "保存"}
+        assert pressed["hit"] == {"role": "group", "name": "cover"}
+        script(state, hit=None)
         assert events(state)[-1] == {"kind": "press", "window": "4242", "element": "save"}
         # With a modifier no accessibility action can carry it: a pointer click at the centre.
         await call("click", "press-2", window="4242", element=ids["保存"], text="shift")
@@ -368,10 +389,43 @@ async def test_window_elements_and_reasons(tmp_path: Path) -> None:
         assert (await call("click", "other-1", window="77", element=ids["保存"]))["error"] == (
             "invalid_arguments"
         )
-        # Without window the node is pressed as well; point is in the display image.
+        # E16: without window the id's window is used, exactly as if it were given: the
+        # window's picture, its background routes, never the owner's foreground.
+        count = len(events(state))
         whole = await call("click", "press-3", element=ids["保存"])
-        assert whole["display"] == "1" and whole["route"] == ["accessibility"]
-        assert whole["point"] == [round(v) for v in to_image(SCREEN, **LIMITS, x=360, y=165)]
+        assert whole["window"] == "4242" and "display" not in whole, whole
+        assert whole["route"] == ["accessibility"]
+        assert whole["point"] == [round(v) for v in to_image(geometry, **LIMITS, x=360, y=165)]
+        await call("type", "type-2", element=ids["保存"], text="xyz")
+        await call("right_click", "right-1", element=ids["保存"])
+        # E17: the right click is a window event at the node, not global input.
+        assert all(event.get("window") == "4242" for event in events(state)[count:])
+        assert [event["kind"] for event in events(state)[count:]] == [
+            "press",
+            "focus_element",
+            "type",
+            "click",
+        ]
+        # E18: the node is gone by the time it is pressed: stale, nothing delivered.
+        flaky = [
+            dict(node, stale_on_press=True) if node["key"] == "save" else node for node in NODES
+        ]
+        script(state, windows=[{**EDITOR, "elements": flaky}])
+        gone = await call("click", "press-stale", window="4242", element=ids["保存"])
+        assert gone["error"] == "element_stale" and gone["status"] == "failed", gone
+        script(state, windows=[{**EDITOR, "elements": NODES}])
+        relisted = await call("elements", "list-after-stale", window="4242")
+        ids = {
+            line.split('"')[1]: line.split("[")[1].split("]")[0]
+            for line in relisted["elements"].splitlines()
+        }
+        # X8: elements is a read: the same key reads again (a fresh tag), nothing journaled.
+        again = await call("elements", "list-after-stale", window="4242")
+        assert again["elements"] != relisted["elements"]
+        ids = {
+            line.split('"')[1]: line.split("[")[1].split("]")[0]
+            for line in again["elements"].splitlines()
+        }
 
         # E7: the node moved outside the window: not visible, never a coordinate click.
         count = len(events(state))

@@ -111,6 +111,7 @@ class FakeScreen:
         return (found[0], found[1]) if found else None
 
     def hit(self, x: float, y: float) -> dict[str, str] | None:
+        time.sleep(self.script().get("hit_delay", 0))
         return self.script().get("hit")  # type: ignore[no-any-return]
 
     def _latest(self) -> float:
@@ -233,6 +234,8 @@ class FakeNode:
         return node["x"], node["y"], node["width"], node["height"]
 
     def press(self) -> bool:
+        if self._facts().get("stale_on_press"):
+            raise screen.Stale(self.key)
         if not self._facts().get("press", True):
             return False
         self.owner._record("press", window=self.window, element=self.key)

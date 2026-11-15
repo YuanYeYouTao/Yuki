@@ -489,6 +489,12 @@ async def test_windows_window_through_ui_automation(tmp_path: Path) -> None:
         assert invoked["hit"]["role"] == "button"
         until(lambda: len([e for e in host_events(log) if e["ev"] == "clicked"]) > clicks)
         observe("element")
+        # E16: without window the id's window is used (UI Automation), never global input.
+        clicks = len([e for e in host_events(log) if e["ev"] == "clicked"])
+        implied = await call("click", element=identity)
+        assert implied["window"] == str(main) and implied["route"] == ["accessibility"], implied
+        until(lambda: len([e for e in host_events(log) if e["ev"] == "clicked"]) > clicks)
+        observe("implied-element")
         # E3: the button is destroyed; its id is stale and the fresh list is attached.
         log.with_suffix(".cmd").write_text("destroy")
         until(lambda: [e for e in host_events(log) if e.get("words") == ["destroy"]])

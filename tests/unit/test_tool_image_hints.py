@@ -11,6 +11,8 @@ Failure cases, written before the dialect code:
   server's), or sends it for chat images; with ``tool_image_media_resolution`` set it is
   missing from the tool image's part.
 - Anthropic gains ``oversized_image`` or ``transformations`` (not decided).
+- Responses ignores the Profile's ``tool_image_detail`` (a class attribute instead of the
+  wire option), so it can be neither turned on for a compatible endpoint nor off for OpenAI.
 """
 
 from __future__ import annotations
@@ -76,6 +78,13 @@ def test_openai_responses_marks_only_tool_images_original() -> None:
     tool, chat = images(OpenAIResponsesProvider(**COMMON))
     assert tool["detail"] == "original" and "detail" not in chat
     assert all("detail" not in part for part in images(OpenAICompatibleResponsesProvider(**COMMON)))
+    # The Profile decides, as for Chat Completions.
+    asked = OpenAICompatibleResponsesProvider(
+        options=ChatWireOptions(tool_image_detail="high"), **COMMON
+    )
+    assert images(asked)[0]["detail"] == "high"
+    quiet = OpenAIResponsesProvider(options=ChatWireOptions(tool_image_detail=None), **COMMON)
+    assert all("detail" not in part for part in images(quiet))
 
 
 def test_gemini_media_resolution_is_a_profile_setting_for_tool_images_only() -> None:

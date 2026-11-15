@@ -341,6 +341,13 @@ async def test_own_computer_computer_use(tmp_path: Path) -> None:
         await call("key", text="ctrl+a")
         await call("key", text="Delete")
         await until(lambda: lab.value() == "", message=repr(lab.value()))
+        # A19: type at x,y clicks there first (the pad has focus now), and echoes that click.
+        await call("click", x=pixel[0], y=pixel[1])
+        at = await call("type", x=textarea[0], y=textarea[1], text="at")
+        assert at["point"] == textarea and at["route"] == ["global_input"], at
+        await until(lambda: lab.value() == "at", message=repr(lab.value()))
+        await call("key", text="BackSpace", repeat=2)
+        await until(lambda: lab.value() == "", message=repr(lab.value()))
 
         # V1: paste long mixed text through her own clipboard (CLIPBOARD and PRIMARY).
         long = "\n".join(f"第{index}行 Yuki 粘贴 ✓ line {index}" for index in range(200))
@@ -407,6 +414,24 @@ async def test_own_computer_computer_use(tmp_path: Path) -> None:
                 and log.with_suffix(".entry").read_text() == "雪 abc"
             )
         )
+        # E16/E17: without window the id's window is used; a right click on a node raises
+        # that window first, so the real hit test at the point names the button itself.
+        display("xdotool", "windowactivate", "--sync", chromium)
+        clicks = log.read_text().count("clicked")
+        implied = await call("click", "press-2", element=button_id)
+        assert implied["window"] == window and implied["route"] == ["accessibility"], implied
+        await until(lambda: log.read_text().count("clicked") > clicks)
+        display("xdotool", "windowactivate", "--sync", chromium)
+        right = await call("right_click", element=button_id)
+        assert right["window"] == window and right["route"] == ["global_input"], right
+        assert right["hit"] == {"role": "push button", "name": "Press me"}, right
+        # E19: a label cannot take the keyboard focus: refused, nothing typed.
+        label = next(line for line in lines if 'label "label text"' in line)
+        label_id = label.split("[")[1].split("]")[0]
+        unfocused = await call("type", window=window, element=label_id, text="never")
+        assert unfocused["error"] == "device_not_supported", unfocused
+        assert unfocused["cause"] == "no_focused_field" and unfocused["status"] == "failed"
+        assert log.with_suffix(".entry").read_text() == "雪 abc"
         # R6: a coordinate click on the button names it before the input.
         box = [int(v) for v in button.rsplit("(", 1)[1].rstrip(")").split(",")]
         middle = [(box[0] + box[2]) // 2, (box[1] + box[3]) // 2]
