@@ -478,6 +478,18 @@ elements：
 | X7 | Code Mode | 与 direct 同一份清单和执行器 |
 | X8 | 连接器上的 zoom、elements | 是读动作：不写 journal；断开时不报 `action_unknown`；同键重试重新读取（新的截图、新的节点列表）；节点列表不留在 journal 里 |
 
+升级已有环境（合并后核对生产升级路径时补写）：环境文件逐个挂载，Docker 只在创建容器时设置挂载，旧版本创建的环境没有 `actions.py`、`yuki_accessibility.py`；新驱动导入失败会让 `computer` 全部报 `driver_failed`。收敛只走已有的"快照 → 从快照重建"一条路，不在挂载之外另设文件来源。
+
+| 编号 | 情况 | 期望结果 |
+| --- | --- | --- |
+| U1 | Manager 启动时现有容器缺少当前版本要求的环境文件挂载 | 先拍一份系统快照（actor `{"system":"environment_files"}`，备注列出缺的路径），再停止并删除旧容器，以该快照镜像按当前定义重建：rootFS 来自该快照，HOME 原样不动；已派发的执行按还原语义记 `failed`／`environment_restored`（附 `snapshot_id`），不重放；`recreated_from` 指向该快照；新容器有全部挂载 |
+| U2 | 这份快照失败 | 不重建：旧容器照常运行，快照记 `failed` 及原因，`environment_status.recreate_required` 含 `environment_files`；本次进程内不反复重试，下次 Manager 启动再试 |
+| U3 | 快照成功、旧容器已删除，重建失败（`docker create` 出错） | 沿用已有恢复：worker 再次 `recover()`，容器不存在时从 `checkpoint_image`（即这份快照）重建 |
+| U4 | 挂载与当前定义一致 | 什么都不做：不拍快照、不重建 |
+| U5 | 本人正持有控制权（接管中） | 暂缓，不暂停她的画面，`recreate_required` 含 `environment_files`；交还后 worker 的下一轮收敛 |
+| U6 | Yuki 有动作正在执行（桌面锁被占） | 等这个动作结束后的下一轮再收敛，不打断它 |
+| U7 | 旧 rootFS 没有 `dbus-daemon`（at-spi2-core 只依赖 libdbus） | 有头档软件包包含 `dbus`，由 `apply_programs()` 补装 |
+
 模型与提示词：
 
 | 编号 | 情况 | 期望结果 |
