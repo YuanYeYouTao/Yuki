@@ -121,7 +121,7 @@
 - `computer(action="zoom", region:[x0,y0,x1,y1], window?, display?, scale?, device?)`：`region` 用整张截图的坐标（受 `scale` 约束，按 6.2 校验，要求 `x0<x1`、`y0<y1`）。
 - 来源按原生像素截取该区域，再按同样的上限缩放，只缩不放。结果：`{region, frame:{width,height}, width, height, coordinates:"zoom 图只用于查看；后续坐标仍用整张截图（宽…高…）"}` 加局部图。
 - zoom 是读动作：不写回执、不取租约，本人叫停期间照常可用（与 screenshot 相同，`READ_ACTIONS` 增加 `zoom`）。
-- 实现：Linux 用 `import -window … -crop`；macOS 全屏用 SCK `sourceRect`，窗口截图截原生分辨率后裁剪；Windows 对子区域做 StretchBlt，窗口用 PrintWindow 后裁剪。
+- 实现：Linux 用 `import -window … -crop`；macOS 全屏与窗口都用 SCK `sourceRect`（P0 第 8 项）；Windows 对子区域做 StretchBlt，窗口用 PrintWindow 后裁剪。
 
 ### 6.4 动作补齐与取舍
 
@@ -131,7 +131,7 @@
 | `triple_click` | **做** | 选中整行或整段。Linux 用 `click --repeat 3`；macOS 前台和后台都发 clickState 1→3；Windows 前台在系统双击间隔内发三次 SendInput；Windows 后台没有途径 |
 | `middle_click` | **做** | Linux 用按键 2；macOS 用 other-mouse 事件（后台带窗口标记）；Windows 前台可用，后台没有途径 |
 | `key.repeat` | **做** | 1–100，默认 1。每次重复前检查本人的停止标志；中途叫停时余下的不再发送，按已发送情况报 `unknown`，与 type 的分段一致 |
-| 统一按键语法 | **做** | `parse_keys` 移到只依赖标准库的新模块 `yuki_agent_connector/keys.py`，与 `cdp.py` 一样挂入环境。Linux 先经它解析，再映射成 xdotool keysym。接受现有写法（`Return`、`ctrl+l`、`KP_Enter` 等 xdotool 常见名并入别名表），未知键两边都返回 `invalid_arguments` |
+| 统一按键语法 | **做** | `parse_keys` 移到只依赖标准库的新模块 `yuki_agent_connector/actions.py`（P0 后定名，13.1），与 `cdp.py` 一样挂入环境。Linux 先经它解析，再映射成 xdotool keysym。接受现有写法（`Return`、`ctrl+l`、`KP_Enter` 等 xdotool 常见名并入别名表），未知键两边都返回 `invalid_arguments` |
 | Linux 拖拽插值 | **做** | mousedown 后分 12 步 mousemove（每步约 10ms）再 mouseup，与 macOS 一致 |
 | `hold_key`、`key_down/up`、`mouse_down/up` | **不做** | 按住状态会跨调用存在：连接中断、驱动重启或本人叫停发生在按下与抬起之间时，本人的键盘或鼠标会一直处于按住状态，这是对本人电脑的真实伤害。按住期间也会一直占着设备锁。常见需求已经由修饰键、drag 和 `repeat` 覆盖 |
 | 粘贴式长文本输入 | **只在 Yuki 自己的电脑上做**（6.12） | 本人电脑上不做：会覆盖本人剪贴板，是动作之外的副作用；macOS 和 Windows 的 unicode 分段输入已经能输入 CJK 和长文本。Yuki 自己的电脑上剪贴板属于她自己，按 6.12 以单独的 `paste` 动作提供 |
@@ -154,7 +154,7 @@
 | `route` | `accessibility`（AXPress／AXShowMenu／AXFocused、UIA 模式、AT-SPI 动作）、`window_events`（macOS 带窗口标记的事件）、`global_input`（CGEventPost、SendInput、xdotool） | 每个实际投递分支自己写入；多步动作（先聚焦再输入）给出列表 |
 | `hit` | `{role, name}`：投递**之前**落点上的控件 | 前台：macOS 用系统级 `AXUIElementCopyElementAtPosition`，Windows 用 UIA `ElementFromPoint`，Linux 用 AT-SPI `getAccessibleAtPoint`。后台：用目标窗口自己的子树（macOS 现有 `_ancestors`，Windows 用 UIA 子树） |
 
-- `hit` 的查询受平台的消息超时约束（macOS `AXUIElementSetMessagingTimeout`，P0 定具体值）。超时或取不到时省略字段，照常投递。
+- `hit` 的查询受平台的消息超时约束（macOS `AXUIElementSetMessagingTimeout` 0.25 s，P0 第 7 项）。超时或取不到时省略字段，照常投递。
 - 不增加 `effect`／`evidence` 推断（Cua 的 `confirmed`／`suspected_noop`）。是否生效仍以截图为准，避免另造一套"效果判定"。
 
 ### 6.7 elements 与 element 参数
@@ -180,7 +180,7 @@
 **各平台**：
 
 - macOS 和 Windows 复用现有 AX／UIA 代码，前台、后台都可用。窗口不在本人当前 Space 时，`elements` 返回 `device_not_supported`／`off_space`，与输入一致（只能看）。
-- Linux（Yuki 自己的电脑）：有头档增加 `at-spi2-core`、`python3-pyatspi`（或 gi），会话启动 AT-SPI 总线。读取逻辑放在一个由系统 python3 运行的独立环境内程序（`yuki_computer.py` 保持只依赖标准库）。X 窗口与 AT-SPI 应用的对应关系、2 GiB／runsc 下的内存开销在 P0 实测；不可用时 `elements` 返回 `device_not_supported`／`no_accessibility`，其他动作不受影响。
+- Linux（Yuki 自己的电脑）：有头档增加 `at-spi2-core`（`libatspi` 已随 GTK 装好），`desktop_service.py` 启动一条会话 D-Bus 总线，GTK 应用经它自动注册到 AT-SPI。读取逻辑在环境内新文件 `yuki_accessibility.py`，由驱动用 ctypes 调 `libatspi`（驱动保持只依赖标准库）。X 窗口经 `_NET_WM_PID` 对应到 AT-SPI 应用（P0 第 3 项）。Chromium 的网页内容不经 AT-SPI 暴露（不打开 `IsEnabled`），网页用 `browser`。总线或 `libatspi` 不可用、或该窗口的应用没有注册时，`elements` 和 `element` 返回 `device_not_supported`／`no_accessibility`，其他动作不受影响。
 - 网页仍优先用 `browser` 的节点；`elements` 面向原生应用。
 
 ### 6.12 粘贴（只在 Yuki 自己的电脑上）
@@ -242,9 +242,9 @@
 | triple／middle | xdotool | CGEvent | 带窗口标记的事件 | SendInput | `no_background_route` |
 | key.repeat | xdotool 循环 | CGEvent 循环 | PostToPid 循环 | SendInput 循环 | `no_background_route`（与现有 key 相同） |
 | zoom | import crop | SCK sourceRect | 窗口截图后裁剪 | StretchBlt 子区域 | PrintWindow 后裁剪 |
-| 指针 | XFixes 合成 | 已有 | 不画 | DrawIconEx | 不画 |
+| 指针 | XFixes 合成（P0 选定） | 已有 | 不画 | DrawIconEx | 不画 |
 | hit | AT-SPI 按点查询（可用时） | 系统级 AX | 窗口 AX 子树 | UIA ElementFromPoint | UIA 子树 |
-| elements | AT-SPI（P0） | AX | AX | UIA | UIA |
+| elements | AT-SPI（ctypes `libatspi`） | AX | AX | UIA | UIA |
 | 拖拽 | 12 步插值（新增） | 已有 | 已有 12 步 | 已有 | `no_background_route` |
 
 ## 7. 工具合同（版本 38）
@@ -488,7 +488,7 @@ elements：
 
 **CI `connector`**（ubuntu／windows／macos）：
 
-- 三平台：`keys.py` 解析、坐标换算与越界、`features` 公布、reason 映射，用真实连接器进程加脚本化服务端核对（A3、A11、C7–C9、D9、D11）。
+- 三平台：`actions.py` 解析、坐标换算与越界、`features` 公布、reason 映射，用真实连接器进程加脚本化服务端核对（A3、A11、C7–C9、D9、D11）。
 - windows-2025：如果 P0 确认托管 runner 有可交互桌面，就做真实 GDI 截图画指针、SendInput 修饰键、三击、中键（打在专用 Chrome 打开的 `pointer-lab.html` 上），以及 UIA elements（记事本）（P2、A1、A4、A5、E1–E3、D6–D8）。不可交互时这些项转为真机验收。
 - macos-15：托管 runner 不能授予 TCC，只跑事实与换算；屏幕相关项全部转为真机验收。
 - 产物：`test-results/connector-computer/<os>/`。
@@ -525,10 +525,27 @@ elements：
 
 任一项与本稿假设不符，回到本稿修订，不在实现中临时放宽。
 
+### 13.1 P0 结果（2026-11-15）
+
+| 项 | 结果 | 对本稿的影响 |
+| --- | --- | --- |
+| 1 标准档 Claude 不再缩图 | 未由实现方运行（需付费模型，按用户要求留给经授权的真机验收第 0 步）。按官方规则：1430×804 长边 < 1568、114.97 万像素 < 115 万，28 px patch 计 52×29＝1508 token，不触发服务端缩放 | 不变；验收第 0 步用真实 usage 核对 C13 |
+| 2 gemini-3.8-flash 的坐标约定 | 同上，留给真机验收（M2 记录"一直像素／一直 scale=1000／混用"的次数） | 不变 |
+| 3 Linux AT-SPI | 在有头镜像（Debian 12、TigerVNC 1.12、Chromium 156）里实测：`libatspi2.0-0` 已随 GTK 装好，只需再装 `at-spi2-core`（总线启动器与 registryd），连同 `xclip` 磁盘增 19 MB；会话需要一条 D-Bus session 总线。GTK 3 窗口自动注册，节点的 role、name、屏幕坐标 extents 都可读（"push button"/"Press me"），遍历 6 个节点 2 ms；X 窗口经 `_NET_WM_PID` 与 `atspi_accessible_get_process_id` 一一对应。Chromium 只有在 `org.a11y.Status.IsEnabled=true` 时才注册，而且网页内容此时仍未构建（只有空 frame）。内存：总线启动器约 7 MB、registryd 约 7 MB、多一个 dbus-daemon 约 4 MB（runc 下测得；runsc 由 CI `sandbox-compose` 的 runsc 任务核对进程与安装） | **修订 6.7**：不装 `python3-pyatspi`（会拉进 Debian 的 Python 3.11），改由环境内新文件 `yuki_accessibility.py` 经 ctypes 调 `libatspi`，驱动保持只依赖标准库；`desktop_service.py` 为会话、Chromium 和驱动启动一条 `dbus-daemon --session --nofork`。不打开 `IsEnabled`（会让 Chromium 常驻构建无障碍树），网页继续用 `browser`，`elements` 面向 GTK／Qt 等原生窗口 |
+| 4 Linux 光标 | Xvnc 提供 XFIXES；`XFixesGetCursorImage` 0.04 ms 返回 24×24 ARGB 图像、热点与位置，与 `xdotool getmouselocation` 一致 | 选 XFixes（真实光标形状，I 形与箭头可区分） |
+| 5 windows-2025 runner | 有可交互桌面：main 上 `connector` 任务的 `test_screen_native`（真实 GDI 截图、CI 上真实 SendInput 移动光标并核对位置）与 `test_window_native`（UIA 驱动测试自己的 Win32 窗口）都在 runner 上通过 | 第 12 节 windows-2025 的真实项保留在 CI |
+| 6 DrawIconEx | 由新的 CI 测试在 runner 上按像素核对（P2） | 不变 |
+| 7 macOS 后台事件与 AX 命中 | 只做了只读测量（不在用户真机上投递任何输入）：系统级 `AXUIElementCopyElementAtPosition` 首次 25–33 ms、之后 0.2–0.5 ms，设 0.25 s 消息超时不影响结果。带修饰键 flags、clickState 3、中键的后台盖章事件是否被接受未测：按用户要求不在真机上投递输入；而且本实现方进程里 AX 对所有窗口的 `AXPosition` 返回 `kAXErrorAttributeUnsupported`、`_AXUIElementGetWindow` 返回 `kAXErrorIllegalArgument`（macOS 27.0 26A425），AX 侧的读数不可信 | hit 的消息超时定为 0.25 s；后台事件与 AX 窗口对应转入真机验收第 0 步（经授权运行 `YUKI_NATIVE_WINDOWS=1` 的原生窗口测试，只操作测试自己的窗口） |
+| 8 macOS SCK 与 AX 失效码 | `sourceRect` 对显示器过滤器与单窗口过滤器都有效：单位是点，原点在显示器或窗口左上；输出尺寸大于区域原生像素时不放大而是留白，所以输出必须不大于区域原生像素（与"只缩不放"一致）。AX 失效码同第 7 项原因未能实测 | **修订 6.3**：macOS 窗口的 zoom 也用 `sourceRect`，不再截原生分辨率后裁剪；`element_stale` 按文档的 `kAXErrorInvalidUIElement`（-25202）判定，真机验收第 0 步核对 |
+
+其他修订：
+
+- 6.4 的共用模块：按键、修饰键和坐标约定（`scale` 换算与越界说明）是两条路径共同的动作语法，放在一个只依赖标准库的模块 `yuki_agent_connector/actions.py`（而不是只装按键的 `keys.py`），与 `cdp.py` 一样挂入环境。
+
 ## 14. 文档、配置、测试与 CI
 
-- **代码（Yuki）**：`sandbox/environment_tools.py`（合同 38、说明、`READ_ACTIONS`）；`services/agent_tools.py`（截图上限、能力对照、`own_computer_only`）；`external_agents/local_device.py`（下发、`connector_outdated`）；`sandbox/yuki_computer.py`（scale、校验、回显、新动作、拖拽插值、zoom、XFixes 光标、route、hit、elements 调用）；新的环境内 AT-SPI 读取程序；`sandbox/environment_programs.py`（headed 档加包）；`ENVIRONMENT_FILES` 加 `keys.py`；`config.py`、`settings_domains.py`、`admin/config_specs_hot.py`（新配置）；`prompting/contracts.py`。
-- **代码（连接器 0.7.0）**：`keys.py`（新）；`screen.py`（换算、校验、features）；`desk.py`（新动作、回显、reason、element 注册表）；`screen_macos.py`、`screen_windows.py`（修饰键、三击、中键、repeat、zoom、光标、hit、elements、reason）；`connector.py`（`device_capabilities`）；`pyproject.toml` 版本号。
+- **代码（Yuki）**：`sandbox/environment_tools.py`（合同 38、说明、`READ_ACTIONS`）；`services/agent_tools.py`（截图上限、能力对照、`own_computer_only`）；`external_agents/local_device.py`（下发、`connector_outdated`）；`sandbox/yuki_computer.py`（scale、校验、回显、新动作、拖拽插值、zoom、XFixes 光标、route、hit、elements 调用、paste）；新的环境内 `sandbox/yuki_accessibility.py`（ctypes `libatspi`）；`sandbox/desktop_service.py`（会话 D-Bus）；`sandbox/environment_programs.py`（headed 档加 `at-spi2-core`、`xclip`）；`ENVIRONMENT_FILES` 加 `actions.py`、`yuki_accessibility.py`；`config.py`、`settings_domains.py`、`admin/config_specs_hot.py`（新配置）；`llm/vendor_policy.py`、`openai_compatible.py`、`openai_responses.py`、`gemini.py`（工具截图的方言选项）；`prompting/contracts.py`。
+- **代码（连接器 0.7.0）**：`actions.py`（新）；`screen.py`（换算、校验、features）；`desk.py`（新动作、回显、reason、element 注册表）；`screen_macos.py`、`screen_windows.py`（修饰键、三击、中键、repeat、zoom、光标、hit、elements、reason）；`connector.py`（`device_capabilities`）；`pyproject.toml` 版本号。
 - **配置**：`.env.example` 增 `COMPUTER_SCREENSHOT_MAX_DIMENSION=1568`、`COMPUTER_SCREENSHOT_MAX_PIXELS=1150000`；`config/` 中如有对应项同步。
 - **文档**：`tool-kernel.md`（computer 签名、合同版本 38）；`docs/operations/desktop-computer.zh-CN.md`（使用说明、AT-SPI、截图上限）；`docs/operations/local-agent-connector.zh-CN.md`（0.7.0、features、reason、升级）；`docs/operations/persistent-environment.zh-CN.md`（有头档软件包）；`docs/architecture/README.md` 索引本任务书；`CHANGELOG.md`。11-09 任务书作为基线保留，不改写。
 - **测试**：第 12 节。受影响的现有测试（`test_computer_runtime.py`、`test_computer_actions.py`、连接器 `desk`／`screen` 测试、manifest 快照）按新行为改写，不保留冻结旧行为的断言。
