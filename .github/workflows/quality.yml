@@ -110,6 +110,12 @@ jobs:
           name: device-computer-${{ matrix.os }}
           path: test-results/device-computer/
           retention-days: 7
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: connector-computer-${{ matrix.os }}
+          path: test-results/connector-computer/
+          retention-days: 7
 
   checks:
     runs-on: ubuntu-24.04
@@ -179,8 +185,8 @@ jobs:
           COPY --from=uv /uv /usr/local/bin/uv
           # A deployment's Manager mounts these from its code volume; this offline
           # harness has no Manager container, so the image carries them.
-          COPY src/yuki/sandbox/desktop_service.py src/yuki/sandbox/yuki_computer.py /opt/yuki-runtime/
-          COPY packages/yuki-agent-connector/src/yuki_agent_connector/cdp.py /opt/yuki-runtime/yuki_agent_connector/
+          COPY src/yuki/sandbox/desktop_service.py src/yuki/sandbox/yuki_computer.py src/yuki/sandbox/yuki_accessibility.py /opt/yuki-runtime/
+          COPY packages/yuki-agent-connector/src/yuki_agent_connector/cdp.py packages/yuki-agent-connector/src/yuki_agent_connector/actions.py /opt/yuki-runtime/yuki_agent_connector/
           COPY --chmod=755 deploy/sandbox/yuki-computer.sh /usr/local/bin/yuki-computer
           ENV UV_PROJECT_ENVIRONMENT=/opt/yuki-tests UV_PYTHON_INSTALL_DIR=/opt/yuki-python
           WORKDIR /opt/yuki-source
@@ -216,6 +222,7 @@ jobs:
             tests/integration/test_computer_browser_e2e.py \
             tests/integration/test_tool_media_long_loop_e2e.py \
             tests/integration/test_desktop_session_e2e.py \
+            tests/integration/test_computer_use_e2e.py \
             -q --strict-markers -o cache_dir=/tmp/yuki-pytest-cache \
             --basetemp=/tmp/yuki-pytest --junitxml=/results/desktop-headed.xml
       - uses: actions/upload-artifact@v4
@@ -226,6 +233,7 @@ jobs:
             test-results/desktop-headed.xml
             test-results/computer-browser/
             test-results/desktop-session/
+            test-results/computer-use/
           retention-days: 7
 
   sandbox-compose:

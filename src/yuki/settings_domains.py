@@ -322,3 +322,5 @@ class ToolingSettings(DomainSettings):
     tooling_result_item_limit: int | None = Field(default=None, gt=0)
     tooling_result_artifact_enabled: bool
     tooling_result_artifact_retention_seconds: int = Field(gt=0)
+    computer_screenshot_max_dimension: int = Field(gt=0)
+    computer_screenshot_max_pixels: int = Field(gt=0)

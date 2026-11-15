@@ -71,6 +71,7 @@ from yuki.runtime.errors import InvalidTurnContextError
 from yuki.runtime.origin import TurnOrigin
 from yuki.sandbox.environment_tools import (
     LIFECYCLE_ACTIONS,
+    OWN_COMPUTER_ACTIONS,
     READ_ACTIONS,
     SANDBOX_TOOLS,
     command_arguments,
@@ -1766,21 +1767,31 @@ class AgentToolService:
         from yuki.sandbox.client import MODEL_TOOL_RPC_METHODS
 
         lifecycle = name == "computer" and arguments["action"] in LIFECYCLE_ACTIONS
-        if "device" in arguments and lifecycle:
+        if "device" in arguments and name == "computer" and (
+            arguments["action"] in OWN_COMPUTER_ACTIONS
+        ):
+            message = "paste、wake、sleep、snapshot、restore 只作用于 Yuki 自己的电脑，省略 device"
             return self._result(
+                data={
+                    "error": "device_not_supported",
+                    "cause": "own_computer_only",
+                    "message": message,
+                },
                 error="device_not_supported",
-                detail="wake、sleep、snapshot、restore 只作用于 Yuki 自己的电脑，省略 device",
+                detail=message,
             )
+        # Computer screenshots have their own limit, apart from chat images (vision_*):
+        # the source produces this size and no Provider rescales it (task book §6.1).
+        computer = self._runtime().computer
+        limits = {
+            "max_dimension": computer.screenshot_max_dimension,
+            "max_pixels": computer.screenshot_max_pixels,
+        }
         if "device" in arguments:
             devices = self.sandbox_client.local_devices
             assert devices is not None
             result = await devices.screen_action(
-                name,
-                arguments,
-                request_id=request_id,
-                source=source,
-                max_dimension=self._settings.vision_max_dimension,
-                max_pixels=self._settings.vision_max_pixels,
+                name, arguments, request_id=request_id, source=source, **limits
             )
         else:
             result = dict(
@@ -1791,8 +1802,7 @@ class AgentToolService:
                         "owner": source.get("work_id"),
                         # The environment produces the final image size; the Host never
                         # rescales it.
-                        "max_dimension": self._settings.vision_max_dimension,
-                        "max_pixels": self._settings.vision_max_pixels,
+                        **limits,
                     },
                     request_id=request_id,
                     source=source,
@@ -1824,7 +1834,9 @@ class AgentToolService:
         # (no image capability, archive failure, a picture the computer could not
         # take or send): media_read is reported separately.
         unread = result.pop("media_error", None) or result.pop("capture_error", None)
-        pictured = (name == "computer" and not lifecycle) or arguments["action"] == "screenshot"
+        pictured = (
+            name == "computer" and not lifecycle and arguments["action"] != "elements"
+        ) or arguments["action"] == "screenshot"
         return self._result(
             data=PreparedMediaData(result, images),
             mutation_committed=arguments["action"] not in READ_ACTIONS[name] or None,

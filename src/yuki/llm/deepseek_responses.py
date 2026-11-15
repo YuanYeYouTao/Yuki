@@ -44,6 +44,8 @@ class DeepSeekResponsesProvider(JSONHTTPProvider):
 
     provider_name = "deepseek"
     supports_tool_choice = False
+    # ``input_image.detail`` for tool screenshots; only the OpenAI preset sends it.
+    tool_image_detail: str | None = None
 
     protocol = "responses"
     # Preserve the Responses ReadError contract; native calls never retry.
@@ -164,7 +166,15 @@ class DeepSeekResponsesProvider(JSONHTTPProvider):
                         "content": [
                             {"type": "input_text", "text": message.content or ""},
                             *(
-                                {"type": "input_image", "image_url": image.data_url}
+                                {
+                                    "type": "input_image",
+                                    "image_url": image.data_url,
+                                    **(
+                                        {"detail": self.tool_image_detail}
+                                        if image.source == "tool" and self.tool_image_detail
+                                        else {}
+                                    ),
+                                }
                                 for image in message.images
                             ),
                         ],

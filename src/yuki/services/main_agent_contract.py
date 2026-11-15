@@ -117,7 +117,9 @@ class MainAgentContract:
                         # 35: one-shot tool surface (27 tools, single target, plain results).
                         # 36: computer and browser tools (29 tools; schema frozen with device).
                         # 37: computer wake/sleep/snapshot/restore on Yuki's own computer.
-                        "version": 37,
+                        # 38: computer scale/zoom/elements/element, modifiers, triple/middle
+                        #     clicks, key repeat and paste on Yuki's own computer.
+                        "version": 38,
                         "mode": self.mode,
                         "code_api": CODE_API_REVISION,
                         "direct_names": sorted(DIRECT_TOOL_NAMES),

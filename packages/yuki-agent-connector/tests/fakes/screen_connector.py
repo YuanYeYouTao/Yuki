@@ -17,7 +17,8 @@ this backend. ``<state-dir>`` holds:
   all), ``pointer`` (global ``[x, y]`` or null), ``hit`` (the ``{role, name}`` every hit test
   answers, or null), ``key_delay`` (seconds each key takes), ``fail_input`` (posting raises
   ``OSError`` after the event is recorded), ``refuse``/``refuse_cause`` (background delivery
-  refused while posting) and ``no_screen`` (a Connector that cannot operate a screen). A
+  refused while posting), ``no_screen`` (a Connector that cannot operate a screen) and
+  ``features`` (the capabilities it publishes, read at start: an older Connector). A
   window's ``elements`` are its accessibility nodes in global points, read on every call; a
   node missing from the current script is destroyed.
 - ``captures.jsonl``: every capture with its size and region.
@@ -36,7 +37,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from yuki_agent_connector import chrome, cli, screen
+from yuki_agent_connector import chrome, cli, desk, screen
 
 
 def jpeg(width: int, height: int) -> bytes:
@@ -335,4 +336,7 @@ if __name__ == "__main__":
     )
     if facts.get("chrome") is False:
         chrome.find_chrome = lambda: None
+    if facts.get("features") is not None:
+        # An older Connector: the same screen, fewer published capabilities.
+        desk.FEATURES = frozenset(facts["features"])
     raise SystemExit(cli.main(sys.argv[2:]))

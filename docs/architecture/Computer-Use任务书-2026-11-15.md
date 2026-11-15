@@ -21,7 +21,7 @@
 4. **动作补齐**：click 类动作支持修饰键，新增 `triple_click`、`middle_click`；`key` 支持 `repeat`；两条路径统一按键语法；Linux 拖拽补插值移动。Yuki 自己的电脑上新增 `paste`（经她自己的剪贴板输入长文本，6.12）。
 5. **动作结果的事实**：`route`（走的是哪条投递途径）、`hit`（落点控件的 role 和 name）。只做回显，不设门槛。
 6. **坐标之外的定位**：读动作 `elements` 按窗口列出无障碍节点（AX／UIA／AT-SPI），点击、输入等动作可以传 `element`。
-7. **`device_not_supported` 增加事实原因 `reason`**；连接器经 `device_capabilities` 公布新能力，服务器按事实拒绝旧连接器不支持的参数，避免它们被静默忽略。
+7. **`device_not_supported` 增加事实原因 `cause`**（实现时由 `reason` 改名，见 13.1）；连接器经 `device_capabilities` 公布新能力，服务器按事实拒绝旧连接器不支持的参数，避免它们被静默忽略。
 8. **提示词与工具说明**：告诉模型怎样用回显和截图核对每一步、怎样避免谎报成功。只写成提示，不设门槛。
 9. **合同版本 37 → 38**。
 
@@ -211,9 +211,9 @@
 
 ### 6.9 `device_not_supported` 的事实原因
 
-错误码保持 `device_not_supported`（现有提示词和模型习惯不变），增加 `reason`：
+错误码保持 `device_not_supported`（现有提示词和模型习惯不变），增加 `cause`（字段名见 13.1：`reason` 已是连接器回执协议的派发事实，会被 journal 与 Bot 剥除）：
 
-| reason | 含义 | 来源 |
+| cause | 含义 | 来源 |
 | --- | --- | --- |
 | `own_computer_only` | wake／sleep／snapshot／restore 带了 device | Bot |
 | `connector_outdated` | 连接器缺少本次调用用到的能力（6.10） | Bot |
@@ -268,7 +268,7 @@ computer(action, x?, y?, x2?, y2?, dx?, dy?, text?, repeat?, scale?, region?, el
   zoom：{region, frame:{width,height}, width, height, coordinates} + 局部图
   elements：{window, elements:"<节点行>"}（无图）
   新错误：coordinate_out_of_range | element_stale | element_not_visible；
-          device_not_supported 增加 reason
+          device_not_supported 增加 cause
 ```
 
 - `READ_ACTIONS["computer"]` 变为 `screenshot`、`resume`、`zoom`、`elements`。
@@ -451,7 +451,7 @@ elements：
 | D8 | W bg 下 type 前没有聚焦的输入框 | `no_focused_field` |
 | D9 | Linux 连接器或 macOS 13 | `platform` |
 | D10 | 生命周期动作带 device | `own_computer_only` |
-| D11 | 所有 reason | 错误码仍是 `device_not_supported`，message 写明下一步 |
+| D11 | 所有 cause | 错误码仍是 `device_not_supported`，message 写明下一步 |
 
 回执与流程：
 
@@ -484,11 +484,11 @@ elements：
 - 依次覆盖：截图 1356×848（C2），粘贴（V1、V2、V4–V8），scale=1000 点击目标（C8），越界错误（C7、C9、X1），修饰键、三击、中键（A1、A3–A5），key repeat（A8），统一按键（A10、A11），拖拽插值（A12、A13），zoom（Z1–Z3），指针像素检查（P1、P6），elements／element（E1–E7、E12，取决于 P0；目标为一个 GTK 测试窗口），route／hit（R1、R6–R9），叫停期间的读动作（Z4、E13）。
 - 产物：`test-results/computer-use/steps.json`（每步请求、回执、回显）、每步截图（另存一份把 point 画上的标注图）、`pointer-lab-events.json`。
 
-**CI `sandbox-compose`**（真实 install.sh、Manager、环境，`desktop` 阶段）：经 Manager `computer_action` 核对截图尺寸使用 `COMPUTER_SCREENSHOT_*`（C2、C14、C15），并核对 AT-SPI 包已补装。产物 `test-results/sandbox-compose/computer-use.json`。
+**CI `sandbox-compose`**（真实 install.sh、Manager、环境，`desktop` 阶段）：经 Manager `computer_action` 以默认上限核对 1356×848 与 `zoom`（C2、Z1），核对 at-spi2-core、xclip 已装与 `AT_SPI_BUS` 已发布，记录 runc／runsc 下无障碍进程内存。C14、C15 由 Bot 层测试核对（13.1）。产物 `test-results/sandbox-compose/computer-use.json`。
 
 **CI `connector`**（ubuntu／windows／macos）：
 
-- 三平台：`actions.py` 解析、坐标换算与越界、`features` 公布、reason 映射，用真实连接器进程加脚本化服务端核对（A3、A11、C7–C9、D9、D11）。
+- 三平台：`actions.py` 解析、坐标换算与越界、`features` 公布、cause 映射，用真实连接器进程加脚本化服务端核对（A3、A11、C7–C9、D9、D11）。
 - windows-2025：如果 P0 确认托管 runner 有可交互桌面，就做真实 GDI 截图画指针、SendInput 修饰键、三击、中键（打在专用 Chrome 打开的 `pointer-lab.html` 上），以及 UIA elements（记事本）（P2、A1、A4、A5、E1–E3、D6–D8）。不可交互时这些项转为真机验收。
 - macos-15：托管 runner 不能授予 TCC，只跑事实与换算；屏幕相关项全部转为真机验收。
 - 产物：`test-results/connector-computer/<os>/`。
@@ -540,12 +540,15 @@ elements：
 
 其他修订：
 
+- 6.9 的字段名改为 `cause`：连接器回执协议已经用 `reason` 记派发事实（`original_dispatch_not_confirmed` 等），journal 在终态时剥除它、Bot 的 `local_device` 也把它当作回执元数据丢掉，同名会让事实原因在两处都消失（实现中由连接器 E2E 发现）。
+- 6.7 Linux 的总线：`desktop_service.py` 除会话 D-Bus 外还直接启动 `at-spi-bus-launcher --launch-immediately`。它在显示器根窗口发布 `AT_SPI_BUS`，她从终端（没有会话 D-Bus 地址）启动的 GTK 应用也会注册（实测：不带 `DBUS_SESSION_BUS_ADDRESS` 启动的 GTK 窗口与读取方都经该属性找到总线）。
+- C14、C15 归 Bot 层：截图上限是 Bot 下发给两条路径的值，热改与 `VISION_MAX_*` 互不影响由 Bot 层测试核对；`sandbox-compose` 的 `desktop` 阶段核对真实 Manager 下 1356×848、`zoom`、at-spi2-core 与 xclip 已装、`AT_SPI_BUS` 已发布，并记录 runc／runsc 两路下无障碍进程的内存（P0 第 3 项的 runsc 部分）。
 - 6.4 的共用模块：按键、修饰键和坐标约定（`scale` 换算与越界说明）是两条路径共同的动作语法，放在一个只依赖标准库的模块 `yuki_agent_connector/actions.py`（而不是只装按键的 `keys.py`），与 `cdp.py` 一样挂入环境。
 
 ## 14. 文档、配置、测试与 CI
 
 - **代码（Yuki）**：`sandbox/environment_tools.py`（合同 38、说明、`READ_ACTIONS`）；`services/agent_tools.py`（截图上限、能力对照、`own_computer_only`）；`external_agents/local_device.py`（下发、`connector_outdated`）；`sandbox/yuki_computer.py`（scale、校验、回显、新动作、拖拽插值、zoom、XFixes 光标、route、hit、elements 调用、paste）；新的环境内 `sandbox/yuki_accessibility.py`（ctypes `libatspi`）；`sandbox/desktop_service.py`（会话 D-Bus）；`sandbox/environment_programs.py`（headed 档加 `at-spi2-core`、`xclip`）；`ENVIRONMENT_FILES` 加 `actions.py`、`yuki_accessibility.py`；`config.py`、`settings_domains.py`、`admin/config_specs_hot.py`（新配置）；`llm/vendor_policy.py`、`openai_compatible.py`、`openai_responses.py`、`gemini.py`（工具截图的方言选项）；`prompting/contracts.py`。
-- **代码（连接器 0.7.0）**：`actions.py`（新）；`screen.py`（换算、校验、features）；`desk.py`（新动作、回显、reason、element 注册表）；`screen_macos.py`、`screen_windows.py`（修饰键、三击、中键、repeat、zoom、光标、hit、elements、reason）；`connector.py`（`device_capabilities`）；`pyproject.toml` 版本号。
+- **代码（连接器 0.7.0）**：`actions.py`（新）；`screen.py`（换算、校验、features）；`desk.py`（新动作、回显、cause、element 注册表）；`screen_macos.py`、`screen_windows.py`（修饰键、三击、中键、repeat、zoom、光标、hit、elements、reason）；`connector.py`（`device_capabilities`）；`pyproject.toml` 版本号。
 - **配置**：`.env.example` 增 `COMPUTER_SCREENSHOT_MAX_DIMENSION=1568`、`COMPUTER_SCREENSHOT_MAX_PIXELS=1150000`；`config/` 中如有对应项同步。
 - **文档**：`tool-kernel.md`（computer 签名、合同版本 38）；`docs/operations/desktop-computer.zh-CN.md`（使用说明、AT-SPI、截图上限）；`docs/operations/local-agent-connector.zh-CN.md`（0.7.0、features、reason、升级）；`docs/operations/persistent-environment.zh-CN.md`（有头档软件包）；`docs/architecture/README.md` 索引本任务书；`CHANGELOG.md`。11-09 任务书作为基线保留，不改写。
 - **测试**：第 12 节。受影响的现有测试（`test_computer_runtime.py`、`test_computer_actions.py`、连接器 `desk`／`screen` 测试、manifest 快照）按新行为改写，不保留冻结旧行为的断言。
@@ -558,7 +561,7 @@ elements：
 | --- | --- | --- |
 | P0 | 第 13 节实测 | 无 |
 | P1 | 截图上限（6.1）、scale 与回显（6.2）、统一按键、修饰键、三击、中键、repeat、拖拽插值（6.4），两条路径同时做 | P0 的 1、2 |
-| P2 | zoom（6.3）、指针（6.5）、route／hit（6.6）、reason（6.9） | P0 的 4–8 |
+| P2 | zoom（6.3）、指针（6.5）、route／hit（6.6）、cause（6.9） | P0 的 4–8 |
 | P3 | elements／element（6.7） | P0 的 3、7、8 |
 | P4 | features 与能力对照（6.10）、连接器 0.7.0 打包 | P1–P3 |
 | P5 | 工具说明与提示词（第 7、8 节）、文档、CI | P1–P4 |
@@ -593,7 +596,7 @@ elements：
 11. **本人叫停期间截图、zoom、elements 照常可用**（只停输入），与现在一致，不另议。
 12. **粘贴式长文本输入只在 Yuki 自己的电脑上开放**，不碰本人的剪贴板；本人电脑上继续不做（6.4、6.12）。
 
-本稿决定（理由见正文）：批量不做（6.8）；`hold_key`、mouse down/up 不做，粘贴只在自己的电脑上以单独的 `paste` 动作提供（6.12），`cursor_position` 改为截图回显（6.4）；element id 按窗口只认最近一次列表（6.7）；`device_not_supported` 的错误码不变，增加 `reason`（6.9）；不绑定截图：一张截图之后几何可能变化，按当下几何换算并校验范围、再回显落点，已经覆盖"坐标对应哪张图"的问题，不需要再引入每张截图的标识和过期规则。
+本稿决定（理由见正文）：批量不做（6.8）；`hold_key`、mouse down/up 不做，粘贴只在自己的电脑上以单独的 `paste` 动作提供（6.12），`cursor_position` 改为截图回显（6.4）；element id 按窗口只认最近一次列表（6.7）；`device_not_supported` 的错误码不变，增加 `cause`（6.9）；不绑定截图：一张截图之后几何可能变化，按当下几何换算并校验范围、再回显落点，已经覆盖"坐标对应哪张图"的问题，不需要再引入每张截图的标识和过期规则。
 
 待确认：无。
 

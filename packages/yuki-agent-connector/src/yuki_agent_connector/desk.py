@@ -23,7 +23,6 @@ flag lives in this process only: Desktop re-sends it after restarting the child.
 from __future__ import annotations
 
 import asyncio
-import json
 import secrets
 import shutil
 import threading
@@ -465,72 +464,25 @@ class Desk:
         """Register this window's nodes under a fresh tag and render them like a snapshot."""
         area = target.window
         width, height = frame(area, *limits)
-        kept: list[tuple[int, Node, tuple[int, int, int, int]]] = []
-        # Depth of the nearest kept ancestor at each platform depth.
-        stack: list[tuple[int, int]] = []
-        for node in target.elements():
-            while stack and stack[-1][0] >= node.depth:
-                stack.pop()
+        nodes = list(target.elements())
+        entries = []
+        for node in nodes:
             try:
                 bounds = node.bounds()
             except Stale:
-                continue
-            box = self._box(area, limits, bounds, width, height)
-            if box is None or not node.visible or (node.container and not node.name):
-                continue
-            level = stack[-1][1] + 1 if stack else 0
-            stack.append((node.depth, level))
-            kept.append((level, node, box))
-        tag = secrets.token_hex(2)
-        self.nodes[area.id] = (tag, [node for _, node, _ in kept])
-        wanted = str(text).casefold() if text else None
-        shown = set(range(len(kept)))
-        if wanted is not None:
-            shown = set()
-            for index, (level, node, _) in enumerate(kept):
-                if wanted in node.name.casefold() or wanted in node.role.casefold():
-                    shown.add(index)
-                    # Its path: the nearest earlier node of each smaller level.
-                    need = level
-                    for earlier in range(index - 1, -1, -1):
-                        if kept[earlier][0] < need:
-                            shown.add(earlier)
-                            need = kept[earlier][0]
-        lines = []
-        for index, (level, node, box) in enumerate(kept):
-            if index not in shown:
-                continue
-            if scale == actions.SCALE:
-                box = (
-                    round(box[0] * actions.SCALE / width),
-                    round(box[1] * actions.SCALE / height),
-                    round(box[2] * actions.SCALE / width),
-                    round(box[3] * actions.SCALE / height),
-                )
-            name = json.dumps(node.name, ensure_ascii=False)
-            lines.append(
-                f"{'  ' * level}- {node.role} {name} [{area.id}.{tag}e{index + 1}] "
-                f"({box[0]},{box[1]},{box[2]},{box[3]})"
+                bounds = None
+            box = actions.image_box(
+                bounds, lambda x, y: to_image(area, *limits, x, y), width, height
             )
-        return "\n".join(lines)
-
-    @staticmethod
-    def _box(
-        area: Area,
-        limits: tuple[int, int],
-        bounds: tuple[float, float, float, float] | None,
-        width: int,
-        height: int,
-    ) -> tuple[int, int, int, int] | None:
-        """Node bounds as image pixels ``(x0, y0, x1, y1)``; None when empty or outside."""
-        if bounds is None or bounds[2] <= 0 or bounds[3] <= 0:
-            return None
-        x0, y0 = to_image(area, *limits, bounds[0], bounds[1])
-        x1, y1 = to_image(area, *limits, bounds[0] + bounds[2], bounds[1] + bounds[3])
-        box = (round(x0), round(y0), round(x1), round(y1))
-        if box[2] <= 0 or box[3] <= 0 or box[0] >= width or box[1] >= height:
-            return None
-        return box
+            entries.append(
+                actions.Entry(node.depth, node.role, node.name, node.visible, node.container, box)
+            )
+        tag = secrets.token_hex(2)
+        lines, kept = actions.render_elements(
+            entries, area.id, tag, str(text) if text else None, scale, width, height
+        )
+        self.nodes[area.id] = (tag, [nodes[index] for index in kept])
+        return lines
 
     def _node(
         self, element: tuple[str, str, int], limits: tuple[int, int], scale: int | None

@@ -63,6 +63,10 @@ ENVIRONMENT_FILES = {
     "/opt/yuki-runtime/yuki_agent_connector/cdp.py": (
         "packages/yuki-agent-connector/src/yuki_agent_connector/cdp.py"
     ),
+    "/opt/yuki-runtime/yuki_agent_connector/actions.py": (
+        "packages/yuki-agent-connector/src/yuki_agent_connector/actions.py"
+    ),
+    "/opt/yuki-runtime/yuki_accessibility.py": "src/yuki/sandbox/yuki_accessibility.py",
     "/usr/local/bin/yuki-computer": "deploy/sandbox/yuki-computer.sh",
 }
 MIB = 1024 * 1024

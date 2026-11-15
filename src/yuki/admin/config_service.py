@@ -19,6 +19,7 @@ from yuki.admin.config_registry import ConfigRegistry
 from yuki.admin.models import (
     AdminOperationEvent,
     AgentRuntimeConfig,
+    ComputerRuntimeConfig,
     ConfigApplyMode,
     ConfigChangeResult,
     ConfigScopeType,
@@ -1639,6 +1640,12 @@ class RuntimeConfigService:
                 total_max_bytes=int(cast(int, value("storage.protocol_total_max_bytes"))),
                 object_max_bytes=int(cast(int, value("storage.protocol_object_max_bytes"))),
                 disk_reserve_bytes=int(cast(int, value("storage.protocol_disk_reserve_bytes"))),
+            ),
+            computer=ComputerRuntimeConfig(
+                screenshot_max_dimension=int(
+                    cast(int, value("computer.screenshot_max_dimension"))
+                ),
+                screenshot_max_pixels=int(cast(int, value("computer.screenshot_max_pixels"))),
             ),
             web=WebRuntimeConfig(
                 mode=self._settings.web.mode.value,

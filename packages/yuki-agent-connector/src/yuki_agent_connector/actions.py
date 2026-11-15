@@ -11,6 +11,7 @@ outside the declared system is refused before any input, never corrected or gues
 
 from __future__ import annotations
 
+import json
 import math
 import re
 from dataclasses import dataclass
@@ -253,3 +254,92 @@ def validate(action: str, args: dict[str, Any]) -> Parsed:
         region=region,
         element=element,
     )
+
+
+@dataclass(frozen=True)
+class Entry:
+    """One accessibility node as a platform read it, before the listing filters it."""
+
+    depth: int
+    role: str
+    name: str
+    visible: bool
+    container: bool
+    # Image pixels ``(x0, y0, x1, y1)`` of the window image; None when empty or outside.
+    box: tuple[int, int, int, int] | None
+
+
+def render_elements(
+    entries: list[Entry],
+    window: str,
+    tag: str,
+    text: str | None,
+    scale: int | None,
+    width: int,
+    height: int,
+) -> tuple[str, list[int]]:
+    """Snapshot-style lines and the entry index of each id (``<window>.<tag>e<n>``, n from 1).
+
+    Only visible nodes with a box are kept; a nameless container is dropped and its children
+    move up. ``text`` keeps matching nodes and their kept ancestors. Nothing is truncated.
+    """
+    kept: list[tuple[int, int]] = []  # (level, entry index)
+    stack: list[tuple[int, int]] = []  # (platform depth, level) of kept ancestors
+    for index, entry in enumerate(entries):
+        while stack and stack[-1][0] >= entry.depth:
+            stack.pop()
+        if entry.box is None or not entry.visible or (entry.container and not entry.name):
+            continue
+        level = stack[-1][1] + 1 if stack else 0
+        stack.append((entry.depth, level))
+        kept.append((level, index))
+    shown = set(range(len(kept)))
+    if text:
+        wanted = text.casefold()
+        shown = set()
+        for position, (level, index) in enumerate(kept):
+            entry = entries[index]
+            if wanted in entry.name.casefold() or wanted in entry.role.casefold():
+                shown.add(position)
+                need = level
+                for earlier in range(position - 1, -1, -1):
+                    if kept[earlier][0] < need:
+                        shown.add(earlier)
+                        need = kept[earlier][0]
+    lines = []
+    for position, (level, index) in enumerate(kept):
+        if position not in shown:
+            continue
+        entry = entries[index]
+        assert entry.box is not None
+        box = entry.box
+        if scale == SCALE:
+            box = (
+                round(box[0] * SCALE / width),
+                round(box[1] * SCALE / height),
+                round(box[2] * SCALE / width),
+                round(box[3] * SCALE / height),
+            )
+        name = json.dumps(entry.name, ensure_ascii=False)
+        lines.append(
+            f"{'  ' * level}- {entry.role} {name} [{window}.{tag}e{position + 1}] "
+            f"({box[0]},{box[1]},{box[2]},{box[3]})"
+        )
+    return "\n".join(lines), [index for _, index in kept]
+
+
+def image_box(
+    bounds: tuple[float, float, float, float] | None,
+    to_image: Any,
+    width: int,
+    height: int,
+) -> tuple[int, int, int, int] | None:
+    """Global ``(x, y, w, h)`` bounds as image pixels; None when empty or outside the image."""
+    if bounds is None or bounds[2] <= 0 or bounds[3] <= 0:
+        return None
+    x0, y0 = to_image(bounds[0], bounds[1])
+    x1, y1 = to_image(bounds[0] + bounds[2], bounds[1] + bounds[3])
+    box = (round(x0), round(y0), round(x1), round(y1))
+    if box[2] <= 0 or box[3] <= 0 or box[0] >= width or box[1] >= height:
+        return None
+    return box

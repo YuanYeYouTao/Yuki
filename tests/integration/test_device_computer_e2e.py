@@ -30,6 +30,7 @@ from tests.support.canonical_identity import ensure_person
 from tests.support.service_dependencies import tool_dependencies
 from yuki_agent_connector import connector as connector_module
 from yuki_agent_connector.config import Config
+from yuki_agent_connector.desk import FEATURES
 from yuki_agent_connector.drivers import DriverError
 from yuki_agent_connector.screen import Display, Window, frame, to_global
 
@@ -58,7 +59,8 @@ RETINA = {
     "primary": True,
     "scale": 2.0,
 }
-LIMITS = {"vision_max_dimension": 1568, "vision_max_pixels": 1_500_000}
+# The computer screenshot limit (COMPUTER_SCREENSHOT_*), apart from chat images.
+LIMITS = {"computer_screenshot_max_dimension": 1568, "computer_screenshot_max_pixels": 1_500_000}
 EDITOR = {
     "id": "4242",
     "app": "TextEdit",
@@ -217,6 +219,7 @@ async def test_device_computer_through_the_model_tool(bridge, database, tmp_path
             "input": True,
             "displays": [Display(**RETINA).fact()],
             "windows": True,
+            "features": sorted(FEATURES),
         }
 
         # G1/M6: the image comes back through the download loop at the source's size.

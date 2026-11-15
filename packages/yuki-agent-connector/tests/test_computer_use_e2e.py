@@ -46,18 +46,68 @@ EDITOR = {
 }
 # Accessibility nodes of the editor, in global points (the fake reads them on every call).
 NODES = [
-    {"key": "root", "depth": 0, "role": "window", "name": "notes.txt", "x": 300, "y": 120,
-     "width": 800, "height": 600},
-    {"key": "box", "depth": 1, "role": "group", "name": "", "container": True, "x": 300,
-     "y": 140, "width": 800, "height": 580},
-    {"key": "save", "depth": 2, "role": "button", "name": "保存", "x": 320, "y": 150,
-     "width": 80, "height": 30},
-    {"key": "field", "depth": 2, "role": "text field", "name": "标题", "x": 420, "y": 150,
-     "width": 300, "height": 30},
-    {"key": "hidden", "depth": 2, "role": "button", "name": "隐藏", "x": 320, "y": 150,
-     "width": 80, "height": 30, "visible": False},
-    {"key": "flat", "depth": 2, "role": "button", "name": "零尺寸", "x": 500, "y": 500,
-     "width": 0, "height": 0},
+    {
+        "key": "root",
+        "depth": 0,
+        "role": "window",
+        "name": "notes.txt",
+        "x": 300,
+        "y": 120,
+        "width": 800,
+        "height": 600,
+    },
+    {
+        "key": "box",
+        "depth": 1,
+        "role": "group",
+        "name": "",
+        "container": True,
+        "x": 300,
+        "y": 140,
+        "width": 800,
+        "height": 580,
+    },
+    {
+        "key": "save",
+        "depth": 2,
+        "role": "button",
+        "name": "保存",
+        "x": 320,
+        "y": 150,
+        "width": 80,
+        "height": 30,
+    },
+    {
+        "key": "field",
+        "depth": 2,
+        "role": "text field",
+        "name": "标题",
+        "x": 420,
+        "y": 150,
+        "width": 300,
+        "height": 30,
+    },
+    {
+        "key": "hidden",
+        "depth": 2,
+        "role": "button",
+        "name": "隐藏",
+        "x": 320,
+        "y": 150,
+        "width": 80,
+        "height": 30,
+        "visible": False,
+    },
+    {
+        "key": "flat",
+        "depth": 2,
+        "role": "button",
+        "name": "零尺寸",
+        "x": 500,
+        "y": 500,
+        "width": 0,
+        "height": 0,
+    },
 ]
 
 
@@ -79,9 +129,7 @@ class Session:
         self.calls: list[dict[str, Any]] = []
 
     async def __call__(self, action: str, identity: str, **arguments: Any) -> dict[str, Any]:
-        response = await self.cloud.command(
-            "computer", action, identity, {**LIMITS, **arguments}
-        )
+        response = await self.cloud.command("computer", action, identity, {**LIMITS, **arguments})
         result = response.get("result") or response
         self.calls.append({"id": identity, "action": action, "arguments": arguments, **response})
         image = result.get("image") if isinstance(result, dict) else None
@@ -145,8 +193,9 @@ async def test_coordinates_echo_actions_zoom_and_pointer(tmp_path: Path) -> None
         assert clicked["route"] == ["global_input"]
         assert clicked["hit"] == {"role": "button", "name": "OK"}
         last = events(state)[-1]
-        assert (last["x"], last["y"]) == pytest.approx(to_global(SCREEN, **LIMITS, x=width - 1,
-                                                                 y=height - 1))
+        assert (last["x"], last["y"]) == pytest.approx(
+            to_global(SCREEN, **LIMITS, x=width - 1, y=height - 1)
+        )
         assert last["modifiers"] == []
         # C9 and a scale that is not a declared system.
         assert (await call("click", "norm-2", x=1001, y=0, scale=1000))["error"] == (
@@ -185,8 +234,7 @@ async def test_coordinates_echo_actions_zoom_and_pointer(tmp_path: Path) -> None
         await call("middle_click", "middle-1", x=10, y=10)
         assert events(state)[-1]["button"] == "middle"
         # A13/C16: drag and scroll hold modifiers for the whole action; counts stay counts.
-        dragged = await call("drag", "drag-1", x=0, y=0, x2=500, y2=500, scale=1000,
-                             text="shift")
+        dragged = await call("drag", "drag-1", x=0, y=0, x2=500, y2=500, scale=1000, text="shift")
         assert dragged["point"] == [0, 0] and dragged["point2"] == [666, 432]
         assert events(state)[-1]["modifiers"] == ["shift"]
         await call("scroll", "scroll-1", x=500, y=500, scale=1000, dx=-2, dy=7, text="ctrl")
@@ -253,8 +301,10 @@ async def test_coordinates_echo_actions_zoom_and_pointer(tmp_path: Path) -> None
     finally:
         exit_code, stderr = await process.stop()
         await server.__aexit__(None, None, None)
-        write("coordinates-actions-zoom", {"calls": call.calls, "events": events(state),
-                                            "stdout": process.lines})
+        write(
+            "coordinates-actions-zoom",
+            {"calls": call.calls, "events": events(state), "stdout": process.lines},
+        )
     assert exit_code == 0, stderr
 
 
@@ -278,8 +328,13 @@ async def test_window_elements_and_reasons(tmp_path: Path) -> None:
         ]
         ids = {line.split('"')[1]: line.split("[")[1].split("]")[0] for line in lines}
         assert all(identity.startswith("4242.") for identity in ids.values())
-        corner = [round(value) for value in (*to_image(geometry, **LIMITS, x=320, y=150),
-                                             *to_image(geometry, **LIMITS, x=400, y=180))]
+        corner = [
+            round(value)
+            for value in (
+                *to_image(geometry, **LIMITS, x=320, y=150),
+                *to_image(geometry, **LIMITS, x=400, y=180),
+            )
+        ]
         assert lines[1].endswith("({},{},{},{})".format(*corner))
         # Children are indented under the nodes that were kept.
         assert lines[1].startswith("  - ")
@@ -337,8 +392,10 @@ async def test_window_elements_and_reasons(tmp_path: Path) -> None:
         assert fresh["error"] == "element_stale"
         assert len(events(state)) == count
         # The list attached to the refusal is the current one.
-        new = {line.split('"')[1]: line.split("[")[1].split("]")[0]
-               for line in fresh["elements"].splitlines()}
+        new = {
+            line.split('"')[1]: line.split("[")[1].split("]")[0]
+            for line in fresh["elements"].splitlines()
+        }
         assert (await call("click", "fresh-1", window="4242", element=new["标题"]))["route"]
 
         # E13: elements is a read: it works while the owner holds the stop.
@@ -350,13 +407,23 @@ async def test_window_elements_and_reasons(tmp_path: Path) -> None:
 
         # E9: many nodes: listed whole, never truncated.
         many = NODES[:1] + [
-            {"key": f"n{index}", "depth": 1, "role": "cell", "name": f"格{index}",
-             "x": 300 + index % 40 * 20, "y": 140 + index // 40 * 10, "width": 20, "height": 10}
+            {
+                "key": f"n{index}",
+                "depth": 1,
+                "role": "cell",
+                "name": f"格{index}",
+                "x": 300 + index % 40 * 20,
+                "y": 140 + index // 40 * 10,
+                "width": 20,
+                "height": 10,
+            }
             for index in range(2000)
         ]
         script(state, windows=[{**EDITOR, "elements": many}])
-        assert len((await call("elements", "list-many", window="4242"))["elements"]
-                   .splitlines()) == 2001
+        assert (
+            len((await call("elements", "list-many", window="4242"))["elements"].splitlines())
+            == 2001
+        )
 
         # E12: an app with no accessibility for this window.
         script(state, windows=[EDITOR])
@@ -393,8 +460,10 @@ async def test_window_elements_and_reasons(tmp_path: Path) -> None:
     finally:
         exit_code, stderr = await process.stop()
         await server.__aexit__(None, None, None)
-        write("window-elements", {"calls": call.calls, "events": events(state),
-                                  "stdout": process.lines})
+        write(
+            "window-elements",
+            {"calls": call.calls, "events": events(state), "stdout": process.lines},
+        )
     assert exit_code == 0, stderr
 
 

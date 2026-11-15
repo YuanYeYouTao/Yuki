@@ -99,7 +99,7 @@ class LocalDeviceService:
         returns the original receipt and an interrupted one is ``unknown``; reads are
         simply read again. The screenshot comes back through the file download loop.
         """
-        from yuki.sandbox.environment_tools import READ_ACTIONS
+        from yuki.sandbox.environment_tools import READ_ACTIONS, computer_features
 
         actor = self.actor(source)
         device_id = str(args["device"])
@@ -109,6 +109,20 @@ class LocalDeviceService:
             connection = await self.connection(device_id, actor)
         except DeviceOffline:
             return {"error": "device_offline", "message": "这台电脑不在线，动作没有执行。"}
+        screen = connection.device_capabilities.get("computer")
+        if tool == "computer" and isinstance(screen, dict):
+            # An older Connector would silently ignore what it does not know (scale,
+            # modifiers, element): the call is refused here and never sent (§6.10).
+            missing = computer_features(args) - set(screen.get("features") or ())
+            if missing:
+                return {
+                    "error": "device_not_supported",
+                    "cause": "connector_outdated",
+                    "message": "这台电脑的连接器版本过旧，不支持本次用到的 "
+                    + "、".join(sorted(missing))
+                    + "，动作没有执行；请本人在 Yuki 桌面端「設定 › 這台電腦」点"
+                    "「更新并保留资料」，或改用旧版支持的动作和参数。",
+                }
         command = {
             "type": "command",
             "resource": tool,
@@ -137,6 +151,7 @@ class LocalDeviceService:
             if refused.get("code") == "invalid_resource":
                 return {
                     "error": "device_not_supported",
+                    "cause": "connector_outdated",
                     "message": "这台电脑的连接器版本过旧，不能操作屏幕或浏览器；"
                     "请本人更新 Yuki 桌面端。",
                 }
