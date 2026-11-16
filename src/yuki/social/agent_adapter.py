@@ -239,7 +239,10 @@ SOCIAL_ERROR_MESSAGES = {
     "contact_not_allowed": "该人物没有可联系的已知会话，未执行",
     "space_not_allowed": "该群不可用，未执行",
     "reply_event_unavailable": "reply_to 必须是目标会话中的消息事件 ID",
-    "route_paused": "该目标的发送路由已暂停，未执行",
+    "route_paused": (
+        "默认主动发送路由未配置或已暂停，本次未发送；"
+        "不代表所有入口不可用，明确其他入口可用 find_contacts 查询后指定"
+    ),
     "binding_ambiguous": "目标有多个有效入口；先 find_contacts 再用 binding_id 指定",
     "binding_unavailable": "指定入口无效或不属于目标，未执行",
     "artifact_not_immutable": "file.artifact_id 不是已冻结的文件快照",
