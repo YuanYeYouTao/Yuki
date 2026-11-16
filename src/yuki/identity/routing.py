@@ -1221,10 +1221,7 @@ class PresenceRouter:
             if len(unique) > 1:
                 if route.paused:
                     return "paused"
-                route.paused = True
-                route.route_generation += 1
-                route.revision += 1
-                route.updated_at = now
+                # Ambiguity does not revoke the pin or persist an operator pause.
                 return "ambiguous"
             winner = unique[0]
             if (
@@ -1327,10 +1324,7 @@ class PresenceRouter:
             if len(unique) > 1:
                 if route.paused:
                     return "paused"
-                route.paused = True
-                route.route_generation += 1
-                route.revision += 1
-                route.updated_at = now
+                # Keep the original destination available when it reconnects.
                 return "ambiguous"
             winner = unique[0]
             if (

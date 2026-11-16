@@ -94,7 +94,11 @@ def social_tool_definitions() -> tuple[ChatTool, ...]:
                     "space_id",
                     "conversation_id",
                     "binding_id",
-                    description="省略为当前会话；发给其他人或群时给一个内部 ID",
+                    description=(
+                        "省略为当前会话；person_id/space_id 回复当前对象时沿当前会话，"
+                        "否则走默认主动路由；App/ACP 的 person_id 需另选入口。"
+                        "指定平台先 find_contacts，再给 conversation_id 或 binding_id"
+                    ),
                 ),
             },
             namespace="social.send",

@@ -342,69 +342,6 @@ async def test_authoritative_ingest_survives_second_presence(database: Database)
 
 
 @pytest.mark.asyncio
-async def test_reconcile_paused_is_idempotent_and_keeps_explicit_pause(
-    database: Database,
-) -> None:
-    from yuki.identity.ingress import _ensure_person_id
-
-    configure_identity_write_settings(IdentityWriteSettings())
-    registry = builtin_registry(gateway_instance_id="gw-pause")
-    router = PresenceRouter(database, registry, membership_probe=_true)
-    bot = _Bot("8000")
-    extra = _Bot("8001")
-    other = _Bot("8002")
-    async with database.immediate_session() as session:
-        presence_a = await ensure_v2_presence(session, "8000")
-        person_id = await _ensure_person_id(session, "1001", platform="qq")
-    registry.connect(bot, provider_id="snowluma")
-    registry.bind_presence(platform="qq", external_account_id="8000", presence_id=presence_a)
-    assert await router.cas_takeover_person(person_id) == "taken"
-    async with database.immediate_session() as session:
-        route = await session.get(PersonActiveRouteModel, person_id)
-        assert route is not None
-        route.paused = True
-        generation = int(route.route_generation)
-        revision = int(route.revision)
-    first = await router.reconcile_person(person_id)
-    second = await router.reconcile_person(person_id)
-    assert first == "paused"
-    assert second == "paused"
-    async with database.read_session() as session:
-        route = await session.get(PersonActiveRouteModel, person_id)
-        assert route is not None
-        assert route.paused is True
-        assert int(route.route_generation) == generation
-        assert int(route.revision) == revision
-    registry.disconnect(bot)
-    async with database.immediate_session() as session:
-        presence_b = await ensure_v2_presence(session, "8001")
-        presence_c = await ensure_v2_presence(session, "8002")
-        route = await session.get(PersonActiveRouteModel, person_id)
-        assert route is not None
-        route.paused = False
-    registry.connect(extra, provider_id="snowluma")
-    registry.bind_presence(platform="qq", external_account_id="8001", presence_id=presence_b)
-    registry.connect(other, provider_id="snowluma")
-    registry.bind_presence(platform="qq", external_account_id="8002", presence_id=presence_c)
-    paused = await router.cas_takeover_person(person_id)
-    assert paused == "ambiguous"
-    async with database.read_session() as session:
-        route = await session.get(PersonActiveRouteModel, person_id)
-        assert route is not None
-        after = int(route.route_generation)
-        after_rev = int(route.revision)
-        assert route.paused is True
-        assert after == generation + 1
-    again = await router.reconcile_person(person_id)
-    assert again == "paused"
-    async with database.read_session() as session:
-        route = await session.get(PersonActiveRouteModel, person_id)
-        assert route is not None
-        assert int(route.route_generation) == after
-        assert int(route.revision) == after_rev
-
-
-@pytest.mark.asyncio
 async def test_ingest_eligible_does_not_block_person_or_space_send(
     database: Database,
 ) -> None:

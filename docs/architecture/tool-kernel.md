@@ -350,6 +350,9 @@ generation、FrozenFragments 或 Main session；平台离线、旧路由与上�
 分页、搜索及原回执的细节见[聊天记录读取](chat-history.md)。
 
 send 的 `target` 只给一个内部 ID：person_id、space_id，或用 conversation_id／binding_id 明确入口。
+从群里发往 person_id 使用人物默认主动路由；在该人物的普通私聊里给同一 person_id，
+则沿当前私聊入口回复。默认路由暂停不代表该人物所有入口不可用；指定平台先用
+find_contacts 查找实际 Conversation／Binding，再明确选择，不由发送失败自动换平台补发。
 从 App/ACP 只给 person_id 时返回原 binding_required 与可选绑定；
 省略目标时仍回复当前个人 Conversation。显式选择不修改主动路由，沿原 Provider 能力与发送权限，
 在派发事务复核绑定、Presence 和连接。结果 uncertain 不重发；出站记到真实目标入口，
