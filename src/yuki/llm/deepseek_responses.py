@@ -203,14 +203,14 @@ class DeepSeekResponsesProvider(JSONHTTPProvider):
                 inputs.append({"role": message.role, "content": message.content})
             else:
                 continue
-            if self.prompt_cache_breakpoints and message.cache_breakpoint:
+            if (
+                self.prompt_cache_breakpoints
+                and message.cache_breakpoint
+                and message.role != "assistant"
+            ):
                 blocks = inputs[-1]["content"]
                 if isinstance(blocks, str):
-                    blocks = [
-                        {"type": "output_text", "text": blocks, "annotations": []}
-                        if message.role == "assistant"
-                        else {"type": "input_text", "text": blocks}
-                    ]
+                    blocks = [{"type": "input_text", "text": blocks}]
                     inputs[-1]["content"] = blocks
                 blocks[-1]["prompt_cache_breakpoint"] = {"mode": "explicit"}
         return "\n\n".join(leading), inputs

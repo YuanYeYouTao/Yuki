@@ -344,7 +344,9 @@ HTTP 用量的 unknown_usage 还计入已有 unknown_usage_request_count>0 的�
 `prompt_cache_breakpoints`（例如 OpenAI GPT-6.1 Terra）。未声明时保留原序列化，
 不按模型名称猜测支持情况，也不向 DeepSeek、Gemini 或 Claude 注入 OpenAI 参数。
 OpenAI／兼容 Responses 适配器将初始静态说明放入可标记的 developer 内容块，
-并标记 Main 已有公共历史的最后一条消息；本轮资料、当前触发和 Host 初始化仍在其后。
+并标记 Main 已有公共历史的最后一条 user 消息；后续 assistant 原文、本轮资料、
+当前触发和 Host 初始化仍在其后。Responses 的 output_text 不支持缓存断点，
+不向 assistant 内容块注入该字段；只有 assistant 的公共历史仍使用静态 developer 断点。
 继续使用默认 implicit 缓存，工具回合沿原协议尾部追加；显式点不改变消息正文、
 固定工具或执行顺序。缓存提示随原私有消息持久化，公共 FrozenFragments 只保留原事件内容；
 重新装配和 compact 沿实际公共边界产生新提示，不常驻旧运行资料、不新增缓存账本。
