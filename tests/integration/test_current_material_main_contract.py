@@ -26,7 +26,6 @@ from yuki.conversation.scope import ConversationTurnSnapshot
 from yuki.domain.conversations import ConversationScope, ScopeType
 from yuki.domain.messages import InboundMessage, SenderIdentity
 from yuki.domain.tool_actor import ToolActor
-from yuki.llm.deepseek_responses import DeepSeekResponsesProvider
 from yuki.llm.fake import FakeLLMProvider
 from yuki.llm.gemini import GeminiProvider
 from yuki.model_runtime.db_models import ModelInvocationModel
@@ -37,7 +36,7 @@ from yuki.model_runtime.models import (
     ModelRoute,
     ModelTask,
 )
-from yuki.model_runtime.pool import ModelClientPool
+from yuki.model_runtime.pool import ModelClientPool, create_model_provider
 from yuki.model_runtime.profiles import ModelProfileCatalog
 from yuki.persistence.models import ChatEventModel
 from yuki.plugin_host.facades import HostPluginContext, PluginFacadeServices
@@ -127,7 +126,7 @@ def _fixed(body):
     return {key: value for key, value in body.items() if key != "contents"}
 
 
-@pytest.mark.parametrize("protocol", ["gemini", "deepseek"])
+@pytest.mark.parametrize("protocol", ["gemini", "deepseek", "openai"])
 async def test_actual_main_http_separates_host_material_before_final_user_body(
     database, tmp_path, protocol
 ):
@@ -165,34 +164,43 @@ async def test_actual_main_http_separates_host_material_before_final_user_body(
                         "content": [{"type": "output_text", "text": "NO_REPLY"}],
                     }
                 ],
-                "usage": {"input_tokens": 30, "output_tokens": 1, "total_tokens": 31},
+                "usage": {
+                    "input_tokens": 30,
+                    "output_tokens": 1,
+                    "total_tokens": 31,
+                    **(
+                        {"input_tokens_details": {"cached_tokens": 11, "cache_write_tokens": 7}}
+                        if protocol == "openai" and len(wire) == 2
+                        else {}
+                    ),
+                },
             },
         )
 
     async with httpx.AsyncClient(
         base_url="https://wire.invalid/", transport=httpx.MockTransport(transport)
     ) as client:
-        provider_type = GeminiProvider if protocol == "gemini" else DeepSeekResponsesProvider
-        provider = provider_type(
-            base_url="https://wire.invalid/",
-            api_key="synthetic",
-            timeout_seconds=2,
-            max_retries=0,
-            client=client,
-        )
+        profile = _profile()
+        if protocol != "gemini":
+            profile = profile.model_copy(
+                update={
+                    "provider": protocol,
+                    "protocol": ModelProtocol.RESPONSES,
+                    "model": f"{protocol}-main",
+                    "capabilities": profile.capabilities
+                    | (
+                        {ModelCapability.PROMPT_CACHE_BREAKPOINTS}
+                        if protocol == "openai"
+                        else set()
+                    ),
+                }
+            )
+        provider = create_model_provider(profile, "synthetic", client=client)
         app, _env, message, sender = await _deployment(database, tmp_path, provider)
         try:
-            if protocol == "deepseek":
-                profile = _profile().model_copy(
-                    update={
-                        "provider": "deepseek",
-                        "protocol": ModelProtocol.RESPONSES,
-                        "model": "deepseek-main",
-                    }
-                )
-                app.models.apply_catalog(
-                    _catalog(profile), ModelClientPool(injected_profiles={"main": provider})
-                )
+            app.models.apply_catalog(
+                _catalog(profile), ModelClientPool(injected_profiles={"main": provider})
+            )
             before = datetime.now(UTC)
             assert (await app.processor.handle(message, sender)).reason == "chat"
             app.main_agent_contract.state.update({"slot": 1, "text": "CURRENT_MATERIAL_VALUE"})
@@ -210,8 +218,38 @@ async def test_actual_main_http_separates_host_material_before_final_user_body(
                 texts = [part["text"] for part in wire[-1]["contents"][-1]["parts"]]
             else:
                 assert wire[-1]["input"][-1]["role"] == "user"
-                texts = [item["content"] for item in wire[-1]["input"]]
-            joined = "".join(texts)
+                texts = [
+                    item["content"]
+                    if isinstance(item["content"], str)
+                    else "".join(block["text"] for block in item["content"])
+                    for item in wire[-1]["input"]
+                ]
+            if protocol == "openai":
+                assert "instructions" not in wire[-1]
+                assert wire[0]["input"][0] == wire[1]["input"][0]
+                assert wire[-1]["input"][0]["role"] == "developer"
+                points = [
+                    index
+                    for index, item in enumerate(wire[-1]["input"])
+                    if isinstance(item["content"], list)
+                    and item["content"][-1].get("prompt_cache_breakpoint") == {"mode": "explicit"}
+                ]
+                assert points == [0, len(wire[-1]["input"]) - 3]
+                assert "CURRENT_CHAT_INSTRUCTION" in texts[points[-1]]
+                await app.model_invocations.writer.drain()
+                async with database.read_session() as reader:
+                    rows = list(
+                        await reader.scalars(
+                            select(ModelInvocationModel).order_by(ModelInvocationModel.id)
+                        )
+                    )
+                    assert [row.cache_creation_input_tokens for row in rows] == [None, 7]
+                    assert rows[-1].cached_prompt_tokens == 11
+                    assert rows[-1].cache_creation_5m_input_tokens is None
+                    assert rows[-1].cache_creation_1h_input_tokens is None
+            else:
+                assert "prompt_cache_breakpoint" not in json.dumps(wire)
+            joined = "".join(texts[1:] if protocol == "openai" else texts)
             host = texts[-2]
             assert host.startswith("\n\n<runtime_context>\n")
             assert host.endswith("\n</runtime_context>\n\n")
@@ -237,6 +275,7 @@ async def test_actual_main_http_separates_host_material_before_final_user_body(
                         "protocol": protocol,
                         "runtime_context": state,
                         "request_window_utc": [before.isoformat(), after.isoformat()],
+                        "requests": wire,
                     },
                     ensure_ascii=False,
                     indent=2,
@@ -255,6 +294,7 @@ async def test_actual_main_http_separates_host_material_before_final_user_body(
                 )
                 assert "<runtime_context>" not in saved.payload_json
                 assert "CURRENT_MATERIAL_VALUE" not in saved.payload_json
+                assert "cache_breakpoint" not in saved.payload_json
         finally:
             assert not await app.lifecycle._close_entries(app.lifecycle._entries)
 

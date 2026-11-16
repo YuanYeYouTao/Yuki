@@ -340,6 +340,21 @@ HTTP 用量的 unknown_usage 还计入已有 unknown_usage_request_count>0 的�
 用量记录保留上游实际返回的 cache creation 与 cached input 字段；未返回的字段在原记录中
 保持为空，不从 TTL 子项推断缺项。`model stats` 使用原领域聚合，原记录用于核对未知覆盖。
 
+支持显式缓存断点的 Responses 连接在 Profile 的 `capabilities` 中声明
+`prompt_cache_breakpoints`（例如 OpenAI GPT-6.1 Terra）。未声明时保留原序列化，
+不按模型名称猜测支持情况，也不向 DeepSeek、Gemini 或 Claude 注入 OpenAI 参数。
+OpenAI／兼容 Responses 适配器将初始静态说明放入可标记的 developer 内容块，
+并标记 Main 已有公共历史的最后一条消息；本轮资料、当前触发和 Host 初始化仍在其后。
+继续使用默认 implicit 缓存，工具回合沿原协议尾部追加；显式点不改变消息正文、
+固定工具或执行顺序。缓存提示随原私有消息持久化，公共 FrozenFragments 只保留原事件内容；
+重新装配和 compact 沿实际公共边界产生新提示，不常驻旧运行资料、不新增缓存账本。
+
+Responses 的 `input_tokens_details.cache_write_tokens` 直接记入
+`cache_creation_input_tokens`，成功与失败回执共用该来源。30 分钟／12 小时子项不映射成
+Claude 的 5 分钟／1 小时字段。短固定前缀可能达不到上游缓存起点，单次结构化任务的
+不同 user 批次也未必复用；不为命中率填充文本或改变业务历史。命中率和写入量须分别读取
+真实 usage，受控实验不能代替生产流量或账单。
+
 ## 验证边界与协议来源
 
 定向测试覆盖参数、图片/schema、截断、私有签名、工具结果顺序、SQLite 重启后的 HTTP 字节一致性，

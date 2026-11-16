@@ -44,6 +44,7 @@ class ModelCapability(StrEnum):
     LONG_CONTEXT = "long_context"
     NATIVE_WEB_SEARCH = "native_web_search"
     IMAGE_INPUT = "image_input"
+    PROMPT_CACHE_BREAKPOINTS = "prompt_cache_breakpoints"
 
 
 class ModelProtocol(StrEnum):

@@ -45,6 +45,7 @@ class DeepSeekResponsesProvider(JSONHTTPProvider):
 
     provider_name = "deepseek"
     supports_tool_choice = False
+    prompt_cache_breakpoints = False
 
     protocol = "responses"
     # Preserve the Responses ReadError contract; native calls never retry.
@@ -149,6 +150,20 @@ class DeepSeekResponsesProvider(JSONHTTPProvider):
                 leading.append(content)
             index += 1
         inputs: list[dict[str, Any]] = []
+        if leading and self.prompt_cache_breakpoints:
+            inputs.append(
+                {
+                    "role": "developer",
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": "\n\n".join(leading),
+                            "prompt_cache_breakpoint": {"mode": "explicit"},
+                        }
+                    ],
+                }
+            )
+            leading = []
         for message in messages[index:]:
             if message.response_item is not None:
                 if message.images or message.tool_calls or message.tool_call_id:
@@ -175,8 +190,7 @@ class DeepSeekResponsesProvider(JSONHTTPProvider):
                                     "image_url": image.data_url,
                                     **(
                                         {"detail": self.options.tool_image_detail}
-                                        if image.source == "tool"
-                                        and self.options.tool_image_detail
+                                        if image.source == "tool" and self.options.tool_image_detail
                                         else {}
                                     ),
                                 }
@@ -187,6 +201,14 @@ class DeepSeekResponsesProvider(JSONHTTPProvider):
                 )
             elif message.content is not None:
                 inputs.append({"role": message.role, "content": message.content})
+            else:
+                continue
+            if self.prompt_cache_breakpoints and message.cache_breakpoint:
+                blocks = inputs[-1]["content"]
+                if isinstance(blocks, str):
+                    blocks = [{"type": "input_text", "text": blocks}]
+                    inputs[-1]["content"] = blocks
+                blocks[-1]["prompt_cache_breakpoint"] = {"mode": "explicit"}
         return "\n\n".join(leading), inputs
 
     def _request_continuation(self, request: ChatRequest) -> ProviderContinuation | None:
@@ -258,6 +280,10 @@ class DeepSeekResponsesProvider(JSONHTTPProvider):
                 ("reasoning_tokens", nonnegative(output_details.get("reasoning_tokens"))),
                 ("total_tokens", total_tokens),
                 ("cached_prompt_tokens", nonnegative(input_details.get("cached_tokens"))),
+                (
+                    "cache_creation_input_tokens",
+                    nonnegative(input_details.get("cache_write_tokens")),
+                ),
             )
             if value is not None
         }
@@ -367,6 +393,7 @@ class DeepSeekResponsesProvider(JSONHTTPProvider):
             completion_tokens=completion_tokens,
             total_tokens=total_tokens,
             cached_prompt_tokens=self._integer(input_details.get("cached_tokens")),
+            cache_creation_input_tokens=self._integer(input_details.get("cache_write_tokens")),
             status=response_status,
             native_tool_events=tuple(native_events),
             citations=tuple(citations),
