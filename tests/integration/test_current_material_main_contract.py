@@ -138,6 +138,7 @@ async def test_actual_main_http_separates_host_material_before_final_user_body(
             for item in wire[-1]["input"]:
                 if item.get("role") == "assistant" and isinstance(item.get("content"), list):
                     assert all(block["type"] == "output_text" for block in item["content"])
+                    assert all("prompt_cache_breakpoint" not in block for block in item["content"])
             if len(wire) == 1:
                 return httpx.Response(
                     200,
@@ -255,9 +256,11 @@ async def test_actual_main_http_separates_host_material_before_final_user_body(
                     if isinstance(item["content"], list)
                     and item["content"][-1].get("prompt_cache_breakpoint") == {"mode": "explicit"}
                 ]
-                assert points == [0, len(wire[-1]["input"]) - 3]
-                assert "HISTORY_ASSISTANT_REPLY" in texts[points[-1]]
-                assert wire[-1]["input"][points[-1]]["role"] == "assistant"
+                assert points == [0, len(wire[-1]["input"]) - 4]
+                assert "CURRENT_CHAT_INSTRUCTION" in texts[points[-1]]
+                assert wire[-1]["input"][points[-1]]["role"] == "user"
+                assert "HISTORY_ASSISTANT_REPLY" in texts[points[-1] + 1]
+                assert wire[-1]["input"][points[-1] + 1]["role"] == "assistant"
                 assert sum(action == "send_group_msg" for action, _ in _env.bot.calls) == 1
                 await app.model_invocations.writer.drain()
                 async with database.read_session() as reader:
