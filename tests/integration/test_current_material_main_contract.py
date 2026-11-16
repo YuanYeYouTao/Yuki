@@ -134,6 +134,27 @@ async def test_actual_main_http_separates_host_material_before_final_user_body(
 
     def transport(request):
         wire.append(json.loads(request.content))
+        if protocol == "openai":
+            for item in wire[-1]["input"]:
+                if item.get("role") == "assistant" and isinstance(item.get("content"), list):
+                    assert all(block["type"] == "output_text" for block in item["content"])
+            if len(wire) == 1:
+                return httpx.Response(
+                    200,
+                    json={
+                        "id": "cache-send-response",
+                        "status": "completed",
+                        "output": [
+                            {
+                                "type": "function_call",
+                                "call_id": "cache-send",
+                                "name": "send",
+                                "arguments": json.dumps({"text": "HISTORY_ASSISTANT_REPLY"}),
+                            }
+                        ],
+                        "usage": {"input_tokens": 30, "output_tokens": 1, "total_tokens": 31},
+                    },
+                )
         if protocol == "gemini":
             return httpx.Response(
                 200,
@@ -170,7 +191,7 @@ async def test_actual_main_http_separates_host_material_before_final_user_body(
                     "total_tokens": 31,
                     **(
                         {"input_tokens_details": {"cached_tokens": 11, "cache_write_tokens": 7}}
-                        if protocol == "openai" and len(wire) == 2
+                        if protocol == "openai" and len(wire) == 3
                         else {}
                     ),
                 },
@@ -212,7 +233,7 @@ async def test_actual_main_http_separates_host_material_before_final_user_body(
             )
             assert (await app.processor.handle(current, sender)).reason == "chat"
             after = datetime.now(UTC)
-            assert len(wire) == 2
+            assert len(wire) == (3 if protocol == "openai" else 2)
             if protocol == "gemini":
                 assert wire[-1]["contents"][-1]["role"] == "user"
                 texts = [part["text"] for part in wire[-1]["contents"][-1]["parts"]]
@@ -226,7 +247,7 @@ async def test_actual_main_http_separates_host_material_before_final_user_body(
                 ]
             if protocol == "openai":
                 assert "instructions" not in wire[-1]
-                assert wire[0]["input"][0] == wire[1]["input"][0]
+                assert wire[0]["input"][0] == wire[-1]["input"][0]
                 assert wire[-1]["input"][0]["role"] == "developer"
                 points = [
                     index
@@ -235,7 +256,9 @@ async def test_actual_main_http_separates_host_material_before_final_user_body(
                     and item["content"][-1].get("prompt_cache_breakpoint") == {"mode": "explicit"}
                 ]
                 assert points == [0, len(wire[-1]["input"]) - 3]
-                assert "CURRENT_CHAT_INSTRUCTION" in texts[points[-1]]
+                assert "HISTORY_ASSISTANT_REPLY" in texts[points[-1]]
+                assert wire[-1]["input"][points[-1]]["role"] == "assistant"
+                assert sum(action == "send_group_msg" for action, _ in _env.bot.calls) == 1
                 await app.model_invocations.writer.drain()
                 async with database.read_session() as reader:
                     rows = list(
@@ -243,7 +266,7 @@ async def test_actual_main_http_separates_host_material_before_final_user_body(
                             select(ModelInvocationModel).order_by(ModelInvocationModel.id)
                         )
                     )
-                    assert [row.cache_creation_input_tokens for row in rows] == [None, 7]
+                    assert [row.cache_creation_input_tokens for row in rows] == [None, None, 7]
                     assert rows[-1].cached_prompt_tokens == 11
                     assert rows[-1].cache_creation_5m_input_tokens is None
                     assert rows[-1].cache_creation_1h_input_tokens is None
