@@ -135,6 +135,13 @@ async def test_actual_main_http_separates_host_material_before_final_user_body(
     def transport(request):
         wire.append(json.loads(request.content))
         if protocol == "openai":
+            functions = {
+                tool["name"]: tool for tool in wire[-1]["tools"] if tool["type"] == "function"
+            }
+            # Responses otherwise makes optional fields required upstream, forcing
+            # an empty device into calls intended for Yuki's own environment.
+            assert all(tool.get("strict") is False for tool in functions.values())
+            assert "device" not in functions["get_environment"]["parameters"]["required"]
             for item in wire[-1]["input"]:
                 if item.get("role") == "assistant" and isinstance(item.get("content"), list):
                     assert all(block["type"] == "output_text" for block in item["content"])

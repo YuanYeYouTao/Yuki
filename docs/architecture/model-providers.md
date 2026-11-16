@@ -236,6 +236,12 @@ TOML 中的显式 protocol 选择协议。额外命名的 endpoint/model/key 环
 存在于进程环境；Docker Compose 的 env_file 会加载 `.env`。本地 CLI 的标准
 LLM/LLM_FLASH 设置可作为 TOML 引用值，其他变量须先导出，不扫描额外密钥文件。
 
+OpenAI／兼容 Responses 的函数工具显式发送 `strict: false`，保留固定工具合同的
+可选参数与原 `required`。省略此字段会让上游尝试严格化 schema，把可选的 `device`
+等字段变成必填；模型因此填入的空字符串会改变真实目标选择。工具执行仍沿现有
+schema 校验与授权，不将空设备号改路由到沙箱；原生工具不添加函数专属字段。
+DeepSeek Responses 与其他协议保留各自的声明方式。
+
 ## 私有状态与恢复
 
 公共和私有 compact 都使用当前 Main Profile 的超时、输出与思考设置，沿原 system、
