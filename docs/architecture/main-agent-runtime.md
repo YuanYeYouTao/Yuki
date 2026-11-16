@@ -691,7 +691,7 @@ Work 选择沿仅含 queued/running 的索引按 Conversation 游标轮转，逐
 的 scope 只推进遍历游标，不消耗空闲执行名额，不一次加载整个 scope 的积压。
 跨 scope 使用轮转公平性，scope 内仍按 updated、内部 Work ID 排序；游标只存在调度器内存中。
 
-尚未接纳工作的普通聊天，Provider、配置、空响应、容量、校验和内部异常保留原日志、
+尚未接纳工作的普通聊天，Provider、配置、容量、校验和内部异常保留原日志、
 ProcessResult 原失败原因及 TURN_CLOSED，不因异常自动向 QQ 插入固定报错。
 工具失败仍按原工具结果交回模型；模型请求失败不另外购买一次请求来解释错误。
 旧 detached sandbox continuation 的 claimed 状态由 0116 一次性迁移为 blocked；

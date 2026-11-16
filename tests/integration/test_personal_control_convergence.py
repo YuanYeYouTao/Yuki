@@ -3,6 +3,7 @@
 import asyncio
 import json
 from types import SimpleNamespace
+from unittest.mock import Mock
 from uuid import uuid4
 
 import httpx
@@ -30,6 +31,7 @@ from yuki.gateway.providers.app.ingress import AppGateway
 from yuki.identity.canonical_repository import find_identity_binding
 from yuki.identity.db_models import CanonicalPersonModel, IdentityBindingModel, PresenceModel
 from yuki.identity.routing import RouteSendError
+from yuki.llm.base import LLMInvalidResponseError
 from yuki.llm.fake import FakeLLMProvider
 from yuki.model_runtime.pool import ModelClientPool
 from yuki.runtime.work_repository import WorkRepository
@@ -168,9 +170,12 @@ async def test_disabled_local_presence_can_restart_without_blocking_other_entrie
     assert app.gateway_registry.connected_presence_ids(other) == other_ids
 
 
-@pytest.mark.parametrize("failure,send_first", [(False, False), (True, False), (True, True)])
+@pytest.mark.parametrize(
+    "ending,send_first",
+    [("text", False), ("empty", False), ("empty", True), ("invalid", False), ("invalid", True)],
+)
 async def test_sdk_settles_ended_requests_and_keeps_delivery_before_failure(
-    acp_runtime, tmp_path, failure, send_first
+    acp_runtime, tmp_path, ending, send_first
 ):
     env = acp_runtime
     calls = 0
@@ -184,7 +189,9 @@ async def test_sdk_settles_ended_requests_and_keeps_delivery_before_failure(
                 latency_seconds=0,
                 tool_calls=(ToolCall("sent", ToolFunction("send", '{"text":"Partial result"}')),),
             )
-        return "" if failure else "Private final without a Social message."
+        if ending == "invalid":
+            raise LLMInvalidResponseError("invalid upstream envelope")
+        return "" if ending == "empty" else "Private final without a Social message."
 
     env.provider._responder = respond
     client = PersonalClient(
@@ -196,10 +203,10 @@ async def test_sdk_settles_ended_requests_and_keeps_delivery_before_failure(
     facts = await client.query(identity)
     assert facts["turn"]["state"] == "ended"
     assert bool(facts["result_event_ids"]) == send_first
-    if failure:
-        assert facts["problem_code"] == "empty_llm_response"
-        assert facts["problem"]["outcome"] == "empty_llm_response"
-        with pytest.raises(ClientProblem, match="empty_llm_response"):
+    if ending == "invalid":
+        assert facts["problem_code"] == "llm_failure"
+        assert facts["problem"]["outcome"] == "llm_failure"
+        with pytest.raises(ClientProblem, match="llm_failure"):
             await client.resolve(identity)
     else:
         assert facts["problem_code"] is None
@@ -211,8 +218,8 @@ async def test_sdk_settles_ended_requests_and_keeps_delivery_before_failure(
     restored = PersonalClient(
         "http://test", env.device["token"], Outbox(client.outbox.path), http=env.http
     )
-    if failure:
-        with pytest.raises(ClientProblem, match="empty_llm_response"):
+    if ending == "invalid":
+        with pytest.raises(ClientProblem, match="llm_failure"):
             await restored.submit(identity)
     else:
         assert (await restored.submit(identity))["state"] == "result"
@@ -629,8 +636,8 @@ async def test_acp_keeps_explicit_person_routing_and_original_entry_history(acp_
 
 async def test_stdio_replay_of_failed_turn_flushes_original_confirmed_output(acp_runtime, tmp_path):
     env = acp_runtime
-    remaining = iter(
-        [
+    env.provider._responder = Mock(
+        side_effect=[
             ChatResponse(
                 content="",
                 latency_seconds=0,
@@ -638,10 +645,9 @@ async def test_stdio_replay_of_failed_turn_flushes_original_confirmed_output(acp
                     ToolCall("partial", ToolFunction("send", '{"text":"Original partial"}')),
                 ),
             ),
-            "",
+            LLMInvalidResponseError("invalid upstream envelope after confirmed delivery"),
         ]
     )
-    env.provider._responder = lambda _: next(remaining)
     state, identity = tmp_path / "failed-stdio", str(uuid4())
     async with live(env.http_app) as url:
         for attempt in range(2):

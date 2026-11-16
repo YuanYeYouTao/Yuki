@@ -24,7 +24,6 @@ from yuki.domain.messages import (
     ToolFunction,
 )
 from yuki.llm.base import (
-    LLMEmptyResponseError,
     LLMInvalidRequestError,
     LLMInvalidResponseError,
     LLMNativeToolError,
@@ -65,7 +64,6 @@ class DeepSeekResponsesProvider(JSONHTTPProvider):
             self._request_continuation(request),
             function_outputs=(),
             allowed_tool_names=frozenset(tool.name for tool in request.tools),
-            native_tools_requested=bool(request.native_tools),
             latency=0.0,
         )
 
@@ -299,7 +297,6 @@ class DeepSeekResponsesProvider(JSONHTTPProvider):
         *,
         function_outputs: tuple[FunctionCallOutput, ...] = (),
         allowed_tool_names: frozenset[str] = frozenset(),
-        native_tools_requested: bool = False,
         latency: float,
     ) -> ChatResponse:
         if not isinstance(payload, dict):
@@ -358,17 +355,6 @@ class DeepSeekResponsesProvider(JSONHTTPProvider):
             # Keep the paid response and any server-tool effects in the private
             # checkpoint, but never expose ambiguous local calls for execution.
             response_status = ModelResponseStatus.INCOMPLETE
-        if (
-            not content
-            and not calls
-            and not native_events
-            and not native_tools_requested
-            and response_status is ModelResponseStatus.COMPLETED
-        ):
-            raise LLMEmptyResponseError(
-                "provider returned no final message or function call",
-                diagnostics={"reasoning_only": bool(reasoning)},
-            )
         continuation = ProviderContinuation(
             provider=self.provider_name,
             protocol="responses",
