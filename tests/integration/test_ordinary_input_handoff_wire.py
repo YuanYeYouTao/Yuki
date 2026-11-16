@@ -3,6 +3,7 @@
 import asyncio
 import json
 from dataclasses import replace
+from pathlib import Path
 
 import httpx
 import pytest
@@ -19,12 +20,8 @@ from tests.unit.test_ordinary_input_handoff import A, B, C, _tool, _work_count
 
 from yuki.domain.messages import ChatResponse
 from yuki.identity.db_models import CanonicalSpaceModel
-from yuki.llm.anthropic_messages import AnthropicMessagesProvider
-from yuki.llm.gemini import GeminiProvider
-from yuki.llm.openai_compatible import OpenAICompatibleProvider
-from yuki.llm.openai_responses import OpenAIResponsesProvider
-from yuki.model_runtime.models import ModelProtocol
-from yuki.model_runtime.pool import ModelClientPool
+from yuki.model_runtime.models import ModelCapability, ModelProtocol
+from yuki.model_runtime.pool import ModelClientPool, create_model_provider
 from yuki.persistence.models import ChatEventModel
 
 
@@ -55,25 +52,21 @@ async def test_actual_adapters_continue_original_ordinary_chain_after_input_hand
     async with httpx.AsyncClient(
         base_url="https://handoff-wire.invalid/v1/", transport=httpx.MockTransport(transport)
     ) as client:
-        adapter_class = {
-            "chat_completions": OpenAICompatibleProvider,
-            "responses": OpenAIResponsesProvider,
-            "anthropic_messages": AnthropicMessagesProvider,
-            "gemini": GeminiProvider,
-        }[protocol]
-        adapter = adapter_class(
-            base_url="https://handoff-wire.invalid/v1/",
-            api_key="synthetic",
-            timeout_seconds=2,
-            max_retries=0,
-            client=client,
-            **({"provider_name": vendor} if protocol == "chat_completions" else {}),
+        profile = _profile().model_copy(
+            update={
+                "provider": vendor,
+                "protocol": ModelProtocol(protocol),
+                "model": "synthetic",
+                "base_url": "https://handoff-wire.invalid/v1/",
+                "capabilities": _profile().capabilities
+                | (
+                    {ModelCapability.PROMPT_CACHE_BREAKPOINTS} if protocol == "responses" else set()
+                ),
+            }
         )
+        adapter = create_model_provider(profile, "synthetic", client=client)
         app, env, original, sender = await _deployment(
             database, tmp_path, adapter, conversation_autonomous_debounce_seconds=0
-        )
-        profile = _profile().model_copy(
-            update={"provider": vendor, "protocol": ModelProtocol(protocol), "model": "synthetic"}
         )
         app.models.apply_catalog(
             _catalog(profile), ModelClientPool(injected_profiles={"main": adapter})
@@ -133,13 +126,23 @@ async def test_actual_adapters_continue_original_ordinary_chain_after_input_hand
             elif protocol == "anthropic_messages":
                 assert captured[0]["system"] == captured[1]["system"]
             elif protocol == "responses":
-                assert captured[0]["instructions"] == captured[1]["instructions"]
+                assert "instructions" not in captured[0]
+                assert captured[0]["input"][0] == captured[1]["input"][0]
+                assert captured[0]["input"][0]["role"] == "developer"
+                assert captured[0]["input"][0]["content"][-1]["prompt_cache_breakpoint"] == {
+                    "mode": "explicit"
+                }
             else:
                 system = [item for item in captured[0]["messages"] if item["role"] == "system"]
                 assert system and system == [
                     item for item in captured[1]["messages"] if item["role"] == "system"
                 ]
             assert await _work_count(database) == sender.calls == 0
+            evidence = Path("test-results") / "ordinary-handoff-wire" / f"{vendor}-{protocol}.json"
+            evidence.parent.mkdir(parents=True, exist_ok=True)
+            evidence.write_text(
+                json.dumps(captured, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
         finally:
             for event in release.values():
                 event.set()

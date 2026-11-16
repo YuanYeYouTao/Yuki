@@ -14,6 +14,10 @@ class OpenAIResponsesProvider(DeepSeekResponsesProvider):
     provider_name = "openai"
     supports_tool_choice = True
 
+    def __init__(self, *, prompt_cache_breakpoints: bool = False, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.prompt_cache_breakpoints = prompt_cache_breakpoints
+
     def _build_payload(self, request: ChatRequest) -> dict[str, Any]:
         payload = super()._build_payload(request)
         if request.tool_choice is not None:

@@ -17,7 +17,7 @@ from yuki.llm.openai_responses import (
     OpenAICompatibleResponsesProvider,
     OpenAIResponsesProvider,
 )
-from yuki.model_runtime.models import ModelProfile, ModelProtocol
+from yuki.model_runtime.models import ModelCapability, ModelProfile, ModelProtocol
 
 
 def create_model_provider(
@@ -84,6 +84,8 @@ def create_model_provider(
             options=profile.wire_options,
             headers=profile.headers,
             provider_name=profile.provider.casefold(),
+            prompt_cache_breakpoints=ModelCapability.PROMPT_CACHE_BREAKPOINTS
+            in profile.capabilities,
         )
     return provider
 

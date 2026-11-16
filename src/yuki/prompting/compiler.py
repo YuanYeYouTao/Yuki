@@ -49,6 +49,8 @@ class PromptCompiler:
         if stable_text:
             messages.append(ChatMessage(role="system", content=stable_text))
         messages.extend(history)
+        if history:
+            messages[-1] = replace(messages[-1], cache_breakpoint=True)
         if current_message is not None:
             messages.append(_with_current_material(current_message, dynamic_text))
         elif dynamic_text:

@@ -416,6 +416,8 @@ class ChatMessage:
     reasoning_content: str | None = None
     images: tuple[ChatImage, ...] = field(default=(), repr=False)
     response_item: ProviderContinuation | None = field(default=None, repr=False)
+    # A serialization hint on the original message, not part of its public evidence.
+    cache_breakpoint: bool = field(default=False, compare=False)
 
 
 @dataclass(frozen=True, slots=True)
