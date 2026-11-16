@@ -20,6 +20,10 @@ class OpenAIResponsesProvider(DeepSeekResponsesProvider):
 
     def _build_payload(self, request: ChatRequest) -> dict[str, Any]:
         payload = super()._build_payload(request)
+        # Responses otherwise promotes optional parameters to required fields.
+        for tool in payload.get("tools", []):
+            if tool["type"] == "function":
+                tool["strict"] = False
         if request.tool_choice is not None:
             payload["tool_choice"] = (
                 request.tool_choice
