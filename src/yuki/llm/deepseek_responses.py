@@ -206,7 +206,11 @@ class DeepSeekResponsesProvider(JSONHTTPProvider):
             if self.prompt_cache_breakpoints and message.cache_breakpoint:
                 blocks = inputs[-1]["content"]
                 if isinstance(blocks, str):
-                    blocks = [{"type": "input_text", "text": blocks}]
+                    blocks = [
+                        {"type": "output_text", "text": blocks, "annotations": []}
+                        if message.role == "assistant"
+                        else {"type": "input_text", "text": blocks}
+                    ]
                     inputs[-1]["content"] = blocks
                 blocks[-1]["prompt_cache_breakpoint"] = {"mode": "explicit"}
         return "\n\n".join(leading), inputs
