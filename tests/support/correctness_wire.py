@@ -6,6 +6,7 @@ from contextvars import ContextVar
 import httpx
 
 from yuki.llm.anthropic_messages import AnthropicMessagesProvider
+from yuki.llm.deepseek_responses import DeepSeekResponsesProvider
 from yuki.llm.gemini import GeminiProvider
 from yuki.llm.openai_compatible import OpenAICompatibleProvider
 from yuki.llm.openai_responses import OpenAIResponsesProvider
@@ -26,6 +27,7 @@ KINDS = {
     "anthropic": (AnthropicMessagesProvider, "anthropic", ModelProtocol.ANTHROPIC_MESSAGES),
     "chat": (OpenAICompatibleProvider, "openai", ModelProtocol.CHAT_COMPLETIONS),
     "responses": (OpenAIResponsesProvider, "openai", ModelProtocol.RESPONSES),
+    "deepseek": (DeepSeekResponsesProvider, "deepseek", ModelProtocol.RESPONSES),
 }
 
 
@@ -105,7 +107,7 @@ def body(kind, reply, index=0):
         }
         for c in reply.tool_calls
     ]
-    if reply.content:
+    if reply.content or not reply.tool_calls:
         out += [
             {
                 "type": "message",

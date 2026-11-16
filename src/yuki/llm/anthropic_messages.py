@@ -25,7 +25,6 @@ from yuki.domain.messages import (
     ToolFunction,
 )
 from yuki.llm.base import (
-    LLMEmptyResponseError,
     LLMInvalidRequestError,
     LLMInvalidResponseError,
     LLMUnsupportedFeatureError,
@@ -406,18 +405,6 @@ class AnthropicMessagesProvider(JSONHTTPProvider):
             raise LLMInvalidResponseError("duplicate Claude tool IDs")
         truncated = stop == "max_tokens"
         content = "".join(texts)
-        if (
-            not content
-            and not calls
-            and not native_events
-            and not request.native_tools
-            and not truncated
-            and stop != "pause_turn"
-        ):
-            raise LLMEmptyResponseError(
-                "Claude returned no visible text or tool calls",
-                diagnostics=self._usage_diagnostics(payload),
-            )
         # Save only the protocol tail. Initial history is owned by TurnTranscript.
         # Coalescing can join a new tool result to the final initial message; use uncoalesced
         # checkpoint data so the initial prefix is never duplicated on replay.

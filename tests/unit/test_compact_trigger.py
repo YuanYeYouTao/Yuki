@@ -189,8 +189,8 @@ async def test_ordinary_invalid_paid_checkpoint_is_reused_after_cold_restore(dat
     receipt = CompactReceipt(context, runtime.execution_id, runtime.actor_user_id)
     state = await receipt.read()
     assert state["phase"] == "paired" and state["valid"] is False
-    assert state["error_category"] == "LLMEmptyResponseError"
-    assert "model_response" not in state
+    assert "error_category" not in state
+    assert state["model_response"]["content"] == ""
     recovered = TurnExecution(runner, initial, runtime, None)
     await recovered.restore_compact_receipt()
     prepared = await recovered.prepare_request(0, (), WebMode.DISABLED)

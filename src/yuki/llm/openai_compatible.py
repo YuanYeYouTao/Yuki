@@ -21,7 +21,6 @@ from yuki.domain.messages import (
     ToolFunction,
 )
 from yuki.llm.base import (
-    LLMEmptyResponseError,
     LLMInvalidRequestError,
     LLMInvalidResponseError,
     LLMUnsupportedFeatureError,
@@ -258,13 +257,6 @@ class OpenAICompatibleProvider(JSONHTTPProvider):
             if chunks:
                 reasoning = "\n".join(chunks)
         truncated = finish == "length"
-        if not content.strip() and not calls and not truncated and not request.native_tools:
-            raise LLMEmptyResponseError(
-                "provider returned empty content",
-                diagnostics={
-                    "reasoning_only": bool(reasoning or message.get("reasoning_details")),
-                },
-            )
         usage = payload.get("usage")
         usage = usage if isinstance(usage, dict) else {}
         details = usage.get("prompt_tokens_details") or {}

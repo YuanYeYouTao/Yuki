@@ -9,7 +9,6 @@ import pytest
 from tests.support.work_compaction_capacity_helpers import _runtime, _session
 
 from yuki.domain.messages import ChatMessage, ChatRequest
-from yuki.llm.base import LLMEmptyResponseError
 from yuki.llm.fake import FakeLLMProvider
 from yuki.model_runtime.models import ModelExecutionPriority
 from yuki.runtime.work_repository import WorkConflict
@@ -29,10 +28,7 @@ async def test_invalid_paid_compact_survives_pairing_reopen_and_next_candidate(
     session.transcript.append(ChatMessage("assistant", "An original completed finding."))
     original = session.transcript.request()
 
-    def empty_response(request):
-        raise LLMEmptyResponseError("Confirmed empty response")
-
-    provider = FakeLLMProvider(empty_response)
+    provider = FakeLLMProvider(lambda request: "")
     runner, runtime = await _runtime(database, control, initial, provider)
     runtime = replace(runtime, auxiliary_requests=[0])
     execution = TurnExecution(runner, initial, runtime, None)
@@ -65,8 +61,8 @@ async def test_invalid_paid_compact_survives_pairing_reopen_and_next_candidate(
     assert failed["phase"] == "paired"
     assert failed["valid"] is False
     assert failed["response"] == ""
-    assert failed["error_category"] == "LLMEmptyResponseError"
-    assert "model_response" not in failed
+    assert "error_category" not in failed
+    assert failed["model_response"]["content"] == ""
     assert json.dumps(failed["request"]["messages"][:-1], sort_keys=True) == json.dumps(
         [asdict(message) for message in request.messages], sort_keys=True
     )

@@ -26,7 +26,6 @@ from yuki.domain.messages import (
     ToolFunction,
 )
 from yuki.llm.base import (
-    LLMEmptyResponseError,
     LLMInvalidRequestError,
     LLMInvalidResponseError,
     LLMMalformedFunctionCallError,
@@ -412,17 +411,6 @@ class GeminiProvider(JSONHTTPProvider):
         if duplicate_call_ids and not (native_events or request.native_tools):
             raise LLMInvalidResponseError("duplicate Gemini function IDs")
         text = "".join(texts)
-        if (
-            not text
-            and not calls
-            and not native_events
-            and not request.native_tools
-            and not truncated
-        ):
-            raise LLMEmptyResponseError(
-                "Gemini returned no visible text or tool calls",
-                diagnostics=self._usage_diagnostics(payload),
-            )
         if content["parts"]:
             tail.append(
                 {"role": "model", "parts": deepcopy(content["parts"]), "_call_ids": call_ids}

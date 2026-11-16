@@ -2,18 +2,23 @@
 
 import json
 from dataclasses import replace
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import select
 from tests.conftest import MemorySender, build_harness, make_settings
 from tests.support.commands_and_chat_helpers import inbound
+from tests.support.correctness_wire import KINDS, wire
 from tests.support.fixed_contract_fixture import bind_main_contract
 from tests.support.social_identity_cases import social_env
 
 from yuki.conversation.hydrate import require_primary_alias_for_conversation
-from yuki.domain.messages import ChatResponse, ToolCall, ToolFunction
-from yuki.llm.base import LLMEmptyResponseError, LLMMalformedFunctionCallError
+from yuki.domain.messages import ChatResponse, FunctionCallOutput, ToolCall, ToolFunction
+from yuki.llm.base import LLMMalformedFunctionCallError
 from yuki.llm.fake import FakeLLMProvider
+from yuki.model_runtime.db_models import ModelInvocationModel
+from yuki.model_runtime.repository import ModelInvocationRepository
 from yuki.persistence.models import ChatEventModel
 from yuki.runtime.work_activation import current_work_control
 from yuki.runtime.work_schema_v1 import work
@@ -21,9 +26,11 @@ from yuki.runtime.work_schema_v1 import work
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("accepted,work_enabled", [(False, False), (False, True), (True, True)])
-@pytest.mark.parametrize("failure", ["empty", "malformed"])
+@pytest.mark.parametrize(
+    "protocol,ending", [(kind, "empty") for kind in ["fake", *KINDS]] + [("fake", "malformed")]
+)
 async def test_confirmed_send_empty_response_respects_actual_work_ownership(
-    database, tmp_path, accepted, work_enabled, failure
+    database, tmp_path, accepted, work_enabled, protocol, ending
 ):
     env = await social_env(database, tmp_path)
     async with database.read_session() as reader:
@@ -46,7 +53,7 @@ async def test_confirmed_send_empty_response_respects_actual_work_ownership(
                     "text": "已确认的原消息",
                 },
             ),
-            (failure, {}),
+            (ending, {}),
         ]
     )
     ownership = []
@@ -58,9 +65,15 @@ async def test_confirmed_send_empty_response_respects_actual_work_ownership(
         name, arguments = next(steps)
         if name in {"empty", "malformed"}:
             receipts = [message.content for message in request.messages if message.role == "tool"]
+            receipts.extend(
+                item.output
+                for item in request.continuation_items
+                if isinstance(item, FunctionCallOutput)
+            )
             assert any('"succeeded"' in str(receipt) for receipt in receipts), receipts
-            error = LLMEmptyResponseError if name == "empty" else LLMMalformedFunctionCallError
-            raise error("unusable response after a real successful delivery")
+            if name == "malformed":
+                raise LLMMalformedFunctionCallError("malformed call after a successful delivery")
+            return "" if protocol == "fake" else ChatResponse("", 0)
         return ChatResponse(
             "",
             0,
@@ -92,10 +105,20 @@ async def test_confirmed_send_empty_response_respects_actual_work_ownership(
         presence_id=env.presence,
     )
     sender = MemorySender()
-    result = await harness.processor.handle(message, sender)
-    assert result.reason == (
-        "chat" if accepted else "empty_llm_response" if failure == "empty" else "llm_failure"
-    )
+    chat = harness.processor._chat
+    client, captured = None, []
+    if protocol != "fake":
+        client, captured = wire(
+            SimpleNamespace(provider=provider, runner=chat.runtime.runner), protocol
+        )
+        chat._models = chat.runtime.runner._models
+    chat.runtime.runner._models._invocations = ModelInvocationRepository(database)
+    try:
+        result = await harness.processor.handle(message, sender)
+    finally:
+        if client is not None:
+            await client.aclose()
+    assert result.reason == ("chat" if accepted or ending == "empty" else "llm_failure")
     assert not sender.messages
     assert len(provider.requests) == (3 if accepted else 2)
     assert ownership == ([False, True, True] if accepted else [False, False])
@@ -110,16 +133,45 @@ async def test_confirmed_send_empty_response_respects_actual_work_ownership(
             )
         ).all()
         works = (await reader.execute(select(work))).mappings().all()
+        invocations = (await reader.scalars(select(ModelInvocationModel))).all()
     assert sum(row.content == "已确认的原消息" for row in outgoing) == 1
     assert len(outgoing) == 1
     if accepted:
-        # The original confirmed send remains authoritative. Recovery is queued
-        # on the same Work, without resending or buying an immediate repair turn.
-        assert len(works) == 1 and works[0]["state"] == "queued"
+        assert len(works) == 1
+        assert works[0]["state"] == ("completed" if ending == "empty" else "queued")
         assert works[0]["model_requests"] == 3 and works[0]["sent_messages"] == 1
     else:
         assert not works
     assert provider.requests[1].tools == provider.requests[0].tools
     assert provider.requests[1].messages[: len(provider.requests[0].messages)] == (
         provider.requests[0].messages
+    )
+    if captured:
+        assert len(invocations) == len(provider.requests)
+        assert all(row.success for row in invocations)
+        assert sum(row.physical_request_count for row in invocations) == len(captured)
+    artifact = Path("test-results/empty-model-final") / (
+        f"{protocol}-{ending}-{accepted}-{work_enabled}.json"
+    )
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    artifact.write_text(
+        json.dumps(
+            {
+                "protocol": protocol,
+                "ending": ending,
+                "requests": captured,
+                "model_requests": len(provider.requests),
+                "result": result.reason,
+                "deliveries": [row.content for row in outgoing],
+                "work_states": [row["state"] for row in works],
+                "invocations": [
+                    {"success": row.success, "physical_requests": row.physical_request_count}
+                    for row in invocations
+                ],
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
     )

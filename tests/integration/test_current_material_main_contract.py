@@ -170,7 +170,7 @@ async def test_actual_main_http_separates_host_material_before_final_user_body(
                     "candidates": [
                         {
                             "finishReason": "STOP",
-                            "content": {"role": "model", "parts": [{"text": "NO_REPLY"}]},
+                            "content": {"role": "model", "parts": [{"text": ""}]},
                         }
                     ],
                     "usageMetadata": {
@@ -190,7 +190,7 @@ async def test_actual_main_http_separates_host_material_before_final_user_body(
                         "type": "message",
                         "id": "original-layout-message",
                         "role": "assistant",
-                        "content": [{"type": "output_text", "text": "NO_REPLY"}],
+                        "content": [{"type": "output_text", "text": ""}],
                     }
                 ],
                 "usage": {

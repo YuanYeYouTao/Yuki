@@ -6,7 +6,7 @@ import asyncio
 from collections.abc import Callable
 
 from yuki.domain.messages import ChatRequest, ChatResponse
-from yuki.llm.base import LLMEmptyResponseError, LLMProvider
+from yuki.llm.base import LLMProvider
 from yuki.model_runtime.dispatch_guard import check_model_dispatch
 
 
@@ -50,6 +50,4 @@ class FakeLLMProvider(LLMProvider):
         if isinstance(response, ChatResponse):
             return response
         content = response.strip()
-        if not content:
-            raise LLMEmptyResponseError("model returned empty content")
         return ChatResponse(content=content, latency_seconds=self._delay_seconds)
