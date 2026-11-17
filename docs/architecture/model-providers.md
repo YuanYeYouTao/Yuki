@@ -352,7 +352,15 @@ HTTP 用量的 unknown_usage 还计入已有 unknown_usage_request_count>0 的�
 
 支持显式缓存断点的 Responses 连接在 Profile 的 `capabilities` 中声明
 `prompt_cache_breakpoints`（例如 OpenAI GPT-6.1 Terra）。未声明时保留原序列化，
-不按模型名称猜测支持情况，也不向 DeepSeek、Gemini 或 Claude 注入 OpenAI 参数。
+适配器不按模型名称猜测支持情况，也不向 DeepSeek、Gemini 或 Claude 注入 OpenAI 参数。
+CLI 与 Desktop 新安装向导仅在明确选择 `provider="openai"`、`protocol="responses"`、
+官方 `https://api.openai.com/v1` 地址（可带尾斜杠），且型号属于官方文档支持的
+GPT-5.6 及以后版本时，默认生成该 capability。其他型号、兼容／自定义地址和 Chat
+不自动声明；Chat 适配器目前不传递此断点，不能靠添加 capability 开启。
+这个默认值只在生成新 Profile 时使用；正常升级、加载和重配置不为已有 Profile 补写
+capability，原先未声明的连接仍不发送显式点。旧安装需核对实际协议、端点和型号后
+自行显式启用；已声明的连接在更换型号或端点时也需重新核对支持范围。支持范围与内容块格式见
+[OpenAI 缓存文档](https://developers.openai.com/api/docs/guides/prompt-caching)。
 OpenAI／兼容 Responses 适配器将初始静态说明放入可标记的 developer 内容块，
 并标记 Main 已有公共历史的最后一条 user 消息；后续 assistant 原文、本轮资料、
 当前触发和 Host 初始化仍在其后。Responses 的 output_text 不支持缓存断点，
