@@ -414,6 +414,17 @@ def build_model_profiles(
     main_capabilities = ["tools", "structured_output", "long_context", "reasoning"]
     if main_search_mode in {ModelSearchMode.NATIVE, ModelSearchMode.BOTH}:
         main_capabilities.append("native_web_search")
+    if (
+        main_protocol == "responses"
+        and provider == "openai"
+        and environment is not None
+        and environment.get("LLM_BASE_URL", "").rstrip("/") == "https://api.openai.com/v1"
+    ):
+        # OpenAI documents explicit breakpoints for GPT-5.6 and later. This is a
+        # new-install default; adapters still obey the profile's declaration.
+        version = re.match(r"gpt-(\d+)(?:\.(\d+))?(?:-|$)", environment.get("LLM_MODEL", ""))
+        if version and (int(version[1]), int(version[2] or 0)) >= (5, 6):
+            main_capabilities.append(ModelCapability.PROMPT_CACHE_BREAKPOINTS.value)
     # Protocol alone proves neither native web search nor image support.
     # image_input is an explicit profile capability, enabled after model validation.
     lines = [
