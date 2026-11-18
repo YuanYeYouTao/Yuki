@@ -889,7 +889,11 @@ class CodexDriver:
                     native_request=params,
                     connection_id=self.rpc.connection_id,
                 )
-                metadata = {"native_method": method, "native_request_id": message["id"]}
+                metadata = {
+                    "native_method": method,
+                    "tool": method,
+                    "native_request_id": message["id"],
+                }
         elif method == "turn/completed":
             kind = "completed"
             original = params["turn"]
