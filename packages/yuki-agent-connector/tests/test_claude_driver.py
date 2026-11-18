@@ -30,6 +30,12 @@ class NativeTransport(Transport):
         self.prompt = asyncio.Event()
         self.response = asyncio.Event()
         self.closed = False
+        # False: written inputs stay queued in the "CLI" until take_up() replays them.
+        self.echo = True
+        self.queued: list[dict[str, Any]] = []
+
+    async def take_up(self) -> None:
+        await self.incoming.put(self.queued.pop(0))
 
     async def connect(self) -> None:
         pass
@@ -50,7 +56,11 @@ class NativeTransport(Transport):
             )
         elif message["type"] == "user":
             self.prompt.set()
-            await self.incoming.put(message)
+            if self.echo:
+                # The CLI's replay of an input it takes up (replay-user-messages).
+                await self.incoming.put(message)
+            else:
+                self.queued.append(message)
         elif message["type"] == "control_response":
             self.response.set()
 
@@ -127,8 +137,15 @@ async def test_real_sdk_native_preset_permissions_completion_and_no_arbitrary_at
             3,
         )
         session_id, execution_id = started["session_id"], started["execution_id"]
-        assert started["admitted"] is True
+        # Writing is not admission: the CLI replaying this input's UUID is.
+        assert started["admitted"] is False and started["status"] == "submitted"
+        kind, taken = await asyncio.wait_for(events.get(), 3)
+        assert kind == "progress" and taken["operation_id"] == "original"
+        assert taken["execution_id"] == execution_id
+        assert taken["payload"]["disposition"] == "started_new_turn"
+        assert taken["payload"]["admitted"] is True
         options = configurations[0]
+        assert options.extra_args == {"replay-user-messages": None}
         assert options.system_prompt == {"type": "preset", "preset": "claude_code"}
         assert options.tools == {"type": "preset", "preset": "claude_code"}
         assert options.setting_sources == ["user", "project", "local"]
@@ -142,7 +159,8 @@ async def test_real_sdk_native_preset_permissions_completion_and_no_arbitrary_at
         assert built[0] == sys.executable
         assert "--setting-sources=user,project,local" in built
         assert "--dangerously-skip-permissions" not in built
-        with pytest.raises(DriverError, match="active"):
+        assert "--replay-user-messages" in built
+        with pytest.raises(DriverError, match="busy"):
             await driver.execute(
                 {
                     "id": "duplicate",
@@ -212,6 +230,8 @@ async def test_real_sdk_native_preset_permissions_completion_and_no_arbitrary_at
             ),
             3,
         )
+        kind, taken = await asyncio.wait_for(events.get(), 3)
+        assert kind == "progress" and taken["operation_id"] == "detached-work"
         await driver.execute(
             {
                 "id": "detach-work",
@@ -247,7 +267,7 @@ async def test_real_sdk_native_preset_permissions_completion_and_no_arbitrary_at
             }
         )
         assert not transport.closed
-        with pytest.raises(DriverError, match="precise native"):
+        with pytest.raises(DriverError, match="queue appends instead"):
             await driver.execute({"id": "steer", "action": "steer", "arguments": {}})
     finally:
         await asyncio.wait_for(driver.stop(), 3)
@@ -371,5 +391,353 @@ async def test_server_revocation_does_not_exit_sdk_or_kill_its_original_native_e
         connector.stopped.set()
         await asyncio.wait_for(task, 3)
     assert transport.closed
-    assert json.loads(journal.next_event()[2])["payload"]["text"] == "completed locally"
+    recorded = []
+    after = 0
+    while (row := journal.next_event(after)) is not None:
+        after = row[0]
+        recorded.append(json.loads(row[2]))
+    assert [event["kind"] for event in recorded][:2] == ["progress", "completed"]
+    assert recorded[1]["payload"]["text"] == "completed locally"
     journal.close()
+
+
+def _result(session_id: str, text: str) -> dict[str, Any]:
+    return {
+        "type": "result",
+        "subtype": "success",
+        "duration_ms": 1,
+        "duration_api_ms": 1,
+        "is_error": False,
+        "num_turns": 1,
+        "session_id": session_id,
+        "result": text,
+    }
+
+
+@pytest.mark.asyncio
+async def test_turn_started_by_the_cli_itself_makes_a_new_prompt_conflict_not_queue(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """L4: a background-task notification turn has no Yuki owner but the session is busy.
+
+    The original incident wrote a new prompt into the CLI queue behind such a turn and
+    then waited forever for admission. The truthful answer is an immediate conflict.
+    """
+    transports: list[NativeTransport] = []
+
+    def factory(*, options: ClaudeAgentOptions) -> ClaudeSDKClient:
+        transport = NativeTransport()
+        transports.append(transport)
+        return ClaudeSDKClient(options=options, transport=transport)
+
+    monkeypatch.setattr(module, "ClaudeSDKClient", factory)
+    events: asyncio.Queue[tuple[str, dict[str, Any]]] = asyncio.Queue()
+
+    async def emit(kind: str, payload: dict[str, Any]) -> None:
+        events.put_nowait((kind, payload))
+
+    driver = module.ClaudeDriver(
+        Instance("claude", "claude", "Claude", sys.executable, cwd=str(tmp_path)), emit
+    )
+    await driver.start()
+    try:
+        started = await asyncio.wait_for(
+            driver.execute({"id": "first", "action": "prompt", "arguments": {"prompt": "go"}}),
+            3,
+        )
+        session_id = started["session_id"]
+        transport = transports[0]
+        await transport.incoming.put(_result(session_id, "first done"))
+        while (await asyncio.wait_for(events.get(), 3))[0] != "work_finished":
+            pass
+        # The CLI wakes itself for a finished background task: no Yuki operation owns it.
+        await transport.incoming.put(
+            {
+                "type": "user",
+                "message": {"role": "user", "content": "<task-notification>done"},
+                "origin": {"kind": "task-notification"},
+                "session_id": session_id,
+            }
+        )
+        await transport.incoming.put(
+            {
+                "type": "assistant",
+                "message": {
+                    "role": "assistant",
+                    "model": "native",
+                    "content": [{"type": "text", "text": "checking the finished task"}],
+                },
+                "session_id": session_id,
+            }
+        )
+
+        async def busy() -> bool:
+            return driver.sessions[session_id].active
+
+        async with asyncio.timeout(3):
+            while not await busy():  # noqa: ASYNC110
+                await asyncio.sleep(0.01)
+        writes = len(transport.writes)
+        with pytest.raises(DriverError, match="busy"):
+            await asyncio.wait_for(
+                driver.execute(
+                    {
+                        "id": "second",
+                        "action": "prompt",
+                        "session_id": session_id,
+                        "arguments": {"prompt": "continue"},
+                    }
+                ),
+                3,
+            )
+        # Nothing was written into the native queue behind the self-started turn.
+        assert not any(w["type"] == "user" for w in transport.writes[writes:])
+        listed = await driver.execute(
+            {"id": "read", "action": "get", "session_id": session_id, "arguments": {}}
+        )
+        assert listed["pending"] is True and listed["status"] == "running"
+        await transport.incoming.put(_result(session_id, "self-started turn done"))
+
+        async def idle() -> bool:
+            return not driver.sessions[session_id].active
+
+        async with asyncio.timeout(3):
+            while not await idle():  # noqa: ASYNC110
+                await asyncio.sleep(0.01)
+        third = await asyncio.wait_for(
+            driver.execute(
+                {
+                    "id": "third",
+                    "action": "prompt",
+                    "session_id": session_id,
+                    "arguments": {"prompt": "now continue"},
+                }
+            ),
+            3,
+        )
+        assert third["status"] == "submitted" and third["session_id"] == session_id
+        kind, taken = await asyncio.wait_for(events.get(), 3)
+        assert kind == "progress" and taken["operation_id"] == "third"
+        assert taken["payload"]["disposition"] == "started_new_turn"
+    finally:
+        await asyncio.wait_for(driver.stop(), 3)
+
+
+async def _driver(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> tuple[Any, list[NativeTransport], asyncio.Queue[tuple[str, dict[str, Any]]]]:
+    transports: list[NativeTransport] = []
+
+    def factory(*, options: ClaudeAgentOptions) -> ClaudeSDKClient:
+        transport = NativeTransport()
+        transports.append(transport)
+        return ClaudeSDKClient(options=options, transport=transport)
+
+    monkeypatch.setattr(module, "ClaudeSDKClient", factory)
+    events: asyncio.Queue[tuple[str, dict[str, Any]]] = asyncio.Queue()
+
+    async def emit(kind: str, payload: dict[str, Any]) -> None:
+        events.put_nowait((kind, payload))
+
+    driver = module.ClaudeDriver(
+        Instance("claude", "claude", "Claude", sys.executable, cwd=str(tmp_path)), emit
+    )
+    await driver.start()
+    return driver, transports, events
+
+
+@pytest.mark.asyncio
+async def test_input_appended_to_a_running_turn_gets_only_its_own_disposition(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Real CLI 2.1.311 absorbs a mid-turn input at the next tool boundary (X1/X6).
+
+    The appending operation learns it was merged; the turn, its results and its
+    questions stay with the operation that started the turn.
+    """
+    driver, transports, events = await _driver(tmp_path, monkeypatch)
+    try:
+        started = await driver.execute(
+            {"id": "owner", "action": "prompt", "arguments": {"prompt": "long work"}}
+        )
+        session_id, turn = started["session_id"], started["execution_id"]
+        assert (await asyncio.wait_for(events.get(), 3))[1]["operation_id"] == "owner"
+        appended = await driver.execute(
+            {
+                "id": "appender",
+                "action": "queue",
+                "session_id": session_id,
+                "arguments": {"prompt": "also do this"},
+            }
+        )
+        assert appended["status"] == "submitted" and appended["landing"] == "native_decides"
+        kind, merged = await asyncio.wait_for(events.get(), 3)
+        assert kind == "completed" and merged["operation_id"] == "appender"
+        assert merged["payload"]["disposition"] == "merged_into_running_turn"
+        assert merged["payload"]["merged_into_execution"] == turn
+        kind, finished = await asyncio.wait_for(events.get(), 3)
+        assert kind == "work_finished" and finished["operation_id"] == "appender"
+        transport = transports[0]
+        await transport.incoming.put(
+            {
+                "type": "control_request",
+                "request_id": "turn-question",
+                "request": {
+                    "subtype": "can_use_tool",
+                    "tool_name": "Bash",
+                    "tool_use_id": "turn-permission",
+                    "input": {"command": "rm -rf build"},
+                },
+            }
+        )
+        kind, question = await asyncio.wait_for(events.get(), 3)
+        # The question belongs to the turn's owner, never to the merged appender.
+        assert kind == "permission" and question["operation_id"] == "owner"
+        await transport.incoming.put(_result(session_id, "owner done"))
+        kind, completed = await asyncio.wait_for(events.get(), 3)
+        assert kind == "completed" and completed["operation_id"] == "owner"
+        assert completed["execution_id"] == turn
+    finally:
+        await asyncio.wait_for(driver.stop(), 3)
+
+
+@pytest.mark.asyncio
+async def test_a_still_queued_input_is_never_withdrawn_by_interrupting_another_turn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Real CLI: interrupt cancels the running turn; queued input runs afterwards (X5)."""
+    driver, transports, events = await _driver(tmp_path, monkeypatch)
+    try:
+        started = await driver.execute(
+            {"id": "owner", "action": "prompt", "arguments": {"prompt": "long work"}}
+        )
+        session_id = started["session_id"]
+        await asyncio.wait_for(events.get(), 3)
+        transport = transports[0]
+        transport.echo = False
+        appended = await driver.execute(
+            {
+                "id": "appender",
+                "action": "queue",
+                "session_id": session_id,
+                "arguments": {"prompt": "later"},
+            }
+        )
+        with pytest.raises(DriverError, match="still queued"):
+            await driver.execute(
+                {
+                    "id": "withdraw",
+                    "action": "cancel",
+                    "session_id": session_id,
+                    "execution_id": appended["execution_id"],
+                    "arguments": {"operation_id": "appender"},
+                }
+            )
+        assert not any(
+            w.get("request", {}).get("subtype") == "interrupt" for w in transport.writes
+        )
+        with pytest.raises(DriverError, match="busy"):
+            await driver.execute(
+                {
+                    "id": "new-task",
+                    "action": "prompt",
+                    "session_id": session_id,
+                    "arguments": {"prompt": "x"},
+                }
+            )
+        # The owner's turn ends first, so the queued input starts its own turn (X3/X4).
+        await transport.incoming.put(_result(session_id, "owner done"))
+        assert (await asyncio.wait_for(events.get(), 3))[0] == "completed"
+        assert (await asyncio.wait_for(events.get(), 3))[0] == "work_finished"
+        await transport.take_up()
+        kind, taken = await asyncio.wait_for(events.get(), 3)
+        assert kind == "progress" and taken["operation_id"] == "appender"
+        assert taken["payload"]["disposition"] == "started_new_turn"
+        assert taken["execution_id"] == appended["execution_id"]
+    finally:
+        await asyncio.wait_for(driver.stop(), 3)
+
+
+@pytest.mark.asyncio
+async def test_unowned_permission_leaves_only_metadata_and_accepts_only_deny(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The incident: a self-started turn's Bash permission had no receiver at all."""
+    driver, transports, events = await _driver(tmp_path, monkeypatch)
+    try:
+        started = await driver.execute(
+            {"id": "owner", "action": "prompt", "arguments": {"prompt": "work"}}
+        )
+        session_id = started["session_id"]
+        transport = transports[0]
+        await asyncio.wait_for(events.get(), 3)
+        await transport.incoming.put(_result(session_id, "done"))
+        while (await asyncio.wait_for(events.get(), 3))[0] != "work_finished":
+            pass
+        await transport.incoming.put(
+            {
+                "type": "assistant",
+                "message": {
+                    "role": "assistant",
+                    "model": "native",
+                    "content": [{"type": "text", "text": "background task finished"}],
+                },
+                "session_id": session_id,
+            }
+        )
+        secret = "gh run view 123 --repo private/thing > /Users/someone/secret.txt"
+        await transport.incoming.put(
+            {
+                "type": "control_request",
+                "request_id": "unowned-request",
+                "request": {
+                    "subtype": "can_use_tool",
+                    "tool_name": "Bash",
+                    "tool_use_id": "unowned-permission",
+                    "input": {"command": secret},
+                },
+            }
+        )
+        kind, unowned = await asyncio.wait_for(events.get(), 3)
+        assert kind == "permission" and unowned["operation_id"] is None
+        assert unowned["session_id"] == session_id
+        payload = unowned["payload"]
+        assert payload["unowned"] is True and payload["options"] == ["deny"]
+        assert payload["tool"] == "Bash" and "native_request" not in payload
+        # Privacy: nothing of the command, path or text leaves the computer.
+        assert "secret" not in json.dumps(unowned) and "gh run" not in json.dumps(unowned)
+        answer = {
+            "session_id": session_id,
+            "execution_id": "any-turn",
+            "arguments": {
+                "connection_id": payload["connection_id"],
+                "permission_id": "unowned-permission",
+            },
+        }
+        with pytest.raises(DriverError, match="allow it in Claude itself"):
+            await driver.execute(
+                {
+                    **answer,
+                    "id": "allow",
+                    "action": "respond",
+                    "arguments": {**answer["arguments"], "option_id": "allow"},
+                }
+            )
+        await driver.execute(
+            {
+                **answer,
+                "id": "deny",
+                "action": "respond",
+                "arguments": {**answer["arguments"], "option_id": "deny"},
+            }
+        )
+        await asyncio.wait_for(transport.response.wait(), 3)
+        response = next(w for w in transport.writes if w["type"] == "control_response")
+        assert response["response"]["response"]["behavior"] == "deny"
+        kind, resolved = await asyncio.wait_for(events.get(), 3)
+        assert kind == "progress" and resolved["operation_id"] is None
+        assert resolved["payload"]["permission_resolved"] == "unowned-permission"
+        assert resolved["payload"]["outcome"] == "answered"
+    finally:
+        await asyncio.wait_for(driver.stop(), 3)
