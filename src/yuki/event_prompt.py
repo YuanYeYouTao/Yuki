@@ -190,6 +190,26 @@ class _ReferenceIds(Set[int]):
         return frozenset(values)
 
 
+def self_mention_content(row: EventRecord, content: str, self_name: str) -> str:
+    """Return ``content`` with Yuki's native mention spans under her character name."""
+
+    # Native spans index the stored body, so only that exact text is rewritten.
+    if content != row.content:
+        return content
+    parts: list[str] = []
+    cursor = 0
+    for segment in row.segments:
+        data = segment.get("data")
+        if segment.get("type") != "mention" or not isinstance(data, dict):
+            continue
+        if data.get("kind") != "yuki" or "text_start" not in data:
+            continue
+        start, end = int(data["text_start"]), int(data["text_end"])
+        parts.extend((content[cursor:start], f"@{self_name}"))
+        cursor = end
+    return "".join(parts) + content[cursor:] if parts else content
+
+
 class ChatEventPromptRenderer:
     """Render one canonical prompt envelope for the main Agent."""
 
@@ -535,21 +555,7 @@ class ChatEventPromptRenderer:
         return self._self_name if row.author_kind == "yuki" else row.sender_display_name
 
     def _self_mentions_in(self, row: EventRecord, content: str) -> str:
-        # Native spans index the stored body, so only that exact text is rewritten.
-        if content != row.content:
-            return content
-        parts: list[str] = []
-        cursor = 0
-        for segment in row.segments:
-            data = segment.get("data")
-            if segment.get("type") != "mention" or not isinstance(data, dict):
-                continue
-            if data.get("kind") != "yuki" or "text_start" not in data:
-                continue
-            start, end = int(data["text_start"]), int(data["text_end"])
-            parts.extend((content[cursor:start], f"@{self._self_name}"))
-            cursor = end
-        return "".join(parts) + content[cursor:] if parts else content
+        return self_mention_content(row, content, self._self_name)
 
     def _with_self_mentions(self, row: EventRecord) -> EventRecord:
         content = self._self_mentions_in(row, row.content)

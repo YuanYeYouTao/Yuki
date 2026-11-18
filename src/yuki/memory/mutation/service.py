@@ -19,7 +19,7 @@ from yuki.config import Settings
 from yuki.conversation.canonical_db_models import CanonicalConversationModel
 from yuki.domain.conversations import ScopeType
 from yuki.domain.memory_config import MemoryConfigScope
-from yuki.event_prompt import ChatEventPromptRenderer
+from yuki.event_prompt import ChatEventPromptRenderer, self_mention_content
 from yuki.identity.authority import person_is_superuser
 from yuki.identity.person_identity import (
     current_person_ids,
@@ -2183,9 +2183,13 @@ class MemoryMutationService:
         if trusted_self_reflection and context.evidence_tool_receipt_id is not None:
             quote = normalize_memory_text(request.evidence_quote or "")
         elif trusted_self_reflection:
-            quote = self._self_reflection_evidence_quote(request, event)
+            quote = self._self_reflection_evidence_quote(
+                request, event, self_name=self._settings.character_identity.display_name
+            )
         else:
-            quote = self._evidence_quote(request, event.evidence_content)
+            quote = self._evidence_quote(
+                request, event, self_name=self._settings.character_identity.display_name
+            )
         if not quote:
             raise MemoryMutationRejected("memory_evidence_quote_required")
         authority, source_type = self._provenance(
@@ -2891,14 +2895,19 @@ class MemoryMutationService:
         return normalized
 
     @staticmethod
-    def _evidence_quote(request: MemoryMutationRequest, event_content: str) -> str:
-        source = normalize_memory_text(event_content)
+    def _evidence_quote(
+        request: MemoryMutationRequest, event: EventRecord, *, self_name: str
+    ) -> str:
+        source = normalize_memory_text(event.evidence_content)
         if not source:
             raise MemoryMutationRejected("empty_trigger_event")
         if request.evidence_quote is None:
             return source
+        # The model read Yuki's own mentions under her character name; either form is this event.
+        shown = self_mention_content(event, event.content, self_name)
+        rendered = normalize_memory_text(shown + event.evidence_content[len(event.content) :])
         quote = normalize_memory_text(request.evidence_quote)
-        if not quote or quote not in source:
+        if not quote or (quote not in source and quote not in rendered):
             raise MemoryMutationRejected("evidence_quote_not_in_current_event")
         return quote
 
@@ -2906,14 +2915,18 @@ class MemoryMutationService:
     def _self_reflection_evidence_quote(
         request: MemoryMutationRequest,
         event: EventRecord,
+        *,
+        self_name: str,
     ) -> str:
         source = normalize_memory_text(
             ChatEventPromptRenderer.event_content(event, None, ""),
         )
         if not source:
             raise MemoryMutationRejected("empty_trigger_event")
+        shown = replace(event, content=self_mention_content(event, event.content, self_name))
+        rendered = normalize_memory_text(ChatEventPromptRenderer.event_content(shown, None, ""))
         quote = normalize_memory_text(request.evidence_quote or "")
-        if not quote or quote not in source:
+        if not quote or (quote not in source and quote not in rendered):
             raise MemoryMutationRejected("evidence_quote_not_in_current_event")
         return quote
 
