@@ -1,0 +1,1 @@
+{"session": "31552577-0987-44f5-a746-69975dff8393", "rows": [{"phase": "inside_can_use_tool", "registry": [{"status": "waiting", "waitingFor": "permission prompt"}]}, {"phase": "after_result", "registry": [{"status": "idle", "waitingFor": null}]}]}

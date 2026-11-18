@@ -1,0 +1,10 @@
+{"t": 0.0, "side": "harness", "dir": "note", "note": "second independent app-server (srv2) resumes the thread held by srv1 (TUI + script clients)"}
+{"t": 0.001, "side": "S2@srv2", "dir": "out", "method": "initialize", "id": "e9ebcfcf"}
+{"t": 0.001, "side": "S2@srv2", "dir": "in", "method": "initialize:result", "id": "e9ebcfcf"}
+{"t": 0.001, "side": "S2@srv2", "dir": "out", "method": "thread/resume", "id": "5b7d4c44", "threadId": "01a1eec8-4680-7a80-a518-c513162d95e6"}
+{"t": 0.001, "side": "S2@srv2", "dir": "in", "kind": "notification", "method": "remoteControl/status/changed"}
+{"t": 0.002, "side": "S2@srv2", "dir": "in", "kind": "notification", "method": "account/updated"}
+{"t": 0.02, "side": "S2@srv2", "dir": "in", "method": "thread/resume:error", "id": "5b7d4c44", "code": -32600, "message": "thread 01a1eec8-4680-7a80-a518-c513162d95e6 already has an active writer"}
+{"t": 0.02, "side": "harness", "dir": "note", "note": "resume on srv2: rejected"}
+{"t": 10.022, "side": "S2@srv2", "dir": "local", "method": "close"}
+{"t": 10.022, "side": "S2@srv2", "dir": "in", "method": "connection_closed", "error": "ConnectionClosedError"}

@@ -1,0 +1,94 @@
+{"t": 0.0, "side": "harness", "dir": "note", "note": "scenario load start; agent claude-agent-acp 0.108.0, ANTHROPIC_MODEL=haiku"}
+{"t": 0.002, "side": "proc1", "dir": "local", "method": "spawn", "pid": 25396}
+{"t": 0.002, "side": "proc1", "dir": "out", "method": "initialize", "id": 1, "protocolVersion": 1}
+{"t": 0.161, "side": "proc1", "dir": "in", "method": "initialize:result", "id": 1, "protocolVersion": 1}
+{"t": 0.161, "side": "proc1", "dir": "out", "method": "session/new", "id": 2}
+{"t": 0.257, "side": "proc1", "dir": "in", "kind": "notification", "method": "_auth/status_update", "id": null}
+{"t": 0.257, "side": "proc1", "dir": "in", "kind": "notification", "method": "auth/status_update", "id": null}
+{"t": 0.345, "side": "proc1", "dir": "in", "kind": "notification", "method": "_auth/status_update", "id": null}
+{"t": 0.346, "side": "proc1", "dir": "in", "kind": "notification", "method": "auth/status_update", "id": null}
+{"t": 0.348, "side": "proc1", "dir": "in", "method": "session/new:result", "id": 2, "sessionId": "2a81e920-a333-4cb7-96c3-234cd4dffd70"}
+{"t": 0.348, "side": "harness", "dir": "note", "note": "session/new currentModeId=auto"}
+{"t": 0.348, "side": "proc1", "dir": "out", "method": "session/set_mode", "id": 3, "sessionId": "2a81e920-a333-4cb7-96c3-234cd4dffd70"}
+{"t": 0.352, "side": "proc1", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "2a81e920-a333-4cb7-96c3-234cd4dffd70", "update": "available_commands_update"}
+{"t": 0.353, "side": "proc1", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "2a81e920-a333-4cb7-96c3-234cd4dffd70", "update": "config_option_update"}
+{"t": 0.353, "side": "proc1", "dir": "in", "method": "session/set_mode:result", "id": 3}
+{"t": 0.353, "side": "proc1", "dir": "out", "method": "session/prompt", "id": 4, "sessionId": "2a81e920-a333-4cb7-96c3-234cd4dffd70"}
+{"t": 0.378, "side": "proc1", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "2a81e920-a333-4cb7-96c3-234cd4dffd70", "update": "available_commands_update"}
+{"t": 0.451, "side": "proc1", "dir": "in", "kind": "notification", "method": "_auth/status_update", "id": null}
+{"t": 0.451, "side": "proc1", "dir": "in", "kind": "notification", "method": "auth/status_update", "id": null}
+{"t": 1.961, "side": "proc1", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "2a81e920-a333-4cb7-96c3-234cd4dffd70", "update": "session_info_update"}
+{"t": 1.998, "side": "proc1", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "2a81e920-a333-4cb7-96c3-234cd4dffd70", "update": "usage_update"}
+{"t": 2.013, "side": "proc1", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "2a81e920-a333-4cb7-96c3-234cd4dffd70", "update": "usage_update"}
+{"t": 2.014, "side": "proc1", "dir": "in", "method": "session/prompt:result", "id": 4, "stopReason": "end_turn"}
+{"t": 2.014, "side": "harness", "dir": "note", "note": "proc1 turn1 end_turn"}
+{"t": 2.017, "side": "proc2", "dir": "local", "method": "spawn", "pid": 25435}
+{"t": 2.018, "side": "proc2", "dir": "out", "method": "initialize", "id": 1, "protocolVersion": 1}
+{"t": 2.198, "side": "proc2", "dir": "in", "method": "initialize:result", "id": 1, "protocolVersion": 1}
+{"t": 2.198, "side": "proc2", "dir": "out", "method": "session/load", "id": 2, "sessionId": "2a81e920-a333-4cb7-96c3-234cd4dffd70"}
+{"t": 2.298, "side": "proc2", "dir": "in", "kind": "notification", "method": "_auth/status_update", "id": null}
+{"t": 2.298, "side": "proc2", "dir": "in", "kind": "notification", "method": "auth/status_update", "id": null}
+{"t": 2.402, "side": "proc2", "dir": "in", "kind": "notification", "method": "_auth/status_update", "id": null}
+{"t": 2.402, "side": "proc2", "dir": "in", "kind": "notification", "method": "auth/status_update", "id": null}
+{"t": 2.407, "side": "proc2", "dir": "in", "method": "session/load:result", "id": 2, "sessionId": "2a81e920-a333-4cb7-96c3-234cd4dffd70"}
+{"t": 2.407, "side": "harness", "dir": "note", "note": "proc2 session/load while proc1 live: accepted; replayed chunks=2"}
+{"t": 2.407, "side": "proc2", "dir": "out", "method": "session/prompt", "id": 3, "sessionId": "2a81e920-a333-4cb7-96c3-234cd4dffd70"}
+{"t": 2.411, "side": "proc2", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "2a81e920-a333-4cb7-96c3-234cd4dffd70", "update": "available_commands_update"}
+{"t": 2.413, "side": "proc2", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "2a81e920-a333-4cb7-96c3-234cd4dffd70", "update": "session_info_update"}
+{"t": 2.439, "side": "proc2", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "2a81e920-a333-4cb7-96c3-234cd4dffd70", "update": "available_commands_update"}
+{"t": 2.511, "side": "proc2", "dir": "in", "kind": "notification", "method": "_auth/status_update", "id": null}
+{"t": 2.511, "side": "proc2", "dir": "in", "kind": "notification", "method": "auth/status_update", "id": null}
+{"t": 4.223, "side": "proc2", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "2a81e920-a333-4cb7-96c3-234cd4dffd70", "update": "usage_update"}
+{"t": 4.232, "side": "proc2", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "2a81e920-a333-4cb7-96c3-234cd4dffd70", "update": "usage_update"}
+{"t": 4.245, "side": "proc2", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "2a81e920-a333-4cb7-96c3-234cd4dffd70", "update": "usage_update"}
+{"t": 4.246, "side": "proc2", "dir": "in", "method": "session/prompt:result", "id": 3, "stopReason": "end_turn"}
+{"t": 4.246, "side": "harness", "dir": "note", "note": "proc2 prompt on the live session: end_turn"}
+{"t": 4.246, "side": "proc1", "dir": "out", "method": "session/prompt", "id": 5, "sessionId": "2a81e920-a333-4cb7-96c3-234cd4dffd70"}
+{"t": 4.965, "side": "proc1", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "2a81e920-a333-4cb7-96c3-234cd4dffd70", "update": "usage_update"}
+{"t": 5.727, "side": "proc1", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "2a81e920-a333-4cb7-96c3-234cd4dffd70", "update": "usage_update"}
+{"t": 5.732, "side": "proc1", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "2a81e920-a333-4cb7-96c3-234cd4dffd70", "update": "usage_update"}
+{"t": 5.733, "side": "proc1", "dir": "in", "method": "session/prompt:result", "id": 5, "stopReason": "end_turn"}
+{"t": 5.733, "side": "harness", "dir": "note", "note": "proc1 sees proc2's turn (ACPTWO in proc1 output): False"}
+{"t": 5.744, "side": "proc2", "dir": "in", "method": "eof"}
+{"t": 5.744, "side": "proc2", "dir": "local", "method": "process_exit", "returncode": 0}
+{"t": 5.753, "side": "proc1", "dir": "in", "method": "eof"}
+{"t": 5.753, "side": "proc1", "dir": "local", "method": "process_exit", "returncode": 0}
+{"t": 5.753, "side": "harness", "dir": "note", "note": "both processes exited; handoff: new process resumes / loads"}
+{"t": 5.756, "side": "proc3", "dir": "local", "method": "spawn", "pid": 25512}
+{"t": 5.756, "side": "proc3", "dir": "out", "method": "initialize", "id": 1, "protocolVersion": 1}
+{"t": 5.923, "side": "proc3", "dir": "in", "method": "initialize:result", "id": 1, "protocolVersion": 1}
+{"t": 5.923, "side": "proc3", "dir": "out", "method": "session/resume", "id": 2, "sessionId": "2a81e920-a333-4cb7-96c3-234cd4dffd70"}
+{"t": 6.02, "side": "proc3", "dir": "in", "kind": "notification", "method": "_auth/status_update", "id": null}
+{"t": 6.02, "side": "proc3", "dir": "in", "kind": "notification", "method": "auth/status_update", "id": null}
+{"t": 6.119, "side": "proc3", "dir": "in", "kind": "notification", "method": "_auth/status_update", "id": null}
+{"t": 6.119, "side": "proc3", "dir": "in", "kind": "notification", "method": "auth/status_update", "id": null}
+{"t": 6.123, "side": "proc3", "dir": "in", "method": "session/resume:result", "id": 2, "sessionId": "2a81e920-a333-4cb7-96c3-234cd4dffd70"}
+{"t": 6.123, "side": "harness", "dir": "note", "note": "proc3 session/resume: accepted; replayed updates=0"}
+{"t": 6.125, "side": "proc3", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "2a81e920-a333-4cb7-96c3-234cd4dffd70", "update": "available_commands_update"}
+{"t": 6.129, "side": "proc3", "dir": "in", "method": "eof"}
+{"t": 6.129, "side": "proc3", "dir": "local", "method": "process_exit", "returncode": 0}
+{"t": 6.131, "side": "proc4", "dir": "local", "method": "spawn", "pid": 25533}
+{"t": 6.131, "side": "proc4", "dir": "out", "method": "initialize", "id": 1, "protocolVersion": 1}
+{"t": 6.291, "side": "proc4", "dir": "in", "method": "initialize:result", "id": 1, "protocolVersion": 1}
+{"t": 6.291, "side": "proc4", "dir": "out", "method": "session/load", "id": 2, "sessionId": "2a81e920-a333-4cb7-96c3-234cd4dffd70"}
+{"t": 6.391, "side": "proc4", "dir": "in", "kind": "notification", "method": "_auth/status_update", "id": null}
+{"t": 6.391, "side": "proc4", "dir": "in", "kind": "notification", "method": "auth/status_update", "id": null}
+{"t": 6.494, "side": "proc4", "dir": "in", "kind": "notification", "method": "_auth/status_update", "id": null}
+{"t": 6.494, "side": "proc4", "dir": "in", "kind": "notification", "method": "auth/status_update", "id": null}
+{"t": 6.499, "side": "proc4", "dir": "in", "method": "session/load:result", "id": 2, "sessionId": "2a81e920-a333-4cb7-96c3-234cd4dffd70"}
+{"t": 6.499, "side": "harness", "dir": "local", "method": "load_replay_summary", "updates": 4, "user_chunks": 2, "agent_chunks": 2, "has_ACPONE": true, "has_ACPTWO": false}
+{"t": 6.499, "side": "proc4", "dir": "out", "method": "session/prompt", "id": 3, "sessionId": "2a81e920-a333-4cb7-96c3-234cd4dffd70"}
+{"t": 6.503, "side": "proc4", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "2a81e920-a333-4cb7-96c3-234cd4dffd70", "update": "available_commands_update"}
+{"t": 6.505, "side": "proc4", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "2a81e920-a333-4cb7-96c3-234cd4dffd70", "update": "session_info_update"}
+{"t": 6.533, "side": "proc4", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "2a81e920-a333-4cb7-96c3-234cd4dffd70", "update": "available_commands_update"}
+{"t": 6.598, "side": "proc4", "dir": "in", "kind": "notification", "method": "_auth/status_update", "id": null}
+{"t": 6.598, "side": "proc4", "dir": "in", "kind": "notification", "method": "auth/status_update", "id": null}
+{"t": 8.103, "side": "proc4", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "2a81e920-a333-4cb7-96c3-234cd4dffd70", "update": "usage_update"}
+{"t": 8.312, "side": "proc4", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "2a81e920-a333-4cb7-96c3-234cd4dffd70", "update": "usage_update"}
+{"t": 8.314, "side": "proc4", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "2a81e920-a333-4cb7-96c3-234cd4dffd70", "update": "usage_update"}
+{"t": 8.324, "side": "proc4", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "2a81e920-a333-4cb7-96c3-234cd4dffd70", "update": "usage_update"}
+{"t": 8.325, "side": "proc4", "dir": "in", "method": "session/prompt:result", "id": 3, "stopReason": "end_turn"}
+{"t": 8.325, "side": "harness", "dir": "note", "note": "proc4 continues after handoff: end_turn"}
+{"t": 8.341, "side": "proc4", "dir": "in", "method": "eof"}
+{"t": 8.341, "side": "proc4", "dir": "local", "method": "process_exit", "returncode": 0}
+{"t": 8.341, "side": "harness", "dir": "note", "note": "scenario load end"}

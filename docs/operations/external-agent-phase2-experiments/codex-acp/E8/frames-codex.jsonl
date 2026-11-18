@@ -1,0 +1,62 @@
+{"t": 0.0, "side": "harness", "dir": "note", "note": "TUI exited (user stopped). Yuki-side script takes over on the same daemon (srv1)"}
+{"t": 0.001, "side": "S@srv1", "dir": "out", "method": "initialize", "id": "51c6e801"}
+{"t": 0.001, "side": "S@srv1", "dir": "in", "method": "initialize:result", "id": "51c6e801"}
+{"t": 0.001, "side": "S@srv1", "dir": "out", "method": "thread/read", "id": "aaa2eb93", "threadId": "01a1eec8-4680-7a80-a518-c513162d95e6"}
+{"t": 0.001, "side": "S@srv1", "dir": "in", "kind": "notification", "method": "remoteControl/status/changed"}
+{"t": 0.002, "side": "S@srv1", "dir": "in", "kind": "notification", "method": "account/updated"}
+{"t": 0.004, "side": "S@srv1", "dir": "in", "kind": "notification", "method": "deprecationNotice"}
+{"t": 0.004, "side": "S@srv1", "dir": "in", "method": "thread/read:result", "id": "aaa2eb93", "thread.id": "01a1eec8-4680-7a80-a518-c513162d95e6", "thread.status": "idle"}
+{"t": 0.004, "side": "S@srv1", "dir": "out", "method": "thread/resume", "id": "96ea3d03", "threadId": "01a1eec8-4680-7a80-a518-c513162d95e6"}
+{"t": 0.007, "side": "S@srv1", "dir": "in", "method": "thread/resume:result", "id": "96ea3d03", "thread.id": "01a1eec8-4680-7a80-a518-c513162d95e6", "thread.status": "idle"}
+{"t": 0.007, "side": "S@srv1", "dir": "out", "method": "turn/start", "id": "d75e85bf", "threadId": "01a1eec8-4680-7a80-a518-c513162d95e6", "clientUserMessageId": "e8-yuki-turn"}
+{"t": 0.007, "side": "S@srv1", "dir": "in", "kind": "notification", "method": "thread/goal/cleared", "threadId": "01a1eec8-4680-7a80-a518-c513162d95e6"}
+{"t": 0.015, "side": "S@srv1", "dir": "in", "method": "turn/start:result", "id": "d75e85bf", "turn.id": "01a1eecc-beaf-78a3-8866-e5d1acafd213", "turn.status": "inProgress"}
+{"t": 0.02, "side": "S@srv1", "dir": "in", "kind": "notification", "method": "thread/status/changed", "threadId": "01a1eec8-4680-7a80-a518-c513162d95e6", "status": "active"}
+{"t": 0.02, "side": "S@srv1", "dir": "in", "kind": "notification", "method": "turn/started", "threadId": "01a1eec8-4680-7a80-a518-c513162d95e6", "turn.id": "01a1eecc-beaf-78a3-8866-e5d1acafd213", "turn.status": "inProgress"}
+{"t": 0.026, "side": "S@srv1", "dir": "in", "kind": "notification", "method": "item/started", "threadId": "01a1eec8-4680-7a80-a518-c513162d95e6", "turnId": "01a1eecc-beaf-78a3-8866-e5d1acafd213", "item.id": "01a1eecc-bec1-7030-980f-b4546c4b7546", "item.type": "userMessage", "item.clientId": "e8-yuki-turn"}
+{"t": 0.027, "side": "S@srv1", "dir": "in", "kind": "notification", "method": "item/completed", "threadId": "01a1eec8-4680-7a80-a518-c513162d95e6", "turnId": "01a1eecc-beaf-78a3-8866-e5d1acafd213", "item.id": "01a1eecc-bec1-7030-980f-b4546c4b7546", "item.type": "userMessage", "item.clientId": "e8-yuki-turn"}
+{"t": 1.913, "side": "S@srv1", "dir": "in", "kind": "notification", "method": "item/started", "threadId": "01a1eec8-4680-7a80-a518-c513162d95e6", "turnId": "01a1eecc-beaf-78a3-8866-e5d1acafd213", "item.id": "msg_0fcb3d1a60822e8b016afda50fa55487d19b10146489623ea8", "item.type": "agentMessage"}
+{"t": 1.913, "side": "S@srv1", "dir": "in", "kind": "notification", "method": "turn/moderationMetadata", "threadId": "01a1eec8-4680-7a80-a518-c513162d95e6", "turnId": "01a1eecc-beaf-78a3-8866-e5d1acafd213"}
+{"t": 1.913, "side": "S@srv1", "dir": "in", "kind": "notification", "method": "item/completed", "threadId": "01a1eec8-4680-7a80-a518-c513162d95e6", "turnId": "01a1eecc-beaf-78a3-8866-e5d1acafd213", "item.id": "msg_0fcb3d1a60822e8b016afda50fa55487d19b10146489623ea8", "item.type": "agentMessage"}
+{"t": 1.923, "side": "S@srv1", "dir": "in", "kind": "notification", "method": "thread/readState/changed", "threadId": "01a1eec8-4680-7a80-a518-c513162d95e6"}
+{"t": 1.924, "side": "S@srv1", "dir": "in", "kind": "notification", "method": "thread/status/changed", "threadId": "01a1eec8-4680-7a80-a518-c513162d95e6", "status": "idle"}
+{"t": 1.924, "side": "S@srv1", "dir": "in", "kind": "notification", "method": "turn/completed", "threadId": "01a1eec8-4680-7a80-a518-c513162d95e6", "turn.id": "01a1eecc-beaf-78a3-8866-e5d1acafd213", "turn.status": "completed"}
+{"t": 1.924, "side": "S@srv1", "dir": "out", "method": "thread/unsubscribe", "id": "af8881e0", "threadId": "01a1eec8-4680-7a80-a518-c513162d95e6"}
+{"t": 1.924, "side": "S@srv1", "dir": "in", "method": "thread/unsubscribe:result", "id": "af8881e0"}
+{"t": 1.924, "side": "S@srv1", "dir": "local", "method": "close"}
+{"t": 1.924, "side": "S@srv1", "dir": "in", "method": "connection_closed", "error": "ConnectionClosedError"}
+{"t": 1.924, "side": "harness", "dir": "note", "note": "script released (unsubscribe + disconnect)"}
+{"t": 4.926, "side": "probe@srv1", "dir": "out", "method": "initialize", "id": "36aa807e"}
+{"t": 4.926, "side": "probe@srv1", "dir": "in", "kind": "notification", "method": "remoteControl/status/changed"}
+{"t": 4.926, "side": "probe@srv1", "dir": "in", "method": "initialize:result", "id": "36aa807e"}
+{"t": 4.926, "side": "harness", "dir": "note", "note": "thread still loaded on srv1: True"}
+{"t": 4.926, "side": "probe@srv1", "dir": "local", "method": "close"}
+{"t": 4.926, "side": "probe@srv1", "dir": "in", "method": "connection_closed", "error": "ConnectionClosedError"}
+{"t": 4.927, "side": "S2@srv2", "dir": "out", "method": "initialize", "id": "b84740ea"}
+{"t": 4.927, "side": "S2@srv2", "dir": "in", "kind": "notification", "method": "remoteControl/status/changed"}
+{"t": 4.927, "side": "S2@srv2", "dir": "in", "method": "initialize:result", "id": "b84740ea"}
+{"t": 4.927, "side": "S2@srv2", "dir": "out", "method": "thread/resume", "id": "2da99711", "threadId": "01a1eec8-4680-7a80-a518-c513162d95e6"}
+{"t": 4.927, "side": "S2@srv2", "dir": "in", "kind": "notification", "method": "account/updated"}
+{"t": 4.933, "side": "S2@srv2", "dir": "in", "method": "thread/resume:error", "id": "2da99711", "code": -32600, "message": "thread 01a1eec8-4680-7a80-a518-c513162d95e6 already has an active writer"}
+{"t": 4.933, "side": "harness", "dir": "note", "note": "independent writer (srv2) resume after release: rejected"}
+{"t": 4.933, "side": "S2@srv2", "dir": "local", "method": "close"}
+{"t": 4.933, "side": "S2@srv2", "dir": "in", "method": "connection_closed", "error": "ConnectionClosedError"}
+{"t": 18.951, "side": "tui2", "dir": "local", "method": "screen", "marker": "HANDOFF7", "visible": false, "earlier_marker_TUIHELLO1": false, "conflict_banner": false}
+{"t": 18.952, "side": "probe@srv1", "dir": "out", "method": "initialize", "id": "bf9a94e8"}
+{"t": 18.953, "side": "probe@srv1", "dir": "in", "kind": "notification", "method": "remoteControl/status/changed"}
+{"t": 18.953, "side": "probe@srv1", "dir": "in", "method": "initialize:result", "id": "bf9a94e8"}
+{"t": 18.953, "side": "probe@srv1", "dir": "out", "method": "thread/read", "id": "d2ace43f", "threadId": "01a1eec8-4680-7a80-a518-c513162d95e6"}
+{"t": 18.953, "side": "probe@srv1", "dir": "in", "kind": "notification", "method": "account/updated"}
+{"t": 18.956, "side": "probe@srv1", "dir": "in", "kind": "notification", "method": "deprecationNotice"}
+{"t": 18.956, "side": "probe@srv1", "dir": "in", "method": "thread/read:result", "id": "d2ace43f", "thread.id": "01a1eec8-4680-7a80-a518-c513162d95e6", "thread.status": "idle"}
+{"t": 18.956, "side": "harness", "dir": "note", "note": "turns before takeover 7, after handback 8; last turn clientIds=['e8-yuki-turn']"}
+{"t": 18.977, "side": "harness", "dir": "note", "note": "threads in this cwd: 6; handed-back id unchanged and present: True"}
+{"t": 18.977, "side": "probe@srv1", "dir": "local", "method": "close"}
+{"t": 18.978, "side": "probe@srv1", "dir": "in", "method": "connection_closed", "error": "ConnectionClosedError"}
+{"t": null, "side": "tui2", "dir": "local", "method": "screen(after dismissing the TUI update prompt)", "marker": "HANDOFF7", "visible": true, "earlier_marker_TUIHELLO1": true, "earlier_marker_QUEUED6": true, "conflict_banner": false}
+{"t": 0.001, "side": "probe@srv1", "dir": "out", "method": "initialize", "id": "d9c54dcc"}
+{"t": 0.001, "side": "probe@srv1", "dir": "in", "method": "initialize:result", "id": "d9c54dcc"}
+{"t": 0.001, "side": "probe@srv1", "dir": "in", "kind": "notification", "method": "remoteControl/status/changed"}
+{"t": 0.001, "side": "harness", "dir": "note", "note": "~25 min after release with no client subscribed: handed-back thread still loaded on srv1: False; loaded count=0"}
+{"t": 0.002, "side": "probe@srv1", "dir": "local", "method": "close"}
+{"t": 0.002, "side": "probe@srv1", "dir": "in", "method": "connection_closed", "error": "ConnectionClosedError"}
