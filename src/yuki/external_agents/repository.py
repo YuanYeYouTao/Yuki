@@ -13,6 +13,7 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 from sqlalchemy import and_, func, or_, select, text, update
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from yuki.client_api.db_models import ClientDeviceModel
 from yuki.client_api.errors import ClientError
@@ -183,6 +184,58 @@ class AgentRepository:
             )
             if current is not None and not current():
                 raise CatalogSuperseded
+
+    async def unowned_requests(
+        self, instance: AgentInstanceModel, native_session: str
+    ) -> list[dict[str, Any]]:
+        """Native waits in this session that no operation received, still unresolved.
+
+        Only metadata was uploaded for them (tool name, time); never their content.
+        Callers have already authorized the actor for this instance's device. Only
+        this session's unowned waits and their resolutions are read.
+        """
+        stored = AgentEventModel.payload_json
+        async with self.database.read_session() as reader:
+            rows = (
+                await reader.execute(
+                    select(
+                        AgentEventModel.id,
+                        AgentEventModel.kind,
+                        AgentEventModel.payload_json,
+                        AgentEventModel.created_at,
+                    )
+                    .where(
+                        AgentEventModel.operation_id.is_(None),
+                        AgentEventModel.device_id == instance.device_id,
+                        func.json_extract(stored, "$.instance_id") == instance.local_id,
+                        func.json_extract(stored, "$.session_id") == native_session,
+                        or_(
+                            and_(
+                                AgentEventModel.kind.in_(("permission", "question")),
+                                func.json_extract(stored, "$.payload.unowned") == 1,
+                            ),
+                            func.json_extract(stored, "$.payload.permission_resolved").is_not(None),
+                        ),
+                    )
+                    .order_by(AgentEventModel.id)
+                )
+            ).all()
+        pending: dict[str, dict[str, Any]] = {}
+        for identity, kind, payload_json, created in rows:
+            payload = json.loads(payload_json).get("payload")
+            if not isinstance(payload, dict):
+                continue
+            if kind in {"permission", "question"} and payload.get("unowned") is True:
+                pending[str(payload.get("native_request_id"))] = {
+                    "permission_id": str(identity),
+                    "kind": kind,
+                    "tool": payload.get("tool"),
+                    "received_at": created.replace(tzinfo=UTC).isoformat(),
+                    "options": ["deny"],
+                }
+            elif isinstance(payload.get("permission_resolved"), str):
+                pending.pop(payload["permission_resolved"], None)
+        return list(pending.values())
 
     async def native_session(self, identity: str, actor: str) -> AgentSessionModel:
         async with self.database.read_session() as session:
@@ -835,6 +888,151 @@ class AgentRepository:
                             if event["kind"] in {"permission", "question"}
                             else None,
                         )
+            return
+
+    async def dispatchable(self, identity: str) -> bool:
+        """Whether a registered command's original source still permits writing it."""
+        async with self.database.read_session() as reader:
+            row = await reader.get(AgentOperationModel, identity)
+            if row is None or row.result_json is not None or row.detached_at is not None:
+                return False
+            if row.work_id is None:
+                return True
+            owner = await reader.scalar(
+                select(work.c.id)
+                .join(
+                    CanonicalConversationModel,
+                    CanonicalConversationModel.id == work.c.conversation_id,
+                )
+                .where(
+                    work.c.id == row.work_id,
+                    work.c.state.not_in(TERMINAL),
+                    work.c.generation == func.json_extract(row.source_json, "$.generation"),
+                    CanonicalConversationModel.generation == work.c.generation,
+                )
+            )
+            return owner is not None
+
+    async def unconfirmed(self, device_id: str) -> list[tuple[str, str]]:
+        """Operations whose device answer was never recorded and still matters.
+
+        Run-bearing operations of live Work; controls while their target is still
+        unsettled or their initiating Work is live. Once neither holds, the answer
+        changes nothing and the control keeps its unknown receipt. Each is only read
+        back by its original ID, never resent.
+        """
+        target = aliased(AgentOperationModel)
+        live_work = work.c.state.not_in(TERMINAL)
+        async with self.database.read_session() as reader:
+            rows = await reader.execute(
+                select(AgentOperationModel.id, AgentInstanceModel.local_id)
+                .join(AgentInstanceModel, AgentInstanceModel.id == AgentOperationModel.instance_id)
+                .outerjoin(work, work.c.id == AgentOperationModel.work_id)
+                .outerjoin(
+                    target,
+                    target.id
+                    == func.json_extract(
+                        AgentOperationModel.command_json, "$.arguments.operation_id"
+                    ),
+                )
+                .where(
+                    AgentInstanceModel.device_id == device_id,
+                    AgentOperationModel.result_json.is_(None),
+                    AgentOperationModel.detached_at.is_(None),
+                    or_(
+                        and_(AgentOperationModel.run_id.is_not(None), live_work),
+                        and_(
+                            AgentOperationModel.action.in_(
+                                ("steer", "respond", "cancel", "detach")
+                            ),
+                            or_(
+                                live_work,
+                                and_(
+                                    target.id.is_not(None),
+                                    target.detached_at.is_(None),
+                                    or_(
+                                        target.result_json.is_(None),
+                                        func.coalesce(
+                                            func.json_extract(target.result_json, "$.pending"), 1
+                                        )
+                                        != 0,
+                                    ),
+                                ),
+                            ),
+                        ),
+                    ),
+                )
+                .order_by(AgentOperationModel.created_at)
+            )
+            return [(identity, local_id) for identity, local_id in rows.all()]
+
+    async def control_settled(self, identity: str) -> None:
+        """Tell the Work that issued a control what it settled (private input)."""
+        waits = WorkWaitRepository(WorkRepository(self.database))
+        while True:
+            async with self.database.read_session() as reader:
+                await reader.execute(text("BEGIN"))
+                row = await reader.get(AgentOperationModel, identity)
+                if row is None or row.work_id is None or row.result_json is None:
+                    return
+                target_id = json.loads(row.command_json).get("arguments", {}).get("operation_id")
+                target = await reader.get(AgentOperationModel, target_id) if target_id else None
+                # A run the control already ended is matched by the normal completion
+                # path (with its real terminal fact); only a still-waiting run is signalled.
+                waiting_run = (
+                    target.run_id
+                    if target is not None
+                    and target.run_id
+                    and target.work_id == row.work_id
+                    and await reader.scalar(
+                        select(SandboxTaskRunModel.status).where(
+                            SandboxTaskRunModel.request_id == target.id
+                        )
+                    )
+                    == "waiting"
+                    else None
+                )
+                prepared = {row.work_id: await waits.prepare_external_action(reader, row.work_id)}
+            result = json.loads(row.result_json)
+            input_json = encode(
+                {
+                    "kind": "external_agent_control",
+                    "action": row.action,
+                    "target_operation_id": target_id,
+                    **{
+                        key: result[key]
+                        for key in (
+                            "status",
+                            "pending",
+                            "error",
+                            "cancel_requested",
+                            "response_submitted",
+                            "released_without_device",
+                        )
+                        if key in result
+                    },
+                }
+            )
+            async with self.database.immediate_session() as writer:
+                if not await waits.external_action_current(
+                    writer, row.work_id, prepared[row.work_id]
+                ):
+                    continue
+                current = await writer.get(AgentOperationModel, identity)
+                assert current is not None
+                await self._input(
+                    writer,
+                    current,
+                    f"control:{identity}",
+                    input_json,
+                    prepared_waits=prepared,
+                    permission_id=None,
+                )
+                if waiting_run is not None:
+                    # A Work waiting on that very run hears about the control at once.
+                    await waits.signal_external_action(
+                        writer, row.work_id, waiting_run, prepared=prepared[row.work_id]
+                    )
             return
 
     async def connection_event(self, device_id: str, connection_id: str, online: bool) -> None:

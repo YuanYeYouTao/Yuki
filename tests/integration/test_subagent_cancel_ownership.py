@@ -53,6 +53,9 @@ async def test_native_retirement_is_not_duplicated_by_shell_cancel_scan(bridge, 
                 operation_id,
                 bridge.source,
             )
+            # The prompt is written by the service after registration; this test is
+            # about retiring an actually dispatched native prompt once the Work stops.
+            await bridge.service.drain()
         await stop_work(bridge, control.current["id"])
         if revoked:
             async with bridge.database.immediate_session() as writer:

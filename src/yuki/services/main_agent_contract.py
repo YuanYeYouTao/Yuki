@@ -119,7 +119,9 @@ class MainAgentContract:
                         # 37: computer wake/sleep/snapshot/restore on Yuki's own computer.
                         # 38: computer scale/zoom/elements/element, modifiers, triple/middle
                         #     clicks, key repeat and paste on Yuki's own computer.
-                        "version": 38,
+                        # 39: coding-agent actions return on registration; Claude queue
+                        #     appends without steer; deny-only answers for unowned waits.
+                        "version": 39,
                         "mode": self.mode,
                         "code_api": CODE_API_REVISION,
                         "direct_names": sorted(DIRECT_TOOL_NAMES),

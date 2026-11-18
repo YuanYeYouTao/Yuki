@@ -35,6 +35,20 @@ case = work_case
 sequences = count(1)
 
 
+# What the real connector declares for a Codex instance.
+CODEX_CAPABILITIES = [
+    "list",
+    "get",
+    "watch",
+    "prompt",
+    "steer",
+    "queue",
+    "respond",
+    "cancel",
+    "detach",
+]
+
+
 async def register_device(database, person_id, *, label="computer"):
     identity = client_identity_service(database)
     code = await identity.issue_for_operator(
@@ -50,7 +64,7 @@ async def register_device(database, person_id, *, label="computer"):
                 "id": "profile",
                 "label": "same name",
                 "driver": "codex",
-                "capabilities": ["get", "steer"],
+                "capabilities": CODEX_CAPABILITIES,
             }
         ],
     )
@@ -73,7 +87,9 @@ async def native(database):
     env.session = mapping["native-thread"]
     env.source = {"actor_person_id": env.actor}
     env.service = ExternalAgentService(database, SandboxTaskRepository(database))
-    return env
+    yield env
+    # Device work the service owns ends with it, as on a real shutdown.
+    await env.service.close()
 
 
 async def prepare(env, identity="original-operation", **changes):
@@ -102,7 +118,7 @@ async def connect(env, connection, *, profiles=("profile",)):
         {
             "protocol_version": 4,
             "instances": [
-                {"id": local_id, "driver": "codex", "capabilities": ["get", "steer"]}
+                {"id": local_id, "driver": "codex", "capabilities": CODEX_CAPABILITIES}
                 for local_id in profiles
             ],
         },
@@ -356,13 +372,18 @@ async def test_original_journal_query_distinguishes_missing_from_confirmed_failu
 
     connection = DeviceConnection(native.device["device_id"], Socket())
     await connect(native, connection)
-    result = await native.service.execute(
+    await native.service.execute(
         {"action": "get", "operation_id": original.id}, "reconcile-original", native.source
+    )
+    await native.service.drain()
+    result = await native.service.execute(
+        {"action": "get", "operation_id": original.id}, "reconcile-again", native.source
     )
     assert result["status"] == ("unknown" if missing else "failed")
     assert result["pending"] is missing and result["uncertain"] is missing
     if missing:
         assert (await native.repository.operation(original.id, native.actor)).result_json is None
+        assert result["reconciliation_status"] == "not_found"
     else:
         assert result["error"] == "native_rejected" and not result["admitted"]
 
@@ -521,6 +542,7 @@ async def test_permission_uses_internal_event_id_and_resolves_exact_native_quest
         "answer-original-question",
         native.source,
     )
+    await native.service.drain()
     assert commands[0]["arguments"]["permission_id"] == "native-question"
     assert commands[0]["arguments"]["native_request_id"] == "native-question"
     assert result["run_id"] is None
@@ -629,6 +651,7 @@ async def test_dispatch_disconnect_keeps_original_operation_unknown_without_new_
         "prompt": "keep going",
     }
     result = await native.service.execute(arguments, "uncertain-original", native.source)
+    await native.service.drain()
     assert result["pending"] and result["uncertain"] and result["status"] == "unknown"
     assert result["admitted"] is False
     replay = await native.service.execute(arguments, "uncertain-original", native.source)
@@ -734,6 +757,7 @@ async def test_detach_settles_only_supervision_and_does_not_cancel_native(
     await env.service.execute(
         {"action": "detach", "operation_id": watching["operation_id"]}, "end-supervision", source
     )
+    await env.service.drain()
     original = await env.repository.operation(watching["operation_id"], env.actor)
     assert (original.detached_at is not None) is detach_succeeds
     async with database.read_session() as session:

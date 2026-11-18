@@ -28,10 +28,17 @@ from yuki.client_api.db_models import ClientDeviceModel
 from yuki.client_api.errors import ClientError
 from yuki.client_api.identity import ClientIdentityService, ClientPrincipal, fingerprint
 from yuki.client_api.pagination import cursor, decode_cursor
-from yuki.client_api.work_projection import public_step, step_position, steps_token, wait_view
+from yuki.client_api.work_projection import (
+    public_step,
+    step_operation,
+    step_position,
+    steps_token,
+    wait_view,
+)
 from yuki.conversation.canonical_db_models import (
     CanonicalConversationModel,
 )
+from yuki.external_agents.db_models import AgentInstanceModel, AgentOperationModel
 from yuki.gateway.providers.app.ingress import AppGateway
 from yuki.identity.canonical_uow import InboundPreparation
 from yuki.identity.db_models import IdentityBindingModel, PresenceModel, SpaceBindingModel
@@ -550,8 +557,35 @@ class ClientWorks:
                 )
             ).mappings()
             _, token = await steps_token(session, identity)
+            # Reading a Work does not grant its agent operations: a reference is shown
+            # only for operations of a computer that belongs to the viewer's person.
+            referenced = {
+                operation
+                for item in selected
+                if (operation := step_operation(json.loads(item["receipt_json"]))) is not None
+            }
+            readable = (
+                frozenset(
+                    await session.scalars(
+                        select(AgentOperationModel.id)
+                        .join(
+                            AgentInstanceModel,
+                            AgentInstanceModel.id == AgentOperationModel.instance_id,
+                        )
+                        .join(
+                            ClientDeviceModel, ClientDeviceModel.id == AgentInstanceModel.device_id
+                        )
+                        .where(
+                            AgentOperationModel.id.in_(_values(referenced)),
+                            person_family_condition(ClientDeviceModel.person_id, current.person_id),
+                        )
+                    )
+                )
+                if referenced
+                else frozenset()
+            )
             return {
-                "steps": [public_step(item, namespace) for item in selected],
+                "steps": [public_step(item, namespace, readable) for item in selected],
                 "next_after": cursor(
                     [selected[-1]["created"], public_step(selected[-1], namespace)["step_id"]]
                 )

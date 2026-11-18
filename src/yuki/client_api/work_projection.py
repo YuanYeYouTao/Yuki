@@ -20,6 +20,46 @@ from yuki.runtime.work_wait_schema import waits
 
 _COMMAND_TOOLS = frozenset({"run_command", "read_command", "control_command"})
 
+# Display kinds of the original call (after historical names map to current tools).
+# Display only: never an authorization, completion or classification of effects.
+_KINDS: dict[str, str] = {
+    **dict.fromkeys(_COMMAND_TOOLS, "terminal"),
+    "computer": "computer",
+    "browser": "browser",
+    **dict.fromkeys(("send", "recall_message"), "message"),
+    **dict.fromkeys(("read_chat", "find_contacts", "get_members"), "chat"),
+    "web_search": "search",
+    "read_webpage": "web",
+    **dict.fromkeys(
+        (
+            "view_file",
+            "copy_file",
+            "workspace_publish",
+            "read_result",
+            "workspace_list",
+            "workspace_read",
+            "workspace_write",
+        ),
+        "file",
+    ),
+    "get_coding_agents": "agent_read",
+    "use_coding_agent": "agent_control",
+    **dict.fromkeys(
+        ("search_memory", "save_memory", "edit_memory", "get_memory_fact", "set_short_note"),
+        "memory",
+    ),
+    **dict.fromkeys(("get_schedules", "manage_schedule", "automation_list"), "schedule"),
+    **dict.fromkeys(("manage_task", "start_subtask", "message_task", "get_tasks"), "task"),
+    "wait": "wait",
+    **dict.fromkeys(("get_environment", "time_get_current", "get_my_capabilities"), "environment"),
+    "local_device": "device_legacy",
+}
+# Agent actions recorded on the original call are a closed protocol vocabulary.
+_AGENT_ACTIONS = frozenset(
+    {"prompt", "queue", "watch", "steer", "answer", "respond", "cancel", "detach", "get", "list"}
+)
+_AGENT_READS = frozenset({"get", "list"})
+
 
 def step_id(secret: bytes, key: str) -> str:
     return "s_" + hmac.new(secret, key.encode(), hashlib.sha256).hexdigest()
@@ -40,7 +80,21 @@ async def steps_token(session: AsyncSession, identity: str) -> tuple[int, str]:
     return count, f"{count}:{latest if latest is not None else 0}"
 
 
-def public_step(row: Any, secret: bytes) -> dict[str, Any]:
+def step_operation(receipt: dict[str, Any]) -> str | None:
+    """The external-agent operation an original call created or targeted, if any."""
+    outcome = receipt.get("outcome")
+    identity = outcome.get("operation_id") if isinstance(outcome, dict) else None
+    return identity if isinstance(identity, str) else None
+
+
+def public_step(
+    row: Any, secret: bytes, readable_operations: frozenset[str] = frozenset()
+) -> dict[str, Any]:
+    """Project one original call to a public step.
+
+    `readable_operations` are agent operations the viewer may read now (checked by the
+    caller against their own ACL); no other cross-resource reference is returned.
+    """
     receipt = json.loads(row["receipt_json"])
     evidence = historical_evidence(receipt, state=row["state"], kind=row["kind"])
     # Original receipts keep their recorded name; it is read through the history map.
@@ -107,6 +161,42 @@ def public_step(row: Any, secret: bytes) -> dict[str, Any]:
             stack.extend(value.values())
         elif isinstance(value, list):
             stack.extend(value)
+    invocation = receipt.get("invocation")
+    invocation = invocation if isinstance(invocation, dict) else {}
+    outcome = receipt.get("outcome")
+    outcome = outcome if isinstance(outcome, dict) else {}
+    kind = _KINDS.get(tool, "terminal" if terminal else "tool")
+    if terminal and category in {"browser", "computer"}:
+        kind = category
+    recorded_action = invocation.get("action")
+    action = (
+        recorded_action
+        if kind in {"agent_read", "agent_control"} and recorded_action in _AGENT_ACTIONS
+        else None
+    )
+    if kind == "agent_control" and action in _AGENT_READS:
+        # Historical `external_agent` also carried read-only list/get.
+        kind = "agent_read"
+    detail: dict[str, Any] = {"record_seconds": max(0.0, row["updated"] - row["created"])}
+    if kind == "terminal":
+        process = outcome.get("process")
+        if isinstance(process, dict):
+            if type(process.get("exit_code")) is int:
+                detail["exit_code"] = process["exit_code"]
+            if isinstance(process.get("output_lost"), bool):
+                detail["output_lost"] = process["output_lost"]
+        detail["where"] = "device" if isinstance(outcome.get("device_id"), str) else "yuki"
+    elif kind == "message":
+        if isinstance(outcome.get("delivered_message"), bool):
+            # Text delivery only; attachments and partial delivery are not implied.
+            detail["text_delivered"] = outcome["delivered_message"]
+        target = outcome.get("delivery_target")
+        if isinstance(target, dict) and target.get("kind") in {"group", "private", "channel"}:
+            detail["target_kind"] = target["kind"]
+    elif kind in {"agent_read", "agent_control"}:
+        operation = step_operation(receipt)
+        if operation is not None and operation in readable_operations:
+            detail["operation_id"] = operation
     return {
         "step_id": step_id(secret, row["effect_key"]),
         "category": category,
@@ -116,6 +206,10 @@ def public_step(row: Any, secret: bytes) -> dict[str, Any]:
         "created_at": timestamp(row["created"]),
         "updated_at": timestamp(row["updated"]),
         "artifacts": artifacts,
+        "kind": kind,
+        "tool": tool,
+        "action": action,
+        "detail": detail,
     }
 
 
