@@ -422,13 +422,30 @@ async def test_file_copy_to_actual_connector(bridge, tmp_path, monkeypatch):
                 cut_target = device_root / "cut-before-final.bin"
                 cut = {"done": False}
 
+                # The connector may not reconnect before the cut request has run: a
+                # reconnect that wins the race would answer the last part (the race
+                # phase 1 recorded as this test's flake, §21.4).
+                reconnect = asyncio.Event()
+                original_connect = bridge.service.connect
+
+                async def gated_connect(*args, **kwargs):
+                    await reconnect.wait()
+                    return await original_connect(*args, **kwargs)
+
                 async def cut_before_final(device, actor, action, arguments, *, identity):
                     if action == "write" and arguments["final"] and not cut["done"]:
                         cut["done"] = True
+                        monkeypatch.setattr(bridge.service, "connect", gated_connect)
                         await connector.stream.close()
                         async with asyncio.timeout(8):
                             while bridge.service.connections.online(device):  # noqa: ASYNC110
                                 await asyncio.sleep(0.01)
+                        try:
+                            return await original_request(
+                                device, actor, action, arguments, identity=identity
+                            )
+                        finally:
+                            reconnect.set()
                     return await original_request(
                         device, actor, action, arguments, identity=identity
                     )

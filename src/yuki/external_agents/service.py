@@ -87,11 +87,22 @@ class ExternalAgentService:
                 await self.repository.connection_event(connection.device_id, connection.id, False)
             except BaseException as close_error:
                 errors.append(close_error)
-        # Each owned task's outcome is reported once, even if close() runs again.
-        owned = (*self._retiring.values(), *self._dispatches.values(), *self._queries.values())
-        self._retiring.clear()
-        results = await asyncio.gather(*owned, return_exceptions=True)
-        errors.extend(result for result in results if isinstance(result, BaseException))
+        # Each owned task's outcome is reported once, even if close() runs again. Tasks
+        # created while earlier ones finish are collected too, as drain() does.
+        seen: set[asyncio.Task[None]] = set()
+        while owned := [
+            task
+            for task in (
+                *self._retiring.values(),
+                *self._dispatches.values(),
+                *self._queries.values(),
+            )
+            if task not in seen
+        ]:
+            seen.update(owned)
+            self._retiring.clear()
+            results = await asyncio.gather(*owned, return_exceptions=True)
+            errors.extend(result for result in results if isinstance(result, BaseException))
         if errors:
             cancellation = next(
                 (error for error in errors if not isinstance(error, Exception)), None
