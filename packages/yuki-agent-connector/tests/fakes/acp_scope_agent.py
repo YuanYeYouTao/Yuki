@@ -41,6 +41,8 @@ def run(session, steps):
     for step in steps:
         if "tool" in step:
             update(session, {"sessionUpdate": "tool_call", **step["tool"]})
+        elif "update" in step:
+            update(session, step["update"])
         elif "permission" in step:
             response = request(
                 "session/request_permission", {"sessionId": session, **step["permission"]}

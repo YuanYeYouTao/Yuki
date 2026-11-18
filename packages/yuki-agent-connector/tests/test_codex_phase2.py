@@ -36,7 +36,16 @@ ORIGINAL = {
 class AppServer:
     """One thread owned by the user's daemon; turns are started by queue items."""
 
-    def __init__(self, *, settings_supported: bool = True, profile: str | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        settings_supported: bool = True,
+        profile: str | None = None,
+        cwd: str = "/user/project",
+    ) -> None:
+        self.cwd = cwd
+        # 1-based thread/settings/update calls the owner rejects.
+        self.settings_failures: set[int] = set()
         self.calls: list[dict[str, Any]] = []
         self.answers: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         self.socket: Any = None
@@ -97,7 +106,7 @@ class AppServer:
             method, params = value["method"], value.get("params", {})
             thread = {
                 "id": "thread",
-                "cwd": "/user/project",
+                "cwd": self.cwd,
                 "status": {"type": "active" if self.active else "idle"},
             }
             result: Any = {}
@@ -106,7 +115,7 @@ class AppServer:
             elif method == "thread/loaded/list":
                 result = {"data": ["thread"]}
             elif method in {"thread/resume", "thread/start"}:
-                result = {"thread": thread, "cwd": "/user/project", **ORIGINAL}
+                result = {"thread": thread, "cwd": self.cwd, **ORIGINAL}
                 if self.profile:
                     result["activePermissionProfile"] = {"id": self.profile}
             elif method == "thread/read":
@@ -114,6 +123,16 @@ class AppServer:
             elif method == "thread/turns/list":
                 result = {"data": []}
             elif method == "thread/settings/update":
+                if self.methods().count(method) in self.settings_failures:
+                    await socket.send(
+                        json.dumps(
+                            {
+                                "id": value["id"],
+                                "error": {"code": -32600, "message": "settings rejected"},
+                            }
+                        )
+                    )
+                    continue
                 if not self.settings_supported:
                     await socket.send(
                         json.dumps(
@@ -322,9 +341,10 @@ async def test_yuki_turn_request_is_answerable_and_observe_watch_sees_metadata_o
 async def test_scope_narrows_thread_settings_for_yuki_turn_and_restores_them(
     tmp_path: Path, profile: str | None
 ) -> None:
-    owner = AppServer(profile=profile)
     work = tmp_path / "work"
     work.mkdir()
+    # The thread's own cwd lies inside the scope: workspaceWrite always includes it.
+    owner = AppServer(profile=profile, cwd=str(work))
     async with serve(owner.handler, "127.0.0.1", 0) as listener:
         driver, events = await connected(owner, listener, tmp_path)
         try:
@@ -347,6 +367,8 @@ async def test_scope_narrows_thread_settings_for_yuki_turn_and_restores_them(
                     "type": "workspaceWrite",
                     "writableRoots": [str(work)],
                     "networkAccess": False,
+                    "excludeSlashTmp": True,
+                    "excludeTmpdirEnvVar": True,
                 },
             }
             await until(events, lambda kind, value: value["operation_id"] == "scoped")
