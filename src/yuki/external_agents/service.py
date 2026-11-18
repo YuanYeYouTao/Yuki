@@ -50,7 +50,8 @@ _RELEASED = {
     "status": "released",
     "detached": True,
     "pending": False,
-    "admitted": True,
+    # The device never received it; only the server ended the relationship.
+    "admitted": False,
     "executed": False,
     "released_without_device": True,
 }
@@ -204,16 +205,16 @@ class ExternalAgentService:
         self, identity: str, connection: DeviceConnection, command: dict[str, Any]
     ) -> None:
         """Write one registered command and record the device's answer to it."""
-        changed = not self.connections.current(connection)
-        if not changed:
-            try:
-                async with self.database.read_session() as session:
-                    await self.identity.require_device(session, connection.device_id)
-            except ClientError:
-                changed = True
-        if changed or not await self.repository.dispatchable(identity):
+        try:
+            async with self.database.read_session() as session:
+                await self.identity.require_device(session, connection.device_id)
+            allowed = await self.repository.dispatchable(identity)
+        except ClientError:
+            allowed = False
+        # The connection is checked last, with no await before the write.
+        if not allowed or not self.connections.current(connection):
             # Nothing was written: the source, connection or grant ended first.
-            await self.repository.response(
+            operation = await self.repository.response(
                 identity,
                 {
                     "error": "source_or_connection_changed_before_dispatch",
@@ -222,6 +223,8 @@ class ExternalAgentService:
                     "pending": False,
                 },
             )
+            if operation.action in _CONTROLS and operation.work_id is not None:
+                await self.repository.control_settled(identity)
             return
         try:
             result = await connection.request(command)
@@ -241,8 +244,9 @@ class ExternalAgentService:
 
         A control's target is parsed from the original control command. The target
         is settled before the control's own receipt is written: if the process ends
-        in between, the control still has no receipt, so reconnect reads it back by
-        its original ID and settles again (every settlement step is idempotent).
+        in between, the control still has no receipt, so a reconnect reads it back by
+        its original ID and settles again while its target is unsettled or its Work
+        is live (every settlement step is idempotent); otherwise it stays unknown.
         """
         async with self.database.read_session() as reader:
             operation = await reader.get(AgentOperationModel, identity)
@@ -299,6 +303,16 @@ class ExternalAgentService:
             )
             return
         status = result.get("status")
+        if result.get("reason") == "original_dispatch_not_confirmed":
+            async with self.database.read_session() as reader:
+                operation = await reader.get(AgentOperationModel, identity)
+            assert operation is not None
+            if operation.action in _CONTROLS:
+                # The device journal began this control and has no answer yet. A control
+                # has no later events, so this placeholder is not its receipt: it stays
+                # unanswered and is read back again (reconnect or an explicit query).
+                connection.reconciliation[identity] = "device_in_progress"
+                return
         if isinstance(status, str) and status != "not_found":
             connection.reconciliation.pop(identity, None)
             await self._settle(identity, result)
@@ -703,24 +717,6 @@ class ExternalAgentService:
                 # An explicit end of the Work relationship cannot wait for the device.
                 return await self._release(owned, instance, args, request_id, actor, trusted)
             return {"error": "device_offline", "executed": False, "pending": False}
-        # Only the declaration this live connection made for an available instance
-        # refuses early. Stored catalogs may be stale; original-owner controls and
-        # undeclared instances still go to the device, which decides.
-        declared = connection.declared.get(instance.local_id)
-        if (
-            action in _DECLARED
-            and not original_control
-            and instance.local_id in connection.instances
-            and declared
-            and action not in declared
-        ):
-            available = "、".join(
-                _TOOL_ACTION.get(item, item) for item in sorted(declared - {"list", "get"})
-            )
-            raise ExternalAgentArgumentError(
-                "unsupported_action",
-                f"该实例声明不支持 {action}；可用动作：{available}。本次未派发。",
-            )
         target = owned
         if target is None and execution is not None and action in {"cancel", "steer"}:
             matches = await self.repository.execution_operations(
@@ -732,6 +728,26 @@ class ExternalAgentService:
                     "该 execution_id 对应多个原操作，target 改用 operation_id。",
                 )
             target = matches[0] if matches else None
+        # Only the declaration this live connection made for an available instance
+        # refuses early. Stored catalogs may be stale; controls of an original operation
+        # (selected by operation_id or by its execution) and undeclared instances still
+        # go to the device, which decides.
+        declared = connection.declared.get(instance.local_id)
+        if (
+            action in _DECLARED
+            and not original_control
+            and not (action == "steer" and target is not None)
+            and instance.local_id in connection.instances
+            and declared
+            and action not in declared
+        ):
+            available = "、".join(
+                _TOOL_ACTION.get(item, item) for item in sorted(declared - {"list", "get"})
+            )
+            raise ExternalAgentArgumentError(
+                "unsupported_action",
+                f"该实例声明不支持 {action}；可用动作：{available}。本次未派发。",
+            )
         arguments = {
             key: value
             for key, value in args.items()

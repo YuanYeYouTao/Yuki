@@ -5,12 +5,13 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import re
 import shutil
 import sys
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, ClassVar, cast
+from typing import Any, cast
 from uuid import uuid4
 
 from claude_agent_sdk import (
@@ -44,9 +45,10 @@ class ManagedSession:
     active: bool = False
     status: str = "unknown"
     watches: dict[str, str | None] = field(default_factory=dict)
-    # Inputs written to the CLI but not yet taken up: input UUID -> operation.
-    # The CLI replays an input's own UUID when it takes it up (replay-user-messages).
-    inputs: dict[str, str] = field(default_factory=dict)
+    # Inputs written to the CLI but not yet taken up: input UUID -> operation, or None
+    # once that operation was detached. The CLI replays an input's own UUID when it
+    # takes it up (replay-user-messages).
+    inputs: dict[str, str | None] = field(default_factory=dict)
     connection_id: str = field(default_factory=lambda: str(uuid4()))
 
 
@@ -57,30 +59,43 @@ class PendingRequest:
     session: ManagedSession
     answer: asyncio.Future[dict[str, Any]]
     consumed: asyncio.Future[bool]
-    # No Yuki operation or watch received it; only metadata left this computer,
-    # so the only answer accepted for it is deny.
-    unowned: bool
+    kind: str
+    tool: str
+    # Operations (owner, watches) that received its full request.
+    recipients: set[str] = field(default_factory=set)
+    # No Yuki operation or watch received it, or all that did were detached; only
+    # metadata left this computer, so the only answer accepted for it is deny.
+    unowned: bool = False
+
+
+# Admission is the CLI replaying an input's own UUID; verified on this Claude Code.
+REPLAYED_INPUTS_VERSION = (2, 1, 311)
+_INPUTS = frozenset({"prompt", "queue"})
+CAPABILITIES = (
+    "list",
+    "get",
+    "watch",
+    "prompt",
+    "queue",
+    "respond",
+    "cancel",
+    "detach",
+)
 
 
 class ClaudeDriver:
     # `queue` appends an input whose landing the CLI decides (next tool boundary of
     # the running turn, or a new turn). It is not a precise steer of a chosen turn.
-    capabilities: ClassVar[list[str]] = [
-        "list",
-        "get",
-        "watch",
-        "prompt",
-        "queue",
-        "respond",
-        "cancel",
-        "detach",
-    ]
 
     def __init__(self, spec: Instance, emit: Emit) -> None:
         self.spec, self.emit = spec, emit
+        # Declared per instance: a CLI that cannot replay inputs offers no prompt/queue.
+        self.capabilities = list(CAPABILITIES)
         self.sessions: dict[str, ManagedSession] = {}
         self.requests: dict[str, PendingRequest] = {}
         self._opening: dict[str, asyncio.Lock] = {}
+        # Why prompt/queue are not offered by this CLI, if they are not.
+        self._inputs_refused: str | None = None
 
     async def start(self) -> None:
         if self.spec.installation:
@@ -92,6 +107,35 @@ class ClaudeDriver:
             raise DriverError(
                 "cli_not_executable", "Choose the native Claude executable, not .cmd/.bat"
             )
+        version = await self._version(executable)
+        if version is not None and version < REPLAYED_INPUTS_VERSION:
+            # Without UUID replay an input's admission cannot be observed: keep the
+            # read and control actions, refuse new input with the reason.
+            self.capabilities = [item for item in CAPABILITIES if item not in _INPUTS]
+            needed = ".".join(map(str, REPLAYED_INPUTS_VERSION))
+            self._inputs_refused = (
+                f"Claude Code {'.'.join(map(str, version))} cannot confirm which input it took "
+                f"up; update Claude Code to {needed} or newer"
+            )
+
+    @staticmethod
+    async def _version(executable: str) -> tuple[int, ...] | None:
+        """The CLI's own `-v` answer (the SDK asks the same before each session)."""
+        process = await asyncio.create_subprocess_exec(
+            executable,
+            "-v",
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        try:
+            output, _ = await asyncio.wait_for(process.communicate(), 10)
+        except TimeoutError:
+            process.kill()
+            await process.wait()
+            return None
+        match = re.match(r"\s*(\d+)\.(\d+)\.(\d+)", output.decode(errors="replace"))
+        return tuple(int(part) for part in match.groups()) if match else None
 
     async def stop(self) -> None:
         for item in self.sessions.values():
@@ -117,8 +161,10 @@ class ClaudeDriver:
             },
         )
 
-    async def _publish(self, session: ManagedSession, kind: str, payload: dict[str, Any]) -> int:
-        """Send to the turn's owner and matching watches; return how many received it."""
+    async def _publish(
+        self, session: ManagedSession, kind: str, payload: dict[str, Any]
+    ) -> set[str]:
+        """Send to the turn's owner and matching watches; return the operations reached."""
         if payload.get("status") != "unknown":
             payload.setdefault("admitted", True)
         operations = {
@@ -148,7 +194,7 @@ class ClaudeDriver:
                     "payload": event_payload,
                 },
             )
-        return len(operations)
+        return operations
 
     async def _session_event(
         self, session: ManagedSession, kind: str, payload: dict[str, Any]
@@ -164,6 +210,24 @@ class ClaudeDriver:
             },
         )
 
+    async def _unowned(self, key: str, request: PendingRequest) -> None:
+        """Make a wait no live operation receives discoverable, without its content."""
+        request.unowned = True
+        await self._session_event(
+            request.session,
+            request.kind,
+            {
+                "permission_id": key,
+                "native_request_id": key,
+                "connection_id": request.session.connection_id,
+                "tool": request.tool,
+                "options": ["deny"],
+                "unowned": True,
+                "status": "requires_action",
+                "pending": True,
+            },
+        )
+
     async def _permission(
         self,
         session: ManagedSession,
@@ -174,12 +238,12 @@ class ClaudeDriver:
         key = context.tool_use_id or str(uuid4())
         future: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
         consumed: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
-        request = PendingRequest(session, future, consumed, unowned=False)
-        self.requests[key] = request
         question = tool == "AskUserQuestion"
         kind = "question" if question else "permission"
+        request = PendingRequest(session, future, consumed, kind, tool)
+        self.requests[key] = request
         try:
-            received = await self._publish(
+            request.recipients = await self._publish(
                 session,
                 kind,
                 {
@@ -191,24 +255,10 @@ class ClaudeDriver:
                     "options": ["allow", "deny"],
                 },
             )
-            if not received:
+            if not request.recipients:
                 # For example a turn the CLI started for a finished background task.
                 # Make the wait discoverable without its content; deny unblocks it.
-                request.unowned = True
-                await self._session_event(
-                    session,
-                    kind,
-                    {
-                        "permission_id": key,
-                        "native_request_id": key,
-                        "connection_id": session.connection_id,
-                        "tool": tool,
-                        "options": ["deny"],
-                        "unowned": True,
-                        "status": "requires_action",
-                        "pending": True,
-                    },
-                )
+                await self._unowned(key, request)
             response = await future
             formal = response.get("response", {})
             choice = formal.get("behavior") or response.get("option_id")
@@ -245,11 +295,17 @@ class ClaudeDriver:
     ) -> ManagedSession:
         """Concurrent resumes of one session share a single SDK owner."""
         lock = self._opening.setdefault(session_id, asyncio.Lock())
-        async with lock:
-            current = self.sessions.get(session_id)
-            if current is not None and not current.stopped.is_set():
-                return current
-            return await self._open(session_id, resume=resume, cwd=cwd)
+        try:
+            async with lock:
+                current = self.sessions.get(session_id)
+                if current is not None and not current.stopped.is_set():
+                    return current
+                return await self._open(session_id, resume=resume, cwd=cwd)
+        finally:
+            # A caller still waiting holds this lock object; a later one finds the
+            # session already registered under its own lock.
+            if not lock.locked() and self._opening.get(session_id) is lock:
+                del self._opening[session_id]
 
     async def _open(
         self, session_id: str, *, resume: bool, cwd: str | None = None
@@ -361,7 +417,9 @@ class ClaudeDriver:
                 if request.session is session and not request.answer.done():
                     request.answer.cancel()
             for identity, operation in list(session.inputs.items()):
-                # Written but never taken up before the owner ended: not run, not failed.
+                if operation is None:
+                    continue
+                # Written, never seen taken up before the owner ended: unknown, not failed.
                 await self.emit(
                     "progress",
                     {
@@ -372,7 +430,8 @@ class ClaudeDriver:
                             "status": "unknown",
                             "pending": True,
                             "reason": "native_sdk_connection_lost",
-                            "input_taken_up": False,
+                            # Only what the driver saw: the CLI never replayed it.
+                            "replay_observed": False,
                         },
                     },
                 )
@@ -381,7 +440,21 @@ class ClaudeDriver:
     async def _taken_up(self, session: ManagedSession, identity: str) -> None:
         """The CLI took up a written input (its UUID was replayed)."""
         operation = session.inputs.pop(identity)
+        if session.active and operation is not None and session.operation is None:
+            # Absorbed into a turn no operation owns (the CLI started it by itself just
+            # before taking this input up): the turn now also answers this input, so
+            # its remaining results and questions go to the operation that wrote it.
+            session.execution = identity
+            session.operation = session.active_operation = operation
+            await self._publish(
+                session,
+                "progress",
+                {"status": "running", "pending": True, "disposition": "merged_into_unowned_turn"},
+            )
+            return
         if session.active:
+            if operation is None:
+                return
             # Absorbed at a tool boundary of the turn already running. The input's
             # operation gets only its own disposition, never that turn's results,
             # questions or controls, which stay with the turn's owner.
@@ -402,7 +475,7 @@ class ClaudeDriver:
             )
             await self.emit("work_finished", {"operation_id": operation})
             return
-        # It starts a new turn, owned by the operation that wrote it.
+        # It starts a new turn, owned by the operation that wrote it (none once detached).
         session.active, session.status = True, "running"
         session.execution = identity
         session.operation = session.active_operation = operation
@@ -417,7 +490,11 @@ class ClaudeDriver:
             if isinstance(message, UserMessage) and message.uuid in session.inputs:
                 await self._taken_up(session, message.uuid)
                 continue
-            if isinstance(message, (UserMessage, AssistantMessage)) and not session.active:
+            if (
+                isinstance(message, (UserMessage, AssistantMessage))
+                and message.parent_tool_use_id is None
+                and not session.active
+            ):
                 # A turn the CLI started by itself (for example a background-task
                 # notification). No Yuki operation owns it, but the session is busy:
                 # a new prompt must conflict now instead of queueing behind it.
@@ -515,7 +592,9 @@ class ClaudeDriver:
                     reason="execution_not_attached",
                 )
             return result
-        if action in {"prompt", "queue"}:
+        if action in _INPUTS:
+            if self._inputs_refused is not None:
+                raise DriverError("cli_outdated", self._inputs_refused)
             if session and session.stopped.is_set() and arguments.get("resume"):
                 session = None
             if session is None:
@@ -527,6 +606,8 @@ class ClaudeDriver:
                 session = await self._open_once(
                     identity or str(uuid4()), resume=bool(identity), cwd=arguments.get("cwd")
                 )
+            # A session another command is still opening is written only once connected.
+            await asyncio.shield(session.ready)
             if session.stopped.is_set():
                 raise DriverError("owner_disconnected", "Original SDK session owner has exited")
             if action == "prompt" and (session.active or session.inputs):
@@ -567,10 +648,23 @@ class ClaudeDriver:
                 "Claude cannot bind input to a chosen running turn; queue appends instead",
             )
         if action == "detach":
+            detached = arguments["operation_id"]
             for attached in self.sessions.values():
-                attached.watches.pop(arguments["operation_id"], None)
-                if attached.operation == arguments["operation_id"]:
+                attached.watches.pop(detached, None)
+                if attached.operation == detached:
                     attached.operation = None
+                # An input it wrote that the CLI has not taken up yet starts or joins
+                # a turn nobody owns, so its waits stay discoverable.
+                for written, writer in attached.inputs.items():
+                    if writer == detached:
+                        attached.inputs[written] = None
+            for key, request in list(self.requests.items()):
+                if request.unowned or request.answer.done():
+                    continue
+                request.recipients.discard(detached)
+                if not request.recipients:
+                    # Its receivers' events are no longer delivered: metadata only.
+                    await self._unowned(key, request)
             return {
                 "session_id": identity,
                 "status": "completed",

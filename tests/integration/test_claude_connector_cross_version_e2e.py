@@ -41,8 +41,11 @@ from yuki.external_agents.db_models import AgentEventModel, AgentOperationModel
 from yuki.external_agents.errors import ExternalAgentArgumentError
 
 # Feature facts of the code actually loaded, not version strings.
-# A connector that admits by replayed input UUID also declares Claude `queue`.
-REPLAYS_INPUT = "queue" in claude_module.ClaudeDriver.capabilities
+# A connector that admits by replayed input UUID also declares Claude `queue`
+# (0.8.0 declares per instance from CAPABILITIES; 0.7.0 on the class).
+REPLAYS_INPUT = "queue" in getattr(
+    claude_module, "CAPABILITIES", getattr(claude_module.ClaudeDriver, "capabilities", ())
+)
 # A Bot whose device RPCs belong to the service (not the activation) can drain them.
 NON_BLOCKING_BOT = hasattr(service_module.ExternalAgentService, "drain")
 BOT = "non-blocking" if NON_BLOCKING_BOT else "production"

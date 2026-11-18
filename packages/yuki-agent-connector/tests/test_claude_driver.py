@@ -739,3 +739,327 @@ async def test_unowned_permission_leaves_only_metadata_and_accepts_only_deny(
         assert resolved["payload"]["outcome"] == "answered"
     finally:
         await asyncio.wait_for(driver.stop(), 3)
+
+
+async def _until_finished(events: asyncio.Queue[tuple[str, dict[str, Any]]]) -> None:
+    while (await asyncio.wait_for(events.get(), 3))[0] != "work_finished":
+        pass
+
+
+def _permission(tool_use_id: str, command: str) -> dict[str, Any]:
+    return {
+        "type": "control_request",
+        "request_id": f"request-{tool_use_id}",
+        "request": {
+            "subtype": "can_use_tool",
+            "tool_name": "Bash",
+            "tool_use_id": tool_use_id,
+            "input": {"command": command},
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_detached_queued_input_starts_an_unowned_turn_whose_wait_stays_visible(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R1: detaching an input still queued in the CLI must not leave its turn to nobody.
+
+    The detached operation's events are dropped by the journal, so a turn it owned
+    would hide its permission request forever and keep the session busy.
+    """
+    driver, transports, events = await _driver(tmp_path, monkeypatch)
+    try:
+        started = await driver.execute(
+            {"id": "owner", "action": "prompt", "arguments": {"prompt": "long work"}}
+        )
+        session_id = started["session_id"]
+        await asyncio.wait_for(events.get(), 3)
+        transport = transports[0]
+        transport.echo = False
+        await driver.execute(
+            {
+                "id": "appender",
+                "action": "queue",
+                "session_id": session_id,
+                "arguments": {"prompt": "later"},
+            }
+        )
+        await driver.execute(
+            {
+                "id": "release",
+                "action": "detach",
+                "session_id": session_id,
+                "arguments": {"operation_id": "appender"},
+            }
+        )
+        await transport.incoming.put(_result(session_id, "owner done"))
+        await _until_finished(events)
+        # Idle, yet an input is still queued in the CLI: a new prompt conflicts.
+        with pytest.raises(DriverError, match="busy"):
+            await driver.execute(
+                {
+                    "id": "new-task",
+                    "action": "prompt",
+                    "session_id": session_id,
+                    "arguments": {"prompt": "x"},
+                }
+            )
+        await transport.take_up()
+        await transport.incoming.put(_permission("after-detach", "rm -rf build"))
+        kind, waiting = await asyncio.wait_for(events.get(), 3)
+        assert kind == "permission" and waiting["operation_id"] is None
+        assert waiting["payload"]["unowned"] is True
+        assert "rm -rf" not in json.dumps(waiting)
+    finally:
+        await asyncio.wait_for(driver.stop(), 3)
+
+
+@pytest.mark.asyncio
+async def test_detaching_the_turn_owner_turns_its_pending_wait_into_metadata_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R8: the owner's events stop at detach; its open wait must stay answerable."""
+    driver, transports, events = await _driver(tmp_path, monkeypatch)
+    try:
+        started = await driver.execute(
+            {"id": "owner", "action": "prompt", "arguments": {"prompt": "work"}}
+        )
+        session_id = started["session_id"]
+        await asyncio.wait_for(events.get(), 3)
+        transport = transports[0]
+        await transport.incoming.put(_permission("owned-wait", "rm -rf build"))
+        kind, owned = await asyncio.wait_for(events.get(), 3)
+        assert kind == "permission" and owned["operation_id"] == "owner"
+        await driver.execute(
+            {
+                "id": "release",
+                "action": "detach",
+                "session_id": session_id,
+                "arguments": {"operation_id": "owner"},
+            }
+        )
+        kind, unowned = await asyncio.wait_for(events.get(), 3)
+        assert kind == "permission" and unowned["operation_id"] is None
+        payload = unowned["payload"]
+        assert payload["unowned"] is True and payload["native_request_id"] == "owned-wait"
+        assert "rm -rf" not in json.dumps(unowned)
+        answer = {
+            "session_id": session_id,
+            "arguments": {
+                "connection_id": payload["connection_id"],
+                "permission_id": "owned-wait",
+            },
+        }
+        with pytest.raises(DriverError, match="allow it in Claude itself"):
+            await driver.execute(
+                {
+                    **answer,
+                    "id": "allow",
+                    "action": "respond",
+                    "arguments": {**answer["arguments"], "option_id": "allow"},
+                }
+            )
+        with pytest.raises(DriverError, match="no longer current"):
+            await driver.execute(
+                {
+                    **answer,
+                    "id": "stale-owner",
+                    "action": "respond",
+                    "arguments": {
+                        **answer["arguments"],
+                        "connection_id": "another-owner",
+                        "option_id": "deny",
+                    },
+                }
+            )
+        deny = {
+            **answer,
+            "action": "respond",
+            "arguments": {**answer["arguments"], "option_id": "deny"},
+        }
+        await driver.execute({**deny, "id": "deny"})
+        # One native decision: a second answer finds nothing pending.
+        with pytest.raises(DriverError, match="no longer pending"):
+            await driver.execute({**deny, "id": "deny-again"})
+    finally:
+        await asyncio.wait_for(driver.stop(), 3)
+
+
+@pytest.mark.asyncio
+async def test_subagent_frames_after_the_turn_never_make_the_session_busy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R2: frames of a background subagent carry parent_tool_use_id; no new turn starts."""
+    driver, transports, events = await _driver(tmp_path, monkeypatch)
+    try:
+        started = await driver.execute(
+            {"id": "owner", "action": "prompt", "arguments": {"prompt": "work"}}
+        )
+        session_id = started["session_id"]
+        await asyncio.wait_for(events.get(), 3)
+        transport = transports[0]
+        await transport.incoming.put(_result(session_id, "done"))
+        await _until_finished(events)
+        await transport.incoming.put(
+            {
+                "type": "assistant",
+                "message": {
+                    "role": "assistant",
+                    "model": "native",
+                    "content": [{"type": "text", "text": "subagent still reporting"}],
+                },
+                "parent_tool_use_id": "toolu-background-agent",
+                "session_id": session_id,
+            }
+        )
+        # Let the driver consume the frame before asking (no event marks it).
+        while not transport.incoming.empty():  # noqa: ASYNC110
+            await asyncio.sleep(0.01)
+        await asyncio.sleep(0.1)
+        followed = await asyncio.wait_for(
+            driver.execute(
+                {
+                    "id": "next",
+                    "action": "prompt",
+                    "session_id": session_id,
+                    "arguments": {"prompt": "next task"},
+                }
+            ),
+            3,
+        )
+        assert followed["status"] == "submitted"
+    finally:
+        await asyncio.wait_for(driver.stop(), 3)
+
+
+@pytest.mark.asyncio
+async def test_input_merged_into_a_self_started_turn_owns_the_rest_of_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R7: the CLI started a turn by itself just before taking up a written prompt."""
+    driver, transports, events = await _driver(tmp_path, monkeypatch)
+    try:
+        started = await driver.execute(
+            {"id": "owner", "action": "prompt", "arguments": {"prompt": "work"}}
+        )
+        session_id = started["session_id"]
+        await asyncio.wait_for(events.get(), 3)
+        transport = transports[0]
+        await transport.incoming.put(_result(session_id, "done"))
+        await _until_finished(events)
+        transport.echo = False
+        written = await driver.execute(
+            {
+                "id": "late",
+                "action": "prompt",
+                "session_id": session_id,
+                "arguments": {"prompt": "next task"},
+            }
+        )
+        await transport.incoming.put(
+            {
+                "type": "assistant",
+                "message": {
+                    "role": "assistant",
+                    "model": "native",
+                    "content": [{"type": "text", "text": "background task finished"}],
+                },
+                "session_id": session_id,
+            }
+        )
+        await transport.take_up()
+        kind, taken = await asyncio.wait_for(events.get(), 3)
+        assert kind == "progress" and taken["operation_id"] == "late"
+        assert taken["payload"]["disposition"] == "merged_into_unowned_turn"
+        assert taken["execution_id"] == written["execution_id"]
+        await transport.incoming.put(_result(session_id, "answered the prompt too"))
+        kind, completed = await asyncio.wait_for(events.get(), 3)
+        assert kind == "completed" and completed["operation_id"] == "late"
+        assert completed["payload"]["text"] == "answered the prompt too"
+    finally:
+        await asyncio.wait_for(driver.stop(), 3)
+
+
+@pytest.mark.asyncio
+async def test_input_written_while_the_session_is_still_opening_waits_for_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R5: a second command for a session still connecting must not write too early."""
+    gate = asyncio.Event()
+    transports: list[NativeTransport] = []
+
+    class SlowTransport(NativeTransport):
+        async def connect(self) -> None:
+            await gate.wait()
+
+    def factory(*, options: ClaudeAgentOptions) -> ClaudeSDKClient:
+        transport = SlowTransport()
+        transports.append(transport)
+        return ClaudeSDKClient(options=options, transport=transport)
+
+    monkeypatch.setattr(module, "ClaudeSDKClient", factory)
+
+    async def emit(kind: str, payload: dict[str, Any]) -> None:
+        pass
+
+    driver = module.ClaudeDriver(
+        Instance("claude", "claude", "Claude", sys.executable, cwd=str(tmp_path)), emit
+    )
+    await driver.start()
+    try:
+        first = asyncio.create_task(
+            driver.execute({"id": "first", "action": "prompt", "arguments": {"prompt": "a"}})
+        )
+        while not driver.sessions:  # noqa: ASYNC110
+            await asyncio.sleep(0.01)
+        [session_id] = driver.sessions
+        second = asyncio.create_task(
+            driver.execute(
+                {
+                    "id": "second",
+                    "action": "queue",
+                    "session_id": session_id,
+                    "arguments": {"prompt": "b"},
+                }
+            )
+        )
+        await asyncio.sleep(0.05)
+        gate.set()
+        assert (await asyncio.wait_for(first, 3))["status"] == "submitted"
+        assert (await asyncio.wait_for(second, 3))["status"] == "submitted"
+        assert not driver._opening
+    finally:
+        await asyncio.wait_for(driver.stop(), 3)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("reported", "inputs"),
+    [("2.0.5 (Claude Code)", False), ("2.1.311 (Claude Code)", True), ("garbled", True)],
+)
+async def test_input_actions_need_a_cli_that_replays_input_uuids(
+    tmp_path: Path, reported: str, inputs: bool
+) -> None:
+    """R3: admission is the CLI replaying an input's UUID, verified on Claude Code 2.1.311.
+
+    An older CLI keeps the read and control actions; prompt/queue are not declared
+    and refuse with the reason. An unreadable version keeps the declared actions.
+    """
+    cli = tmp_path / "claude"
+    cli.write_text(f'#!/bin/sh\necho "{reported}"\n')
+    cli.chmod(0o755)
+
+    async def emit(kind: str, payload: dict[str, Any]) -> None:
+        pass
+
+    driver = module.ClaudeDriver(
+        Instance("claude", "claude", "Claude", str(cli), cwd=str(tmp_path)), emit
+    )
+    await driver.start()
+    assert ("prompt" in driver.capabilities) is inputs
+    assert ("queue" in driver.capabilities) is inputs
+    assert {"list", "get", "watch", "respond", "cancel", "detach"} <= set(driver.capabilities)
+    if not inputs:
+        with pytest.raises(DriverError, match=r"2\.1\.311"):
+            await driver.execute({"id": "p", "action": "prompt", "arguments": {"prompt": "x"}})

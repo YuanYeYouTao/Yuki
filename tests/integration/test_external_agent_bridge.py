@@ -1473,6 +1473,123 @@ async def test_reconnect_reads_back_only_controls_whose_answer_still_matters(bri
         await computer.close()
 
 
+async def control_inputs(bridge, work_id, control_id):
+    async with bridge.database.read_session() as reader:
+        rows = (
+            await reader.execute(
+                select(inputs.c.payload_json).where(
+                    inputs.c.work_id == work_id,
+                    inputs.c.source_key.like(f"external-agent:control:{control_id}%"),
+                )
+            )
+        ).scalars()
+        return [json.loads(json.loads(row)["text"]) for row in rows]
+
+
+async def test_control_still_running_on_the_device_is_read_back_until_it_has_an_answer(bridge):
+    """F10: the device journal's placeholder for a begun control is not its answer."""
+    computer = await NativeComputer(bridge).start()
+    try:
+        instance, session_id = await directory(bridge)
+        async with accepted_work(bridge) as control:
+            target = str(uuid4())
+            await bridge.service.execute(
+                {
+                    "action": "prompt",
+                    "instance_id": instance,
+                    "session_id": session_id,
+                    "prompt": "Running when the cancel arrives",
+                },
+                target,
+                bridge.source,
+            )
+            await settled(bridge)
+            computer.hold = {"cancel"}
+            cancel = str(uuid4())
+            await bridge.service.execute(
+                {"action": "cancel", "operation_id": target}, cancel, bridge.source
+            )
+
+            async def held():
+                return cancel in computer.held
+
+            await until(held)
+            await computer.close()
+            await settled(bridge)
+            computer.hold = set()
+            computer.results[cancel] = {
+                "status": "unknown",
+                "reason": "original_dispatch_not_confirmed",
+                "state_sequence": 0,
+            }
+            await computer.start()
+
+            async def queried():
+                return any(
+                    item["action"] == "get" and item["arguments"].get("operation_id") == cancel
+                    for item in computer.commands
+                )
+
+            await until(queried)
+            await settled(bridge)
+            assert await receipt(bridge, cancel) is None
+            assert await control_inputs(bridge, control.current["id"], cancel) == []
+            await computer.close()
+            await settled(bridge)
+            computer.commands.clear()
+            computer.results[cancel] = {
+                "status": "accepted",
+                "pending": True,
+                "admitted": True,
+                "cancel_requested": True,
+            }
+            await computer.start()
+            await until(queried)
+            await settled(bridge)
+            assert (await receipt(bridge, cancel))["cancel_requested"] is True
+            [told] = await control_inputs(bridge, control.current["id"], cancel)
+            assert told["status"] == "accepted" and told["cancel_requested"] is True
+            assert [item["action"] for item in computer.commands].count("cancel") == 0
+    finally:
+        await computer.close()
+
+
+async def test_control_whose_source_ended_before_writing_still_tells_its_work(bridge, monkeypatch):
+    """F11: a control never written reports that to the Work that issued it."""
+    computer = await NativeComputer(bridge).start()
+    try:
+        instance, session_id = await directory(bridge)
+        async with accepted_work(bridge) as control:
+            target = str(uuid4())
+            await bridge.service.execute(
+                {
+                    "action": "prompt",
+                    "instance_id": instance,
+                    "session_id": session_id,
+                    "prompt": "Target",
+                },
+                target,
+                bridge.source,
+            )
+            await settled(bridge)
+            original = bridge.service.repository.dispatchable
+
+            async def ended(identity):
+                return identity == target and await original(identity)
+
+            monkeypatch.setattr(bridge.service.repository, "dispatchable", ended)
+            cancel = str(uuid4())
+            await bridge.service.execute(
+                {"action": "cancel", "operation_id": target}, cancel, bridge.source
+            )
+            await settled(bridge)
+            assert not any(item["id"] == cancel for item in computer.commands)
+            [told] = await control_inputs(bridge, control.current["id"], cancel)
+            assert told["error"] == "source_or_connection_changed_before_dispatch"
+    finally:
+        await computer.close()
+
+
 async def test_late_native_refusal_settles_the_original_run_without_the_activation(bridge):
     """F2: the response arriving after the tool returned still settles the original run."""
     computer = await NativeComputer(bridge).start()
@@ -1587,6 +1704,7 @@ async def test_capability_refusal_reads_the_live_connection_not_a_stale_stored_c
 
     restricted = NativeComputer(bridge)
     restricted.capabilities = ["list", "get", "watch", "prompt", "respond", "cancel", "detach"]
+    restricted.native_execution = "turn-of-the-restricted-owner"
     await restricted.start()
     try:
         async with accepted_work(bridge):
@@ -1609,7 +1727,22 @@ async def test_capability_refusal_reads_the_live_connection_not_a_stale_stored_c
                 steer,
                 bridge.source,
             )
+            await settled(bridge)
+            # The same original turn selected by its execution is not refused either.
+            execution_id = (
+                await bridge.service.execute(
+                    {"action": "get", "operation_id": original}, str(uuid4()), bridge.source
+                )
+            )["execution_id"]
+            by_execution = str(uuid4())
+            await bridge.service.execute(
+                {"action": "steer", "execution_id": execution_id, "prompt": "Adjust"},
+                by_execution,
+                bridge.source,
+            )
+            await settled(bridge)
         assert any(item["id"] == steer for item in restricted.commands)
+        assert any(item["id"] == by_execution for item in restricted.commands)
     finally:
         await restricted.close()
 
@@ -1708,6 +1841,8 @@ async def test_explicit_detach_ends_the_work_relationship_without_the_device(bri
                 {"action": "get", "operation_id": detach_id}, str(uuid4()), bridge.source
             )
             assert released["status"] == "released" and released["executed"] is False
+            # The device never received this detach: nothing says it admitted it.
+            assert released["admitted"] is False
             # The Work that issued it is told what the control settled.
             async with bridge.database.read_session() as reader:
                 told = (
