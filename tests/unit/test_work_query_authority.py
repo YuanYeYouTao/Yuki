@@ -8,6 +8,7 @@ import pytest
 from tests.conftest import build_harness, make_settings
 
 from yuki.automation.tools import AutomationToolService
+from yuki.capabilities.results import ToolExecutionResult
 from yuki.domain.conversations import ScopeType
 from yuki.domain.messages import InboundMessage, SenderIdentity, ToolCall, ToolFunction
 from yuki.domain.tool_actor import ToolActor
@@ -112,16 +113,16 @@ async def test_runner_query_gate_refuses_before_domain_read_and_keeps_lifecycle(
     chat, tool_runtime = query_environment
     executed = []
 
-    async def execute(name, arguments, call_key, *, invocation=None):
+    async def tool_outcome(name, arguments, call_key, *, invocation=None):
         executed.append((name, arguments, call_key))
-        return json.dumps({"ok": True})
+        return ToolExecutionResult(ok=True, tool_name=name, provider_id="work_control")
 
     control = SimpleNamespace(
         current=None,
         session=None,
         lease=SimpleNamespace(owner="query-owner"),
         accepted_ending=lambda call_key=None: None,
-        execute=execute,
+        tool_outcome=tool_outcome,
     )
     runtime = AgentRuntime(
         origin=TurnOrigin.USER_MESSAGE,

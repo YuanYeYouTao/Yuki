@@ -55,3 +55,9 @@ class StubAgentBackend(AgentToolBackend):
 
     def work_query_allowed(self, action: str) -> bool:
         return True
+
+    async def render_result(self, outcome):
+        from yuki.capabilities.results import ToolResultBudgeter
+
+        # Isolated Runner fixtures have no runtime config: render without a budget.
+        return (await ToolResultBudgeter(max_characters=None).render(outcome)).text

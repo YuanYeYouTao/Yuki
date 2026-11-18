@@ -190,18 +190,28 @@ class WorkQueries:
                             .all()
                         )
 
+                        from yuki.runtime.work_control import READ_ONLY_CONTROLS
+
                         steps = []
                         for step in page[:limit]:
                             receipt = json.loads(step["receipt_json"])
+                            evidence = historical_evidence(
+                                receipt, state=step["state"], kind=step["kind"]
+                            )
                             steps.append(
                                 {
-                                    **historical_evidence(
-                                        receipt, state=step["state"], kind=step["kind"]
-                                    ),
+                                    **evidence,
                                     "effect_key": step["effect_key"],
                                     "created_at": step["created"],
                                     "updated_at": step["updated"],
-                                    "result": receipt.get("result"),
+                                    # A read-only query's result is an earlier view of
+                                    # these same steps, not a fact of its own; nesting
+                                    # it would re-embed every previous view.
+                                    **(
+                                        {}
+                                        if evidence.get("tool") in READ_ONLY_CONTROLS
+                                        else {"result": receipt.get("result")}
+                                    ),
                                 }
                             )
                         note = await session.scalar(

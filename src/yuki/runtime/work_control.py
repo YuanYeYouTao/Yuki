@@ -42,6 +42,7 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
     from yuki.capabilities.invocation import Invocation
+    from yuki.capabilities.results import ToolExecutionResult
     from yuki.runtime.work_session import WorkSession
 
 
@@ -793,8 +794,24 @@ class WorkControl:
         *,
         invocation: Invocation | None = None,
     ) -> str:
-        from yuki.capabilities.results import ToolExecutionResult
+        """Unbudgeted domain text; the Main renders ``tool_outcome`` under its result budget."""
         from yuki.runtime.effect_outcomes import current_result_capture
+
+        outcome = await self.tool_outcome(name, args, call_key, invocation=invocation)
+        capture = current_result_capture.get()
+        if capture is not None:
+            capture.outcome = outcome
+        return json.dumps(outcome.model_payload(), ensure_ascii=False)
+
+    async def tool_outcome(
+        self,
+        name: str,
+        args: dict[str, Any],
+        call_key: str,
+        *,
+        invocation: Invocation | None = None,
+    ) -> ToolExecutionResult:
+        from yuki.capabilities.results import ToolExecutionResult
 
         try:
             await self.validate()
@@ -822,7 +839,7 @@ class WorkControl:
             typed = {"state" if key == "status" else key: value for key, value in result.items()}
             if name == "start_subtask":
                 typed["pending"] = True
-            outcome = ToolExecutionResult(
+            return ToolExecutionResult(
                 ok=True,
                 data=typed,
                 view=payload,
@@ -832,7 +849,7 @@ class WorkControl:
         except Exception as exc:
             phase, committed = write_failure_phase(exc), write_failure_committed(exc)
             if phase is not None and committed is not False:
-                outcome = ToolExecutionResult(
+                return ToolExecutionResult(
                     ok=False,
                     error_code="database_failure",
                     uncertain=committed is None,
@@ -842,23 +859,16 @@ class WorkControl:
                     tool_name=name,
                     provider_id="work_control",
                 )
-                payload = outcome.model_payload()
-            elif isinstance(exc, (ValueError, WorkConflict)):
+            if isinstance(exc, (ValueError, WorkConflict)):
                 code = "invalid_note" if isinstance(exc, ValidationError) else str(exc)
-                outcome = ToolExecutionResult(
+                return ToolExecutionResult(
                     ok=False,
                     error_code=code,
                     public_message=control_failure_message(code),
                     tool_name=name,
                     provider_id="work_control",
                 )
-                payload = outcome.model_payload()
-            else:
-                raise
-        capture = current_result_capture.get()
-        if capture is not None:
-            capture.outcome = outcome
-        return json.dumps(payload, ensure_ascii=False)
+            raise
 
     async def update_context_note(
         self,

@@ -140,7 +140,9 @@ def _plain(request) -> str:
     return "\n".join(str(message.content or "") for message in request.messages)
 
 
-async def _private_scene(database, tmp_path, provider, *, work_enabled=True, code_enabled=False):
+async def _private_scene(
+    database, tmp_path, provider, *, work_enabled=True, code_enabled=False, **overrides
+):
     env = await social_env(database, tmp_path)
     settings = make_settings(
         database.url,
@@ -148,6 +150,7 @@ async def _private_scene(database, tmp_path, provider, *, work_enabled=True, cod
         enabled_groups_csv="20001",
         code_mode_enabled=code_enabled,
         automation_enabled=True,
+        **overrides,
     )
     harness = build_harness(database, settings, provider)
     chat = harness.processor._chat
