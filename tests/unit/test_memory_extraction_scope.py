@@ -34,9 +34,9 @@ async def test_actual_single_and_batch_requests_have_no_self_subject(database, g
     provider = FakeLLMProvider(lambda request: '{"claims":[]}')
     extractor = MemoryEventExtractor(InjectedModelExecutor(provider), ConcurrencyManager())
     if batch:
-        await extractor.extract_batch((event,))
+        await extractor.extract_batch((event,), self_name="Yuki")
     else:
-        await extractor.extract(event)
+        await extractor.extract(event, self_name="Yuki")
     payload = json.loads(provider.requests[0].messages[-1].content)
     declarations = (
         payload["events"][0]["available_subjects"] if batch else payload["available_subjects"]

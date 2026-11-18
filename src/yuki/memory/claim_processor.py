@@ -80,6 +80,7 @@ class MemoryClaimProcessor:
             claim,
             event,
             subject_context=subject_context,
+            self_name=self._settings.character_identity.display_name,
         )
 
     def validate_result(
@@ -93,6 +94,7 @@ class MemoryClaimProcessor:
             claim,
             event,
             subject_context=subject_context,
+            self_name=self._settings.character_identity.display_name,
         )
 
     async def process(
@@ -122,7 +124,11 @@ class MemoryClaimProcessor:
             validated: ValidatedMemoryClaim | None = claim
         else:
             assert context.event is not None  # Actorless inputs were rejected above.
-            validated = self._validator.validate_claim(claim, context.event)
+            validated = self._validator.validate_claim(
+                claim,
+                context.event,
+                self_name=self._settings.character_identity.display_name,
+            )
         if validated is None:
             return MemoryClaimProcessResult(None, MemoryResolutionAction.NOOP, "claim_rejected")
         if context.force_expired_invalidated:

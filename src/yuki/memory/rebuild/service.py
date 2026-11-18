@@ -600,7 +600,11 @@ class MemoryRebuildService:
                             raise PermissionError("rebuild_initiator_permission_denied")
 
                     with model_dispatch_guard(authorize_dispatch):
-                        extracted = await self.extractor.extract(event, context=context)
+                        extracted = await self.extractor.extract(
+                            event,
+                            context=context,
+                            self_name=self.settings.character_identity.display_name,
+                        )
                 finally:
                     self._active_in_flight_calls -= 1
                     if task is not None:

@@ -42,6 +42,9 @@ Worker、Main Agent、自省和 Dream 的新事实复用 [变更合同](memory-c
 候选评分队列。无事实可记录时允许正常空输出。
 
 事实正文使用真实身份或名片。历史引用继续匹配原实际来源，不用当前展示名改写旧 quote。
+提取输入带 `bot_name`（当前角色名），Yuki 的原生提及按 `@bot_name` 渲染，她自己的消息署名
+也用角色名，不用群名片或兜底的 “Agent”。新 quote 可以摘自入库原文，也可以摘自这份渲染文：
+两者都属于同一事件；没有原生自提及的普通文字不会凭空多出 `@bot_name`。
 同 owner/key 可以创建独立 active 事实；纠正和撤回按实际 fact ID 执行。0102 只删除四个单 active
 唯一索引，保留已部署 0101 的全部事实与历史回执。
 自动提取与 Rebuild 只生成 Person、PersonGroup、Group 新事实，不声明 SELF、确认、纠正或撤回操作。
