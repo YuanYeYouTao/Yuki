@@ -82,13 +82,16 @@ async def test_main_argument_errors_can_be_corrected_without_duplicate_native_di
                 "permission",
                 {"native_request_id": 0, "connection_id": "original-native-connection"},
             )
+            # The native turn is recorded from the device answer after the tool returned.
+            await bridge.service.drain()
             observed = await invoke(
                 {"target": {"operation_id": receipt["operation_id"]}}, "read-original"
             )
+            assert observed.data["execution_id"]
             permission = observed.data["events"][0]["permission_id"]
             response = {
                 "action": "answer",
-                "target": {"execution_id": receipt["execution_id"]},
+                "target": {"execution_id": observed.data["execution_id"]},
                 "question": permission,
                 "answer": "accept",
             }

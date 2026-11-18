@@ -150,6 +150,11 @@ async def test_session_watch_response_uses_original_question_turn_and_connection
 
     class QuestionSocket(Socket):
         async def send_json(self, value):
+            if value["action"] == "get":
+                # Reconnect reads the unconfirmed original watch back by its own ID only.
+                assert value["arguments"] == {"operation_id": observation.id}
+                connection.respond({"id": value["id"], "result": {"status": "not_found"}})
+                return
             sent.append(value)
             assert value["execution_id"] == "question-turn"
             assert value["arguments"]["connection_id"] == "original-native-connection"
@@ -164,6 +169,7 @@ async def test_session_watch_response_uses_original_question_turn_and_connection
         "answer-original-question",
         env.source,
     )
+    await env.service.drain()
     assert len(sent) == 1
     assert (await env.repository.operation(observation.id, env.actor)).native_execution_id is None
 
@@ -187,6 +193,10 @@ async def test_native_offline_detach_keeps_real_device_receipt_boundary(
 
     class DetachSocket(Socket):
         async def send_json(self, value):
+            if value["action"] == "get":
+                assert value["arguments"] == {"operation_id": observation.id}
+                connection.respond({"id": value["id"], "result": {"status": "not_found"}})
+                return
             sent.append(value)
             assert value["action"] == "detach"
             assert value["arguments"]["operation_id"] == observation.id
@@ -231,16 +241,27 @@ async def test_native_offline_detach_keeps_real_device_receipt_boundary(
     if cleanup:
         result = (await env.service.cleanup_tasks([observation.id], "cleanup-original"))[0]
     else:
-        result = await env.service.execute(
+        await env.service.execute(
             {"action": "detach", "operation_id": observation.id}, "detach-original", env.source
         )
+        await env.service.drain()
+        result = await env.service.execute(
+            {"action": "get", "operation_id": "detach-original"}, "read-detach", env.source
+        )
     original = await env.repository.operation(observation.id, env.actor)
-    assert (original.detached_at is not None) is device_online
+    # Source cleanup still needs the device; an explicit detach ends the Work
+    # relationship without it and says so, never claiming a native detach.
+    assert (original.detached_at is not None) is (device_online or not cleanup)
     assert len(sent) == int(device_online)
     if device_online:
         assert result["status"] == "detached"
-    else:
+    elif cleanup:
         assert result.get("status") != "detached"
+    else:
+        assert result["status"] == "released" and result["released_without_device"] is True
+        assert result["executed"] is False
+        receipt = json.loads(original.result_json)
+        assert receipt["native_status"] == "unknown" and receipt["admitted"] is False
 
 
 async def test_get_persists_unknown_snapshot_instead_of_showing_old_running(native):
@@ -253,8 +274,14 @@ async def test_get_persists_unknown_snapshot_instead_of_showing_old_running(nati
 
     connection = DeviceConnection(native.device["device_id"], QuerySocket())
     await connect(native, connection)
-    view = await native.service.execute(
+    first = await native.service.execute(
         {"action": "get", "operation_id": operation.id}, "query", native.source
+    )
+    # The query returns the persisted receipt at once; the device answer lands after it.
+    assert first["status"] == "running"
+    await native.service.drain()
+    view = await native.service.execute(
+        {"action": "get", "operation_id": operation.id}, "query-again", native.source
     )
     assert view["status"] == "unknown" and view["admitted"] is True
     original = await native.repository.operation(operation.id, native.actor)

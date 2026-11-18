@@ -33,6 +33,8 @@ async def test_original_operation_http_keeps_work_link_for_pending_and_completed
                 operation,
                 bridge.source,
             )
+            # The device receipt is recorded by the service after the tool returned.
+            await bridge.service.drain()
             work_id = control.current["id"]
         if completed:
             await computer.event(
@@ -118,6 +120,8 @@ async def test_original_control_receipt_and_work_operation_projection(bridge):
                 operation,
                 bridge.source,
             )
+            # The device receipt is recorded by the service after the tool returned.
+            await bridge.service.drain()
             work_id = control.current["id"]
         source = bridge.source
         command = {"action": "detach", "operation_id": operation}

@@ -52,10 +52,15 @@ def external_agent_tools() -> tuple[ChatTool, ...]:
             effect="write_state",
             result_cacheable=False,
             description=(
-                "让本人电脑上的编码 Agent 工作。prompt 向实例或会话提交新任务，queue 排入原生队列，"
-                "watch 持续跟进已有会话，steer 给运行中的执行追加要求，answer 回答它的权限请求或"
-                "提问，cancel 取消，detach 停止跟进（不关闭会话）。prompt、queue、watch 须在"
-                "工作中调用。结果未知时用 get_coding_agents 按 operation_id 查询，不要重提。"
+                "让本人电脑上的编码 Agent 工作。prompt 向空闲的实例或会话提交新任务，queue 排入原生"
+                "队列（Claude 的 queue 由它自己决定并入运行中的回合或开启新回合，落点见回执的 "
+                "disposition，排队中的输入不能撤回；这不是 steer），watch 持续跟进已有会话，"
+                "steer 给指定的运行中执行追加要求，answer 回答它的权限请求或提问，cancel 取消，"
+                "detach 停止跟进（不关闭会话）。prompt、queue、watch 须在工作中调用。所有动作登记后"
+                "立即返回，设备回执随后写入：用 wait 等返回的 run_id，或按 operation_id 查询。"
+                "可用动作以目录中该实例的 capabilities 为准。会话查询的 pending_unowned_requests 是"
+                "无人接收的等待，只上传了工具名，只能用 answer 选 deny 解除。"
+                "结果未知时用 get_coding_agents 按 operation_id 查询，不要重提。"
             ),
             parameters={
                 "type": "object",

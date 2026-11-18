@@ -593,6 +593,10 @@ async def test_automation_transitions_keep_current_definition_and_original_recei
 def test_management_openapi_comes_from_real_response_models():
     document = client_openapi()
     assert document["info"]["x-yuki-api-revision"] >= 9
+    # Revision 13 adds the step kind, tool, agent action and public detail.
+    step = document["components"]["schemas"]["PublicStep"]
+    assert {"kind", "tool", "action", "detail"} <= set(step["required"])
+    assert document["info"]["x-yuki-api-revision"] >= 13
     paths = document["paths"]
     for path in (
         "/client/v1/memory/facts",
@@ -961,3 +965,98 @@ async def test_capability_and_status_project_actual_manager_root_manifest(
         assert environment["control"] is None
     finally:
         await manager.close()
+
+
+def _step(tool, *, action=None, outcome=None, state="accepted", readable=frozenset()):
+    invocation = {"tool_id": tool, **({"action": action} if action is not None else {})}
+    return public_step(
+        {
+            "receipt_json": json.dumps(
+                {
+                    "invocation": {**invocation, "arguments": {"command": "LEAK_ARGUMENT"}},
+                    "outcome": {"ok": True, **(outcome or {})},
+                    "result": "LEAK_RESULT_TEXT",
+                }
+            ),
+            "state": state,
+            "kind": "tool",
+            "effect_key": "original-effect",
+            "created": 1.0,
+            "updated": 3.5,
+        },
+        b"work-namespace",
+        readable,
+    )
+
+
+@pytest.mark.parametrize(
+    ("tool", "action", "kind"),
+    [
+        ("wait", None, "wait"),
+        ("task_control", None, "task"),
+        ("manage_task", None, "task"),
+        ("start_subtask", None, "task"),
+        ("query_chat_history", None, "chat"),
+        ("find_contacts", None, "chat"),
+        ("automation_query", None, "schedule"),
+        ("environment_status", None, "environment"),
+        ("read_tool_artifact", None, "file"),
+        ("get_coding_agents", "list", "agent_read"),
+        ("external_agent", "get", "agent_read"),
+        ("use_coding_agent", "prompt", "agent_control"),
+        ("use_coding_agent", "answer", "agent_control"),
+        ("terminal_exec", None, "terminal"),
+        ("send_message", None, "message"),
+        ("a_plugin_tool_today_unknown", None, "tool"),
+    ],
+)
+def test_step_kind_follows_the_original_call_not_a_catch_all_other(tool, action, kind):
+    step = _step(tool, action=action)
+    assert step["kind"] == kind and step["kind"] != "other"
+    assert step["action"] == (action if kind.startswith("agent") else None)
+    # The legacy fields stay for older clients.
+    assert "category" in step and "label" in step
+
+
+def test_step_detail_is_structured_and_never_carries_arguments_results_or_free_text():
+    terminal = _step(
+        "run_command",
+        outcome={
+            "device_id": "device-one",
+            "process": {"exit_code": 2, "output_lost": False, "stdout": "LEAK_STDOUT"},
+            "error_code": "LEAK_ERROR_VALUE",
+        },
+    )
+    assert terminal["detail"] == {
+        "record_seconds": 2.5,
+        "exit_code": 2,
+        "output_lost": False,
+        "where": "device",
+    }
+    message = _step(
+        "send",
+        outcome={"delivered_message": True, "delivery_target": {"kind": "group", "id": "LEAK_ID"}},
+    )
+    assert message["detail"] == {
+        "record_seconds": 2.5,
+        "text_delivered": True,
+        "target_kind": "group",
+    }
+    # A free-text action from a plugin or invalid input is never echoed.
+    free = _step("use_coding_agent", action="LEAK_FREE_TEXT_ACTION")
+    assert free["action"] is None
+    for step in (terminal, message, free):
+        text = json.dumps(step)
+        assert "LEAK" not in text
+
+
+def test_agent_operation_reference_requires_the_viewer_may_read_it():
+    hidden = _step("use_coding_agent", action="prompt", outcome={"operation_id": "op-one"})
+    assert "operation_id" not in hidden["detail"]
+    shown = _step(
+        "use_coding_agent",
+        action="prompt",
+        outcome={"operation_id": "op-one"},
+        readable=frozenset({"op-one"}),
+    )
+    assert shown["detail"]["operation_id"] == "op-one"
