@@ -447,6 +447,10 @@ async def test_unowned_wait_reaches_the_last_owner_and_is_deny_only(bridge):
                 if "late-bash" in text or "deny_only" in text
             ]
             assert len(cards) == 1 and cards[0]["pending"]["answer_at"] == "deny_only"
+            # The Desktop sees the same wait on the record, deny only.
+            [listed] = (await _card(bridge, identity))["pending"]
+            assert listed["answer_at"] == "deny_only"
+            assert listed["permission_id"] == cards[0]["permission_id"]
             refused = await control.tool_outcome(
                 "message_task",
                 {"id": identity, "reply_to": cards[0]["permission_id"], "answer": "allow"},

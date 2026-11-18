@@ -847,7 +847,64 @@ async def pending_requests(
             }
         elif (resolved := resolution_key(payload)) is not None:
             pending.pop(resolved, None)
+    if relationship != "observe":
+        pending.update(await _unowned_waits(reader, work_id, answered))
     return list(pending.values())
+
+
+async def _unowned_waits(
+    reader: AsyncSession, work_id: str, answered: set[str]
+) -> dict[str, dict[str, Any]]:
+    """Waits no operation received on the sessions this record held (deny only).
+
+    Read through the session index (migration 0159), never by scanning payloads.
+    """
+    sessions = list(
+        (
+            await reader.execute(
+                select(AgentSessionModel.instance_id, AgentSessionModel.native_id)
+                .join(AgentOperationModel, AgentOperationModel.session_id == AgentSessionModel.id)
+                .where(AgentOperationModel.work_id == work_id)
+                .distinct()
+            )
+        ).all()
+    )
+    waits_found: dict[str, dict[str, Any]] = {}
+    for instance_id, native_session in sessions:
+        rows = (
+            await reader.execute(
+                select(
+                    AgentEventModel.id,
+                    AgentEventModel.kind,
+                    AgentEventModel.payload_json,
+                    AgentEventModel.created_at,
+                )
+                .where(
+                    AgentEventModel.instance_id == instance_id,
+                    AgentEventModel.native_session_id == native_session,
+                    AgentEventModel.operation_id.is_(None),
+                )
+                .order_by(AgentEventModel.id)
+            )
+        ).all()
+        for identity, kind, payload_json, created in rows:
+            payload = json.loads(payload_json).get("payload") or {}
+            if not isinstance(payload, dict):
+                continue
+            if kind in _REQUESTS and payload.get("unowned") is True:
+                native = str(payload.get("native_request_id"))
+                if native not in answered:
+                    waits_found[native] = {
+                        "permission_id": str(identity),
+                        "kind": kind,
+                        "tool": payload.get("tool"),
+                        "options": ["deny"],
+                        "received_at": created.replace(tzinfo=UTC).isoformat(),
+                        "answer_at": "deny_only",
+                    }
+            elif (resolved := resolution_key(payload)) is not None:
+                waits_found.pop(resolved, None)
+    return waits_found
 
 
 async def session_native_id(reader: AsyncSession, session_id: str | None) -> str | None:
