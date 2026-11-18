@@ -80,6 +80,8 @@ allow-direct-references = true
 target-version = "py312"
 line-length = 100
 src = ["src", "tests"]
+# Recorded experiment drivers are evidence, kept as they ran (taskbook §15).
+extend-exclude = ["docs/operations/external-agent-phase2-experiments"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "ASYNC", "RUF"]
