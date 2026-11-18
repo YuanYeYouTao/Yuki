@@ -285,7 +285,8 @@ async def test_device_offline_is_view_fact_and_old_socket_cannot_disconnect_repl
     async with case.db.read_session() as reader:
         messages = list(await reader.scalars(select(inputs.c.payload_json)))
     facts = [json.loads(json.loads(value)["text"])["event"] for value in messages]
-    assert facts == ["device_connected", "device_connected", "device_offline"]
+    # Connecting is progress; going offline is the one wake fact.
+    assert facts == ["device_offline"]
     main_inputs = await case.control.take_inputs("transport-facts")
     assert any("device_offline" in message.content for message in main_inputs)
     assert any(operation.id in message.content for message in main_inputs)
@@ -341,10 +342,11 @@ async def test_native_gap_and_recovery_reach_original_main_across_owned_wait(
     ] == "delivered"
     control.current = current
     messages = await control.take_inputs("original-main-resume")
-    native_messages = [message for message in messages if "external_agent_event" in message.content]
-    assert len(native_messages) == 2
+    native_messages = [message for message in messages if "external_agent_card" in message.content]
+    # The lost stream is a wake fact; the recovery that follows is timeline progress.
+    assert len(native_messages) == 1
     facts = [json.loads(message.content.split("\n", 1)[1]) for message in native_messages]
-    assert [fact["payload"]["status"] for fact in facts] == ["unknown", "running"]
+    assert [fact["status"] for fact in facts] == ["unknown"]
     assert all(operation.id in message.content for message in native_messages)
     assert all(
         execution_key(env.session, "native-turn") in message.content for message in native_messages

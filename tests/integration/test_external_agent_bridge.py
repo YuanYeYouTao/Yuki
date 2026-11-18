@@ -738,9 +738,10 @@ async def test_progress_question_completion_commit_before_ack_into_original_work
                         )
                     ).mappings()
                 )
-            assert len(stored) == len(private) == 2
+            # Progress stays on the timeline; only the question is a Work input (a card).
+            assert len(stored) == 2 and len(private) == 1
             assert all(item["work_id"] == control.current["id"] for item in private)
-            question = json.loads(private[1]["payload_json"])
+            question = json.loads(private[0]["payload_json"])
             permission_id = json.loads(question["text"])["permission_id"]
             assert permission_id != "native-question-one"
             await bridge.service.execute(
@@ -1067,9 +1068,13 @@ async def test_conflicting_duplicate_event_is_not_acknowledged_or_applied(bridge
                 operation_id,
                 bridge.source,
             )
-            original = await computer.event(operation_id, "progress", {"text": "Original fact"})
+            original = await computer.event(
+                operation_id, "question", {"native_request_id": "q", "question": "Original fact"}
+            )
             await computer.socket.send(
-                json.dumps({**original, "payload": {"text": "Changed fact"}})
+                json.dumps(
+                    {**original, "payload": {"native_request_id": "q", "question": "Changed fact"}}
+                )
             )
             await asyncio.wait_for(computer.reader, 5)
             await asyncio.wait_for(disconnected.wait(), 5)
@@ -1077,7 +1082,7 @@ async def test_conflicting_duplicate_event_is_not_acknowledged_or_applied(bridge
             async with bridge.database.read_session() as reader:
                 events = list(await reader.scalars(select(AgentEventModel)))
                 assert len(events) == 1
-                assert json.loads(events[0].payload_json)["payload"]["text"] == "Original fact"
+                assert json.loads(events[0].payload_json)["payload"]["question"] == "Original fact"
                 private = list(
                     (
                         await reader.execute(
@@ -1095,12 +1100,12 @@ async def test_conflicting_duplicate_event_is_not_acknowledged_or_applied(bridge
             ]
             assert len(original_inputs) == 1
             facts = [json.loads(json.loads(item["payload_json"])["text"]) for item in private]
-            event_facts = [fact for fact in facts if fact["kind"] == "external_agent_event"]
+            event_facts = [fact for fact in facts if fact["event"] == "question"]
             assert len(event_facts) == 1
-            assert event_facts[0]["payload"] == {"text": "Original fact"}
+            assert event_facts[0]["pending"]["question"] == "Original fact"
             assert sorted((fact["kind"], fact["event"]) for fact in facts) == [
-                ("external_agent_event", "progress"),
-                ("external_agent_transport", "device_offline"),
+                ("external_agent_card", "device_offline"),
+                ("external_agent_card", "question"),
             ]
             assert all("Changed fact" not in item["payload_json"] for item in private)
     finally:

@@ -601,7 +601,8 @@ async def test_work_feedback_and_native_execution_keep_distinct_original_ids(dat
                 select(inputs.c.payload_json).where(inputs.c.work_id == operation.work_id)
             )
         )
-    assert len(messages) == 2
+    # The repeated progress is timeline only; the permission is the one Work input.
+    assert len(messages) == 1
     payloads = [json.loads(json.loads(item)["text"]) for item in messages]
     question = next(item for item in payloads if item["event"] == "permission")
     internal_question = next(
