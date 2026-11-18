@@ -45,6 +45,10 @@ from . import DriverError, Emit
 # writes the whole working directory without asking only fits a scope covering it.
 ASKING_MODES = ("default", "read-only")
 WORKSPACE_MODE = "workspace-write"
+# Only turn content starts an agent-initiated turn; mode/command/config updates
+# (for example after session/set_mode) and usage reports do not.
+TURN_CONTENT = {"agent_message_chunk", "tool_call", "tool_call_update", "plan"}
+ONE_TIME_KINDS = {"allow_once", "reject_once"}
 
 
 def dump(value: Any) -> Any:
@@ -125,6 +129,8 @@ class ACPDriver:
         self.sessions: dict[str, Session] = {}
         self.requests: dict[str, Waiting] = {}
         self.scopes: dict[str, Scope] = {}
+        # Operations detached through this driver: never an owner again.
+        self.detached: set[str] = set()
         # Observe watches: metadata only, never an answerer (§4.3).
         self.observers: set[str] = set()
         self.permission_refs: dict[tuple[str, str], Any] = {}
@@ -376,11 +382,13 @@ class ACPDriver:
             )
         return answerers
 
-    async def _turn(self, session: Session, prompting: bool) -> str:
+    async def _turn(self, session: Session, prompting: bool, starts: bool = True) -> str:
         """Which turn a session update or request belongs to."""
         if prompting:
             return "prompt"
-        if session.owner_operation is None:
+        if session.followup is not None:
+            return "followup"
+        if session.owner_operation is None or not starts:
             return "unowned"
         if session.followup is None:
             session.followup = f"{self.owner}:self:{uuid4()}"
@@ -395,11 +403,12 @@ class ACPDriver:
     async def _end_followup(self, session: Session) -> None:
         if session.followup is None:
             return
-        # ACP reports no end of an agent-initiated turn; say so rather than invent one.
+        # ACP reports no end of an agent-initiated turn. Yuki ends it here (a new
+        # prompt or release); it is not claimed to have completed.
         await self._publish(
             session,
-            "progress",
-            {"status": "unknown", "pending": False, "reason": "native_turn_end_not_reported"},
+            "completed",
+            {"status": "cancelled", "pending": False, "reason": "native_turn_end_not_reported"},
             turn="followup",
         )
         session.followup = None
@@ -470,8 +479,8 @@ class ACPDriver:
         payload = dump(update)
         if session.admitted and not session.admitted.done():
             session.admitted.set_result(True)
-        turn = await self._turn(session, prompting)
         kind = payload.get("sessionUpdate")
+        turn = await self._turn(session, prompting, kind in TURN_CONTENT)
         if kind == "agent_message_chunk":
             content = payload.get("content", {})
             if content.get("type") == "text" and turn == "prompt":
@@ -598,7 +607,8 @@ class ACPDriver:
             await self._close(session)
 
     def _held(self, session: Session) -> bool:
-        return bool(session.operation or session.owner_operation or session.watches)
+        owner = session.owner_operation
+        return bool(session.operation or (owner and owner not in self.detached) or session.watches)
 
     async def _close(self, session: Session) -> str | None:
         """End Yuki's hold on a session: close it, or end an agent with no other session."""
@@ -614,7 +624,18 @@ class ACPDriver:
             assert self.worker is not None
             await self.worker
             self.stopped = asyncio.Event()
-            await self.start()
+            try:
+                await self.start()
+            except Exception as exc:
+                # The session is free (its process ended); the instance is not.
+                await self.emit(
+                    "connection",
+                    {
+                        "status": "unavailable",
+                        "reason": "native_acp_restart_failed",
+                        "error_type": type(exc).__name__,
+                    },
+                )
             return "now"
         return None
 
@@ -659,6 +680,7 @@ class ACPDriver:
         identity = command.get("session_id")
         if action == "detach":
             detached = arguments["operation_id"]
+            self.detached.add(detached)
             self.observers.discard(detached)
             self.scopes.pop(detached, None)
             held = []
@@ -890,6 +912,13 @@ class ACPDriver:
             kinds = {item.option_id: item.kind for item in waiting.options}
             if choice is not None and choice not in kinds:
                 raise DriverError("invalid_option", "Answer must select an original native option")
+            if choice is not None and kinds[choice] not in ONE_TIME_KINDS:
+                # An answer applies to this one request (Q1); it never widens later ones.
+                raise DriverError(
+                    "one_time_only",
+                    "Choose a one-time option",
+                    {"options": [key for key, kind in kinds.items() if kind in ONE_TIME_KINDS]},
+                )
             if waiting.unowned and choice is not None and not kinds[choice].startswith("reject"):
                 raise DriverError(
                     "deny_only", "Only its metadata left this computer; it can only be denied"
