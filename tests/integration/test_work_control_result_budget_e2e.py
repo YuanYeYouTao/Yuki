@@ -161,8 +161,8 @@ async def test_polling_own_work_with_get_tasks_stays_bounded(database, tmp_path)
         assert "set_short_note" in tools
         note = next(step for step in view["steps"] if step.get("tool") == "set_short_note")
         assert "result" in note
-        if index > 1:
-            assert tools.count("get_tasks") == min(index - 1, 7)
+        # Each earlier poll and the running call itself are listed by name and status.
+        assert tools.count("get_tasks") == index
     # Growth is per listed step, never a doubling of the previous result.
     for before, after in pairwise(sizes):
         assert after - before < 1000

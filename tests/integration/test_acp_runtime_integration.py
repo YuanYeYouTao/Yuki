@@ -510,7 +510,7 @@ async def test_cancel_rechecks_work_committed_before_the_original_main_returns(
     keep_id, cancel_id = str(uuid4()), str(uuid4())
     entered, accepted = asyncio.Event(), asyncio.Event()
     release_keep, release_accept = asyncio.Event(), asyncio.Event()
-    original_execute = WorkControl.execute
+    original_outcome = WorkControl.tool_outcome
     admitted = []
     scripted_calls = iter(
         [
@@ -533,16 +533,16 @@ async def test_cancel_rechecks_work_committed_before_the_original_main_returns(
         )
 
     async def after_committed(control, name, arguments, call_key, **kwargs):
-        result = await original_execute(control, name, arguments, call_key, **kwargs)
+        result = await original_outcome(control, name, arguments, call_key, **kwargs)
         if name == "manage_task" and arguments.get("action") == "start":
-            assert "error" not in json.loads(result)
+            assert result.ok
             admitted.append(control.current["id"])
             accepted.set()
             await release_accept.wait()
         return result
 
     monkeypatch.setattr(env.provider, "complete", complete)
-    monkeypatch.setattr(WorkControl, "execute", after_committed)
+    monkeypatch.setattr(WorkControl, "tool_outcome", after_committed)
     try:
         async with asyncio.timeout(15):
             for session, identity, body in (
