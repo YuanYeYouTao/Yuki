@@ -629,8 +629,14 @@ def test_installed_cli_upgrades_copy_without_repository_pythonpath(tmp_path, mon
     assert receipt["running_work"] == 1
     assert receipt["newly_reset"] == len(conversations)
     with sqlite3.connect(copied) as after:
+        # The reset cancels the running Work; a cancelled Work cannot resume, so it
+        # releases its protocol refs to GC. Its objects and files stay until then.
+        assert not after.execute(
+            "SELECT 1 FROM runtime_protocol_refs r JOIN runtime_work w ON w.id=r.work_id"
+            " WHERE w.state='cancelled'"
+        ).fetchall()
         for table, rows in original_rows.items():
-            if table != "runtime_work":
+            if table not in {"runtime_work", "runtime_protocol_refs"}:
                 columns = ",".join(
                     "origin_key"
                     if table == "chat_events" and name == "platform_message_id"
