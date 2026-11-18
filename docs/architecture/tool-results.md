@@ -25,6 +25,11 @@
 包括转义；显式 `tooling.result_token_budget` 按既有四倍字符换算覆盖 agent 字符预算。
 Main、公开 reader 和 CodeHost 共用 `effective_result_character_budget`，Memory 不再提前删尾或
 按展示长度否定成功读取。它不是实际 tokenizer 计数；真实模型输入容量仍沿原请求合同核验。
+生命周期控制（`get_tasks`、`manage_task`、`wait`、`start_subtask`、`message_task`）的结果同样是
+工具结果：直调、Code Mode 子调用都经 `AgentRunner._execute_control_call` 取得 typed
+`WorkControl.tool_outcome`，再由 `AgentToolBackend.render_result` 走与业务工具相同的预算和
+artifact 预览；持久回执保存的就是这份有界文本，恢复按原 call_key 回放它而不重新执行。
+预算前写下的旧控制回执按原文本回放，不改写。
 
 预算内直接交付实际正文。Web 搜索／读取保留原来源归档，但归档不再使小结果只剩目录。
 超长原件（即上面的投影本身）保存在 `data/tool_artifacts/`；模型收到有界预览 `data`、

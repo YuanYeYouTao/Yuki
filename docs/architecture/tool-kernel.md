@@ -249,7 +249,9 @@ pause 与压缩尚未完成时不提前换链；媒体、来源与 CAS 在原派
 Code Mode 子调用和恢复重派都经 `AgentRunner._execute_control_call`：先核声明、执行后端许可与
 `get_tasks` 的执行处读取授权（拒绝不写回执），再在原 effect 边界内按同一冻结合同的
 `schema_view` 校验参数，失败与业务工具同形（`tool_input_validation_failed` 加一句说明，
-`executed=false`），控制不计业务工具预算。已有回执的调用按原回执返回，不再校验或重派；
+`executed=false`），控制不计业务工具的调用次数预算；结果大小不例外，与业务工具一样经
+`AgentToolBackend.render_result` 的结果预算和 artifact 预览，回执保存同一有界文本
+（见[结果预算与 Artifact](tool-results.md#预算)）。已有回执的调用按原回执返回，不再校验或重派；
 同一合同下未派发的原调用恢复时按当前 schema 校验。`WorkControl` 与子任务工具只核当前事实
 （当前任务、归属、id 是否存在、时间可解析且带时区、`seconds` 有限、目标非空白）和 schema
 无法表达的跨字段规则（start 需要 goal、resume 需要 id）；Host 接纳 `admit_goal` 不经 schema，

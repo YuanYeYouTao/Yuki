@@ -485,37 +485,7 @@ class MainAgentBackend(AgentToolBackend):
                         and isinstance(part.get("delivered_text"), str)
                         and part["delivered_text"].strip()
                     )
-            tooling = config.tooling
-            result_budget = effective_result_character_budget(config)
-            item_limit = tooling.result_item_limit if tooling is not None else None
-            artifact_store = (
-                self._service._tool_artifacts
-                if outcome.images or (tooling is not None and tooling.result_artifact_enabled)
-                else None
-            )
-            retention_seconds = (
-                tooling.result_artifact_retention_seconds if tooling is not None else None
-            )
-            from yuki.runtime.work_activation import current_work_control
-            from yuki.tool_results.access import access_from_runtime
-
-            active = current_work_control.get()
-
-            budgeted = await ToolResultBudgeter(
-                max_characters=result_budget,
-                item_limit=item_limit,
-                artifacts=artifact_store,
-                artifact_retention_seconds=retention_seconds,
-                artifact_access_resolver=(
-                    lambda: access_from_runtime(
-                        execution_runtime,
-                        generation=active.lease.generation if active is not None else None,
-                    )
-                )
-                if artifact_store is not None
-                else None,
-            ).render(outcome)
-            result = budgeted.text
+            result = await self.render_result(outcome)
             if self._service._tool_receipts is not None:
                 await self._service._record_tool_receipt(
                     runtime=execution_runtime,
@@ -554,6 +524,39 @@ class MainAgentBackend(AgentToolBackend):
                     ):
                         raise ValueError("tool_result_source_changed")
         return result
+
+    async def render_result(self, outcome: ToolExecutionResult) -> str:
+        """One result budget for business and lifecycle tools: preview plus artifact."""
+        from yuki.runtime.work_activation import current_work_control
+        from yuki.tool_results.access import access_from_runtime
+
+        config = self._runtime.runtime_config
+        assert config is not None
+        tooling = config.tooling
+        artifact_store = (
+            self._service._tool_artifacts
+            if outcome.images or (tooling is not None and tooling.result_artifact_enabled)
+            else None
+        )
+        execution_runtime = self._request_runtime()
+        active = current_work_control.get()
+        budgeted = await ToolResultBudgeter(
+            max_characters=effective_result_character_budget(config),
+            item_limit=tooling.result_item_limit if tooling is not None else None,
+            artifacts=artifact_store,
+            artifact_retention_seconds=(
+                tooling.result_artifact_retention_seconds if tooling is not None else None
+            ),
+            artifact_access_resolver=(
+                lambda: access_from_runtime(
+                    execution_runtime,
+                    generation=active.lease.generation if active is not None else None,
+                )
+            )
+            if artifact_store is not None
+            else None,
+        ).render(outcome)
+        return budgeted.text
 
     async def _require_plugin_domain(
         self, descriptor: CapabilityDescriptor, arguments: dict[str, Any]

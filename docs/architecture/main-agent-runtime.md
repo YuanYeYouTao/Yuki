@@ -61,7 +61,10 @@ delivered），不含调用参数原文。这用于识别已有工作与已发�
 需要核实再调用 `get_tasks`（给 `id` 读单项，省略列出）；单项读取同时提供存在的完整等待登记。
 get 的全局安全元数据不授予私有步骤读取。原 actor、Conversation、generation 和执行树范围
 获准时，直接读取原 effects 的最近一页、真实结果及原 note；`limit/cursor` 续读更早
-记录（新到旧），不聚合完整 journal，也不另存进度摘要。范围不符时明确
+记录（新到旧），不聚合完整 journal，也不另存进度摘要。只读控制（`READ_ONLY_CONTROLS`，
+即 `get_tasks` 自身）的步骤只列名称与状态、不内嵌其 result：它只是同一批步骤的早先视图，
+内嵌会让每次查询逐层转义套入上一份结果。整份结果与其他工具一样受结果预算约束，超长时
+给有界预览、`artifact_handle` 与 `read_more`。范围不符时明确
 `progress_available=false`，不把缺失步骤当作没有行动。`observed_at` 是查询时间，步骤的
 created_at/updated_at 是原回执时间，生命周期和计数本身不能证明业务已做完。
 后端身份、权限和恢复事实仍保持完整。

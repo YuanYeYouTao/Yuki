@@ -163,6 +163,10 @@ class AgentRunResult:
 class AgentToolBackend(CoordinatedToolBackend, Protocol):
     async def execute_call(self, invocation: Invocation) -> str: ...
 
+    async def render_result(self, outcome: ToolExecutionResult) -> str:
+        """Model text of one tool outcome under this execution's result budget."""
+        ...
+
     def parallel_safe(self, name: str, runtime: AgentRuntime) -> bool: ...
 
     def is_side_effecting(
@@ -768,7 +772,11 @@ class AgentRunner:
                     name, str(validation.error_category), validation.detail
                 )
             arguments = json.loads(call.function.arguments)
-            return await control.execute(name, arguments, key, invocation=invocation)
+            # Lifecycle results are tool results: the same budget and artifact
+            # preview bound what the model reads and what the receipt replays.
+            return await tools.render_result(
+                await control.tool_outcome(name, arguments, key, invocation=invocation)
+            )
 
         if invocation is None:
             return await execute(), True
