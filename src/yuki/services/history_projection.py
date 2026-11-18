@@ -170,6 +170,7 @@ async def prepare_history(
             raise HistorySourceChangedError(version)
         renderer = ChatEventPromptRenderer(
             missing_rows,
+            self_name=context.history_self_name,
             timezone=context.history_timezone,
         )
         grouped, individual_rows = renderer.main_agent_history_views(missing_rows)

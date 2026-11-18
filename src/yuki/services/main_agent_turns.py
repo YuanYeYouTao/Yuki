@@ -344,6 +344,7 @@ class MainAgentTurnService:
                     )
                 renderer = ChatEventPromptRenderer(
                     rows,
+                    self_name=context.history_self_name,
                     timezone=context.history_timezone,
                 )
                 # Individual event fragments preserve arrival order when directed

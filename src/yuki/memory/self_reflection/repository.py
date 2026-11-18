@@ -629,6 +629,7 @@ class SelfReflectionRepository:
         context_events: int = 4,
         force: bool = False,
         cycle_id: str | None = None,
+        self_name: str,
         timezone: str = "Asia/Shanghai",
     ) -> tuple[SelfReflectionBatch, ...]:
         initiatives = await claim_initiative(
@@ -704,7 +705,9 @@ class SelfReflectionRepository:
                     event_query = event_query.limit(max_events)
                     candidates = tuple(await reader.scalars(event_query))
                     renderer = ChatEventPromptRenderer(
-                        tuple(_event_record(r) for r in candidates), timezone=timezone
+                        tuple(_event_record(r) for r in candidates),
+                        self_name=self_name,
+                        timezone=timezone,
                     )
                     selected: list[ChatEventModel] = []
                     characters = 0

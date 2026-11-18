@@ -129,6 +129,7 @@ class SelfReflectionWorker:
                 max_characters=self._settings.memory_self_reflection_max_characters,
                 force=cycle["trigger"] == "manual",
                 cycle_id=cycle["id"],
+                self_name=self._settings.character_identity.display_name,
                 timezone=self._settings.memory_self_reflection_timezone,
             )
             batch = batches[0] if batches else None

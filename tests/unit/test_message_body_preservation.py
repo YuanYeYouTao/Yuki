@@ -37,7 +37,7 @@ def test_history_preserves_body_inside_its_structured_event_envelope(body):
         author_kind="person",
         author_person_id="original-person",
     )
-    rendered = ChatEventPromptRenderer((row,)).render_reference_event(row)
+    rendered = ChatEventPromptRenderer((row,), self_name="Yuki").render_reference_event(row)
     assert rendered.endswith(f"#91>{body}")
 
 

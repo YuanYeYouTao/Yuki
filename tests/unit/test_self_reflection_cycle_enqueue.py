@@ -183,6 +183,7 @@ async def test_request_day_uses_time_after_writer_admission(database, monkeypatc
         max_wait_seconds=0,
         max_events=10,
         max_characters=10000,
+        self_name="Yuki",
     )
 
     class Clock(datetime):

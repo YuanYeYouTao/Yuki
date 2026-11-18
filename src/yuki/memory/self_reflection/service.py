@@ -294,6 +294,7 @@ class SelfReflectionService:
         all_events = (*batch.context_events, *batch.events)
         renderer = ChatEventPromptRenderer(
             all_events,
+            self_name=self._settings.character_identity.display_name,
             timezone=self._settings.memory_self_reflection_timezone,
         )
         evidence_events = tuple(event for event in batch.events if self._event_evidence_text(event))

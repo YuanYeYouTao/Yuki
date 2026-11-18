@@ -38,7 +38,7 @@ def test_history_time_uses_first_event_and_caps_the_whole_group_at_five_minutes(
     later = _event(6915, first.occurred_at + timedelta(minutes=8), "刚才说错了")
 
     rows = (first, near, boundary, later)
-    history = ChatEventPromptRenderer(rows).main_agent_history(rows)
+    history = ChatEventPromptRenderer(rows, self_name="Yuki").main_agent_history(rows)
 
     assert [ids for _, ids, _ in history] == [(6912, 6913, 6914), (6915,)]
     assert history[0][2].content == (
@@ -53,7 +53,7 @@ def test_history_starts_new_group_at_local_midnight_and_on_backward_event_time()
     backward = _event(3, first.occurred_at + timedelta(minutes=1))
 
     rows = (first, next_day, backward)
-    history = ChatEventPromptRenderer(rows).main_agent_history(rows)
+    history = ChatEventPromptRenderer(rows, self_name="Yuki").main_agent_history(rows)
 
     assert [ids for _, ids, _ in history] == [(1,), (2,), (3,)]
     assert [message.content.split("\n", 1)[0] for _, _, message in history] == [
@@ -69,7 +69,7 @@ def test_backward_time_splits_a_group_even_inside_the_first_five_minutes() -> No
     backward = _event(3, first.occurred_at + timedelta(minutes=3))
 
     rows = (first, forward, backward)
-    history = ChatEventPromptRenderer(rows).main_agent_history(rows)
+    history = ChatEventPromptRenderer(rows, self_name="Yuki").main_agent_history(rows)
 
     assert [ids for _, ids, _ in history] == [(1, 2), (3,)]
     assert (history[1][2].content or "").startswith("[14:03:00｜阿明|person:person-1]\n")
@@ -77,7 +77,7 @@ def test_backward_time_splits_a_group_even_inside_the_first_five_minutes() -> No
 
 def test_current_event_time_is_visible_without_changing_single_event_watermark() -> None:
     event = _event(6912, datetime(2026, 9, 25, 6, 2, 11, tzinfo=UTC), "原文")
-    renderer = ChatEventPromptRenderer((event,))
+    renderer = ChatEventPromptRenderer((event,), self_name="Yuki")
 
     assert (
         renderer.reference_message(
@@ -91,7 +91,7 @@ def test_current_event_time_is_visible_without_changing_single_event_watermark()
 def test_frozen_old_fragment_keeps_its_text_when_new_event_is_appended() -> None:
     first = _event(1, datetime(2026, 9, 25, 6, 2, 11, tzinfo=UTC), "旧消息")
     second = replace(first, id=2, origin_key="platform-2", content="新消息")
-    renderer = ChatEventPromptRenderer((first, second))
+    renderer = ChatEventPromptRenderer((first, second), self_name="Yuki")
     grouped = tuple(
         (ids, message) for _, ids, message in renderer.main_agent_history((first, second))
     )

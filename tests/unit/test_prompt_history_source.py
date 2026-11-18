@@ -22,13 +22,14 @@ def _source(rows, fragments):
         projection=_projection(fragments),
         timezone="Asia/Shanghai",
         after_event_id=0,
+        self_name="Yuki",
     )
     source.extend(rows, through_event_id=rows[-1].id)
     return source
 
 
 def _original(rows, frozen, current_id):
-    renderer = ChatEventPromptRenderer(rows)
+    renderer = ChatEventPromptRenderer(rows, self_name="Yuki")
     grouped, individual = renderer.main_agent_history_views(
         row for row in rows if row.id != current_id
     )
@@ -55,7 +56,7 @@ def test_incremental_groups_match_full_raw_with_current_holes_and_partial_overla
             )
         rows = tuple(rows)
         current_id = rng.randrange(1, len(rows) + 1)
-        renderer = ChatEventPromptRenderer(rows)
+        renderer = ChatEventPromptRenderer(rows, self_name="Yuki")
         frozen = FrozenFragments.load([]).extend_history(
             (
                 ((row.id,), renderer.reference_message(row))
@@ -103,7 +104,7 @@ def test_failed_candidate_keeps_pending_until_original_committed_head():
 def test_appended_event_delta_excludes_the_current_input():
     at = datetime(2026, 10, 18, tzinfo=UTC)
     rows = tuple(_event(i, at) for i in range(1, 4))
-    renderer = ChatEventPromptRenderer(rows)
+    renderer = ChatEventPromptRenderer(rows, self_name="Yuki")
     groups, singles = renderer.main_agent_history_views(rows)
     frozen = FrozenFragments.load([]).extend_history(
         tuple((ids, message) for _, ids, message in groups),

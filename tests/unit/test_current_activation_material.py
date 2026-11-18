@@ -223,6 +223,7 @@ async def test_repeated_source_keeps_entire_adopted_group_and_current_activation
     renderer = ChatEventPromptRenderer(
         (repeated,),
         timezone=harness.settings.default_timezone,
+        self_name="Yuki",
     )
     current = renderer.reference_message(repeated, current_event_id=repeated.id)
     if evicted:

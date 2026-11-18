@@ -149,6 +149,8 @@ async def test_raw_reply_hydrates_cause_metadata_after_source_is_covered(
     assert reply.caused_by_event_id == source_event_id
     assert reply.caused_by_external_source == "fixture"
     assert reply.caused_by_external_event_type == "fixture.created"
-    projected = ChatEventPromptRenderer(snapshot.raw_events).main_agent_history(snapshot.raw_events)
+    projected = ChatEventPromptRenderer(snapshot.raw_events, self_name="Yuki").main_agent_history(
+        snapshot.raw_events
+    )
     assert "source=fixture" in (projected[0][2].content or "")
     assert "type=fixture.created" in (projected[0][2].content or "")

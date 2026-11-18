@@ -34,6 +34,7 @@ async def test_paid_completion_recovers_once_without_losing_a_large_tail(
         max_wait_seconds=0,
         max_events=1,
         max_characters=16000,
+        self_name="Yuki",
     )
     await repository.save_checkpoint(
         batch.run_id,

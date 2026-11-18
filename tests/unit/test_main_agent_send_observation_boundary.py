@@ -126,7 +126,7 @@ async def test_main_gemini_continues_after_send_without_repeating_its_ledger_ech
         assert sent_text not in saved.payload_json
         if interleaved_events != "none":
             record = await EventLedgerRepository(database).get_event(interleaved[1])
-            original = ChatEventPromptRenderer([record]).reference_message(record)
+            original = ChatEventPromptRenderer([record], self_name="Yuki").reference_message(record)
             assert original.role == "assistant"
             assert f"#{record.id}>" in original.content
             assert f"presence:{record.author_presence_id}" in original.content

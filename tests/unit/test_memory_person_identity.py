@@ -757,6 +757,7 @@ async def test_reflection_keeps_each_original_person_stream_after_merge(database
             max_events=10,
             max_characters=16000,
             force=True,
+            self_name="Yuki",
         )
         observed[batch.state.canonical_person_id] = {event.id for event in batch.events}
         await repository.complete(batch, proposals=0, committed=0)
@@ -770,6 +771,7 @@ async def test_reflection_keeps_each_original_person_stream_after_merge(database
             max_events=10,
             max_characters=16000,
             force=True,
+            self_name="Yuki",
         )
         == ()
     )

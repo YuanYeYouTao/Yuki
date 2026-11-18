@@ -197,7 +197,9 @@ async def test_replacement_stores_current_bytes_and_retires_old_chunks_not_prove
 
 
 def _source(projection=None):
-    return PromptHistorySource((), projection=projection, timezone="UTC", after_event_id=0)
+    return PromptHistorySource(
+        (), projection=projection, timezone="UTC", after_event_id=0, self_name="Yuki"
+    )
 
 
 def test_source_metadata_uses_the_same_total_memory_budget_and_lru(database):

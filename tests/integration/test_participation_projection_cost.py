@@ -109,7 +109,7 @@ async def test_jev_and_main_keep_the_same_named_mentions_in_original_positions(d
                 instructions = request["questions"][dimension]["instructions"]
                 assert current_name in instructions and old_name not in instructions
             assert "{{name}}" not in json.dumps(request["questions"], ensure_ascii=False)
-        main = ChatEventPromptRenderer((row,)).reference_message(
+        main = ChatEventPromptRenderer((row,), self_name="Yuki").reference_message(
             row, current_event_id=row.id, current_content=body
         )
 
