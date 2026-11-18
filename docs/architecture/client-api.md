@@ -9,7 +9,7 @@
 
 电脑使用独立 `/agents/v1/pair` 兑换 connector 码，再用该 token 建立 `/agents/v1/connect` WSS；不能使用聊天 token。电脑归原 Person，不依赖 App Binding、Conversation 或其 generation；同人合并保原 device namespace，账号转移不转电脑。电脑连接只传输原生控制和重要事件，不自行发聊天消息。
 
-`GET /agents/v1/devices`、`/agents/v1/instances/{instance_id}/sessions?cursor=...`、`/agents/v1/operations?work_id=...&cursor=...&limit=...` 和 `/agents/v1/operations/{id}?cursor=...` 使用现有 chat token 的共同人物资格，不为了查询另建或启用一个聊天会话。目录只返回本人设备，原操作查询保内部资源 ID、原回执及分页事件。设备目录包含尚无实例的本人 connector 设备，online 仅来自当前服务端连接；实例 `local_id` 仅用于本地配置匹配，控制仍使用服务端内部 `id`。会话目录 cursor 沿该实例原 native 分页，查询不启动任务。操作列表按原 created_at/id 分页，cursor 为上一页原 operation ID，默认每页 50 条，next_cursor 为 null 表示当前已读完；不另建持久游标。操作列表复用原持久回执和离线 unknown 投影，不把 accepted 当作已完成。新控制沿 Main 固定 `use_coding_agent`／`get_coding_agents` 执行处核本人设备与当前真实来源，详见[连接器操作说明](../operations/local-agent-connector.zh-CN.md)。
+`GET /agents/v1/devices`、`/agents/v1/instances/{instance_id}/sessions?cursor=...`、`/agents/v1/operations?work_id=...&cursor=...&limit=...` 和 `/agents/v1/operations/{id}?cursor=...` 使用现有 chat token 的共同人物资格，不为了查询另建或启用一个聊天会话。目录只返回本人设备，原操作查询保内部资源 ID、原回执及分页事件。设备目录包含尚无实例的本人 connector 设备，online 仅来自当前服务端连接；实例 `local_id` 仅用于本地配置匹配，控制仍使用服务端内部 `id`。会话目录 cursor 沿该实例原 native 分页，查询不启动任务。操作列表按原 created_at/id 分页，cursor 为上一页原 operation ID，默认每页 50 条，next_cursor 为 null 表示当前已读完；不另建持久游标。操作列表复用原持久回执和离线 unknown 投影，不把 accepted 当作已完成。新控制沿 Main 的子任务工具（执行者为本机 Agent）在执行处核本人设备与当前真实来源，详见[连接器操作说明](../operations/local-agent-connector.zh-CN.md)。
 
 Connector 的 hello 与 catalog 都是当前完整实例清单：缺席的实例退出当前目录，暂时不可用的实例仍在目录，断线不等于删除；保留原实例 ID、操作和事件，旧连接不能覆盖当前连接的清单。设备撤销后退出当前目录，但本人仍可读取服务器已存的原操作和终端历史；新的远程效果仍要求有效设备授权。
 
@@ -39,13 +39,14 @@ Connector 的 hello 与 catalog 都是当前完整实例清单：缺席的实例
 
 Bot 启动仍恢复电脑观察，以便没有桌面客户端时也能按当前撤权归还旧 human 租约。协议明确不支持或宿主没有 Unix transport 时停止无用重连，实际电脑访问可重新启动；暂时网络失败保原恢复路径。观察任务的启动与关闭共用同一实例生命周期锁。授权提示过载丢失时，先关画面输入，再读一次当前授权并沿原 release key 归还，不依赖下一条通知，也不重放原控制命令。
 
-桌面只管理现有 NativeConnector 连接，云端通过固定的 `get_coding_agents`／`use_coding_agent` 操作本人明确授权的 Codex、Claude Code 或 ACP 实例。配置编辑或删除沿原实例更新当前目录，不重启无关 Agent、Shell 或文件传输；原操作与执行回执保留。当前设备仍获授权时，显式原操作的查证和控制沿原 owner；新任务仍核当前目录，撤销设备后不再产生远程效果。连接不要求选择项目；任务目录和原生会话 cwd 沿真实任务与驱动处理，不增加目录授权白名单。角色远程电脑继续沿 Manager，与本人原生 Agent 的授权和会话各自独立。
+桌面只管理现有 NativeConnector 连接，云端通过子任务工具（`start_subtask` 的执行者参数）委派或观察本人明确授权的 Codex、Claude Code 或 ACP 实例。配置编辑或删除沿原实例更新当前目录，不重启无关 Agent、Shell 或文件传输；原操作与执行回执保留。当前设备仍获授权时，显式原操作的查证和控制沿原 owner；新任务仍核当前目录，撤销设备后不再产生远程效果。连接不要求选择项目；任务目录和原生会话 cwd 沿真实任务与驱动处理，不增加目录授权白名单。角色远程电脑继续沿 Manager，与本人原生 Agent 的授权和会话各自独立。
 
 Client API revision 7 退出 `/client/v1/executors`、`/executor/v1` 和 `local_device` 活执行功能。迁移 0152 的原三张表、原操作 UUID、调用键和历史字节继续保留；旧 Work 只按原 Work、调用键和 `local_device:<op UUID>` 读取原回执，不创建 Native 操作、不重发或重做。已确认效果保持原事实，pending/unknown 不转成成功，也不恢复派发资格。
 
 ## 角色资料与单 SOUL
 
-`GET /meta` 公开当前角色名称、API revision `13` 和实际能力声明，不推断未实现的客户端功能。
+`GET /meta` 公开当前角色名称、API revision `14` 和实际能力声明，不推断未实现的客户端功能。
+revision 14 只加字段与两个端点：Work 增 `parent_work_id` 与 `delegation`（委派或观察记录的卡片：`executor{device_id, agent, label, session}`、`relationship`、`state`（running／waiting／unknown／终态）、`status_line`、`pending[]`（`permission_id`、`kind`、`tool`、`options`、`operation_id`、`received_at`、`answer_at`：`yuki_or_user` 或观察记录的 `native_terminal`）、`last_event_at`）；`GET /delegations?group=active|ended` 列出本人所有设备上的委派与观察（Work 投影）；`/works/{id}/steps` 中 `start_subtask`／`message_task`／`manage_task` 步骤的 `detail` 增 `subtask_id`（及委派的 `relationship`），供步骤跳到子任务并显示其实时状态；`POST /works/{id}/native-requests/{permission_id}/answer` 见上文。取消委派沿原 `POST /works/{id}/cancel`（取消原生回合并结束关系，观察记录即停止观察）。旧 Desktop 仍可用：委派与观察作为普通 Work 显示，`agent_target` 继续接受、按新工具术语渲染；Desktop 最低修订不变。
 revision 13 为 `/works/{id}/steps` 的每步新增 `kind`、`tool`、`action`、`detail`（见上文），只加字段；旧字段 `category`／`label` 保留，缺少新字段的旧服务端由 Desktop 退回旧分类显示，Desktop 最低修订不变。
 revision 12 为 Yuki 自己的电脑增加整机快照：`GET /computer` 增 `snapshots`（`id`、`state`、`created_at`、
 `source` daily／yuki／person、`note`、`by`、`size_bytes`）、`snapshot_keep`、`last_restore`、`idle_sleep_minutes`、
@@ -171,7 +172,7 @@ Memory 重建按来源事件处理提案，保留有界账号的运行选择集�
 重放先核当前本人访问权与原事件作者／App 会话，再核规范化正文和附件，
 已有请求不构造新入站、不通知轮次。并发首次提交在原入账处遇到 receipt_conflict 时，
 回到同一授权与内容核对；同号不同操作或正文返回 request_conflict。正文是个人聊天输入，
-App 消息与 `POST /works/{id}/inputs` 可附显式 `agent_target`：本人设备、实例、会话、执行、原 operation、项目 cwd，以及可选 intent、permission_id、option_id、response JSON 对象。intent 不默认为 prompt；没有显式意图时以用户正文为准。目标在首次接纳前沿原 Person／资源／当前 connector 授权查证，随原事件与 Work 输入进入 Main，不由个人 HTTP 另建执行驱动。目标、意图和原问题答案都参与同 UUID 一致性；未提供 target 的旧输入保持原正文和指纹。原请求查证先返回原回执，不依赖该电脑当前在线或目录就绪。此选择不构成整个 Work 后续工具操作的固定锁；实际控制继续核原资源、原问题和真实执行回执。
+App 消息与 `POST /works/{id}/inputs` 可附显式 `agent_target`：本人设备、实例、会话、执行、原 operation、项目 cwd，以及可选 intent、permission_id、option_id、response JSON 对象。intent 不默认为 prompt；没有显式意图时以用户正文为准。目标在首次接纳前沿原 Person／资源／当前 connector 授权查证，以子任务工具的术语（`start_subtask` 的 executor／session／relationship、`message_task`、`manage_task`）随原事件与 Work 输入进入 Main，不由个人 HTTP 另建执行驱动；唯一例外是设备所属人物对自己设备上原生请求的回答：`POST /works/{id}/native-requests/{permission_id}/answer`（revision 14）由服务端直接结算到原生请求，不经 Main、不花模型调用，与 Yuki 的回答走同一原 respond 登记，原生只消费一次、先答者生效；观察记录的请求返回 `observe_only`。目标、意图和原问题答案都参与同 UUID 一致性；未提供 target 的旧输入保持原正文和指纹。原请求查证先返回原回执，不依赖该电脑当前在线或目录就绪。此选择不构成整个 Work 后续工具操作的固定锁；实际控制继续核原资源、原问题和真实执行回执。
 
 不在个人 API 中执行 QQ `/ai` 管理命令。附件使用本人已登记的 media_id，经原媒体链准备。
 
@@ -290,7 +291,7 @@ watch 每次连接先消费 sync，再用公开 GET／事件 keyset 重建本人
 重传前检查本地原件，下载核对收到字节的原版本摘要。
 
 本地验收使用假模型、假 QQ 与临时服务；生产迁移、真实 QQ／模型和部署另行执行。
-ACP 方向 A 的接入见下节；服务器使用 `use_coding_agent` 访问用户本机原生 Agent 时，
+ACP 方向 A 的接入见下节；服务器经子任务工具访问用户本机原生 Agent 时，
 沿现有个人设备授权与 `/agents/v1/connect`，保留原实例、执行和操作回执。
 部署与生命周期见[本机连接器](../operations/local-agent-connector.zh-CN.md)。
 
