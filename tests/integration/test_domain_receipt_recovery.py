@@ -46,7 +46,9 @@ native_case = _native_case
 class DomainCommitBoundary:
     """Retain actual pre-T3 rows, then restore that boundary after fixture setup."""
 
-    def __init__(self, monkeypatch, tool):
+    def __init__(self, monkeypatch, tool, recorded=None):
+        # ``recorded`` adds invocation fields a historical receipt carried.
+        self.recorded = recorded or {}
         self.saved = None
         original = WorkRepository.record_effect
 
@@ -91,6 +93,10 @@ class DomainCommitBoundary:
         rows, checkpoint = self.saved
         async with database.immediate_session() as writer:
             for row in rows:
+                if row["effect_key"] == self.key and self.recorded:
+                    receipt = json.loads(row["receipt_json"])
+                    receipt["invocation"].update(self.recorded)
+                    row = {**row, "receipt_json": json.dumps(receipt)}
                 await writer.execute(
                     update(effects).where(effects.c.effect_key == row["effect_key"]).values(**row)
                 )
@@ -295,7 +301,9 @@ async def test_code_resume_consumes_original_native_control_receipt(
     outer = outer_call(env, "await yuki_use_coding_agent({})")
     owner.transcript.append(ChatMessage("assistant", tool_calls=(outer.call,)))
     await owner.save("response", (outer.call,))
-    boundary = DomainCommitBoundary(monkeypatch, "use_coding_agent")
+    # The Work was recorded under the retired tool, whose receipts carried the action;
+    # resuming it still reads that original receipt by its recorded name.
+    boundary = DomainCommitBoundary(monkeypatch, "use_coding_agent", recorded={"action": "steer"})
     assert json.loads(await CodeModeDriver(env.host, outer).run())["status"] == "completed"
     await boundary.restore(database)
     original_budget = await budget(database, control.current["id"])

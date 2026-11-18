@@ -91,6 +91,8 @@ _ERROR_MESSAGES = {
     "invalid_work_query_cursor": "cursor 只能使用上次返回的 next_cursor。",
     "invalid_work_progress_cursor": "cursor 只能使用上次返回的 next_cursor。",
     "work_activation_obsolete": "本次执行已失效，操作未执行。",
+    "release_requires_agent_subtask": "release 只用于编码 Agent 子任务或观察；其他任务用 cancel。",
+    "subagent_message_target_terminal_or_missing": "该子任务已结束，不能再发消息。",
 }
 
 
@@ -226,9 +228,13 @@ def work_control_tools() -> tuple[ChatTool, ...]:
             name="get_tasks",
             result_cacheable=False,
             description=(
-                "查看任务和子任务。给 id 读取该任务的完整目标、状态、等待条件、最近步骤与结果；"
+                "查看任务和子任务。给 id 读取该任务的完整目标、状态、等待条件、最近步骤与结果"
+                "（编码 Agent 子任务另含卡片与一页时间线，cursor 翻页）；"
                 "不给 id 列出任务，status 默认 active，parent 列出某任务的子任务。"
-                "状态只说明生命周期，成果以步骤结果和交付回执为准。"
+                "agents 浏览本人电脑上的编码 Agent：{} 列出设备与 Agent（含声明的能力和各设备"
+                "正在运行的委派），给 agent 列出它的会话，给 session 读最近进展，history=true "
+                "带上历史。状态只说明生命周期，成果以步骤结果和交付回执为准；"
+                "在线或空闲不代表任务已完成。"
             ),
             parameters={
                 "type": "object",
@@ -238,6 +244,12 @@ def work_control_tools() -> tuple[ChatTool, ...]:
                     "parent": {"type": "string", "maxLength": 36},
                     "limit": {"type": "integer", "minimum": 1, "maximum": 50},
                     "cursor": string,
+                    "agents": {
+                        "type": "object",
+                        "properties": {"device": string, "agent": string, "session": string},
+                        "additionalProperties": False,
+                    },
+                    "history": {"type": "boolean"},
                 },
                 "additionalProperties": False,
             },
@@ -248,8 +260,10 @@ def work_control_tools() -> tuple[ChatTool, ...]:
             description=(
                 "登记或推进需要跨轮持续的任务。start 登记新目标；update 修改目标或保存 note；"
                 "finish 结束并可在 result 给出内部结果；fail、cancel 终止 id 指定的任务"
-                "（默认当前任务，text 写原因）；"
-                "resume 恢复 id 指定的任务，子任务可在 text 附新要求。"
+                "（默认当前任务，text 写原因；对编码 Agent 子任务即取消原生回合并结束关系）；"
+                "resume 恢复 id 指定的任务，子任务可在 text 附新要求；"
+                "release 只结束对编码 Agent 子任务的拥有，在回合结束后交还会话，不取消原生"
+                "工作。对观察，cancel 与 release 都只是停止观察。"
             ),
             parameters={
                 "type": "object",
@@ -257,7 +271,15 @@ def work_control_tools() -> tuple[ChatTool, ...]:
                 "properties": {
                     "action": {
                         "type": "string",
-                        "enum": ["start", "update", "finish", "fail", "cancel", "resume"],
+                        "enum": [
+                            "start",
+                            "update",
+                            "finish",
+                            "fail",
+                            "cancel",
+                            "resume",
+                            "release",
+                        ],
                     },
                     "id": {"type": "string", "maxLength": 36},
                     "goal": string,
@@ -864,7 +886,7 @@ class WorkControl:
                 return ToolExecutionResult(
                     ok=False,
                     error_code=code,
-                    public_message=control_failure_message(code),
+                    public_message=getattr(exc, "detail", None) or control_failure_message(code),
                     tool_name=name,
                     provider_id="work_control",
                 )
@@ -922,6 +944,10 @@ class WorkControl:
         limit = args.get("limit", 8)
         cursor = args.get("cursor")
         identity = args.get("id")
+        if "agents" in args:
+            from yuki.external_agents.subtasks import browse
+
+            return await browse(self, args["agents"], args)
         if identity is not None:
             row = await queries.get(
                 self.lease,
@@ -934,7 +960,17 @@ class WorkControl:
             if row is None:
                 raise ValueError("work_not_found_or_not_authorized")
             view = task_view(row)
-            if row["parent_work_id"] is not None:
+            from yuki.external_agents.delegation import Delegations
+
+            delegations = Delegations(self.repository.database)
+            async with self.repository.database.read_session() as reader:
+                card = await delegations.card(reader, identity)
+                if card is not None:
+                    view["card"] = card
+                    view["timeline"] = await delegations.timeline(
+                        reader, identity, int(cursor) if cursor else 0, limit
+                    )
+            if row["parent_work_id"] is not None and card is None:
                 from yuki.runtime.subagent_tools import subtask_result
 
                 result = await subtask_result(self, identity)
@@ -963,6 +999,28 @@ class WorkControl:
         action = args["action"]
         target = args.get("id")
         text = args.get("text")
+        if target is not None and action in {"cancel", "resume", "release"}:
+            from yuki.external_agents.subtasks import manage_external, record_executor
+
+            executor = await record_executor(self, target)
+            if executor is not None:
+                if executor["relationship"] != "observe":
+                    from yuki.runtime.subagent_tools import owned_child_parent
+
+                    await owned_child_parent(self, target)
+                else:
+                    from yuki.runtime.work_queries import WorkQueries
+
+                    if (
+                        await WorkQueries(self.repository).get(
+                            self.lease, self.source, target, local=True
+                        )
+                        is None
+                    ):
+                        raise ValueError("work_not_found_or_not_authorized")
+                return await manage_external(self, action, target, call_key, text, executor)
+        if action == "release":
+            raise ValueError("release_requires_agent_subtask")
         if (
             action in {"cancel", "resume"}
             and target is not None

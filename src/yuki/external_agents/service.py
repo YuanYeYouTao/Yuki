@@ -586,8 +586,18 @@ class ExternalAgentService:
         return operation
 
     async def execute(
-        self, args: dict[str, Any], request_id: str, source: dict[str, Any] | None
+        self,
+        args: dict[str, Any],
+        request_id: str,
+        source: dict[str, Any] | None,
+        *,
+        owner_work_id: str | None = None,
     ) -> dict[str, Any]:
+        """Register one native action. ``owner_work_id`` is set only by trusted callers.
+
+        A delegation, observation or Desktop answer names the record that owns the
+        operation; the activation's lease (when there is one) still guards the write.
+        """
         action = args.get("action")
         if action not in {
             "list",
@@ -626,7 +636,22 @@ class ExternalAgentService:
             await control.validate()
             if not await control.repository.valid(control.lease):
                 raise ValueError("external_agent_source_obsolete")
-        if action in {"prompt", "queue", "watch"}:
+        if owner_work_id is not None:
+            async with self.database.read_session() as reader:
+                record = (
+                    (await reader.execute(select(work).where(work.c.id == owner_work_id)))
+                    .mappings()
+                    .first()
+                )
+            if record is None or record["state"] in TERMINAL:
+                raise ValueError("external_agent_source_obsolete")
+            trusted = {
+                **trusted,
+                "work_id": owner_work_id,
+                "conversation_id": record["conversation_id"],
+                "generation": record["generation"],
+            }
+        elif action in {"prompt", "queue", "watch"}:
             if control is None or control.current is None:
                 raise ExternalAgentArgumentError(
                     "accept_work_before_execution",
@@ -740,6 +765,13 @@ class ExternalAgentService:
         # (selected by operation_id or by its execution) and undeclared instances still
         # go to the device, which decides.
         declared = connection.declared.get(instance.local_id)
+        if "scope" in args and "scope" not in (declared or frozenset()):
+            # A fixed scope is never dropped silently (D2): an older connector would
+            # run the delegation without it.
+            raise ExternalAgentArgumentError(
+                "connector_outdated",
+                "这台电脑的连接器不支持委派范围，请先在 Desktop 更新连接器。本次未派发。",
+            )
         if (
             action in _DECLARED
             and not original_control
@@ -787,6 +819,11 @@ class ExternalAgentService:
             native_execution = None
         if target is not None:
             arguments["operation_id"] = target.id
+            if target.action == "followup":
+                # A turn the native owner started itself: the device locates it by owner.
+                arguments["owner_operation_id"] = json.loads(target.command_json)[
+                    "owner_operation_id"
+                ]
         if action == "steer":
             arguments["expected_execution_id"] = native_execution
         if action == "respond":
@@ -795,7 +832,7 @@ class ExternalAgentService:
             except (KeyError, ValueError, TypeError) as error:
                 raise ExternalAgentArgumentError(
                     "permission_id_required",
-                    "question 用原操作事件中的 permission_id，不用 Agent 自己的请求 ID。",
+                    "reply_to 用卡片或时间线里的 permission_id，不用 Agent 自己的请求 ID。",
                 ) from error
             async with self.database.read_session() as session:
                 event = await session.get(AgentEventModel, permission_key)
@@ -825,17 +862,43 @@ class ExternalAgentService:
                 elif owned is None or event is None or event.operation_id != owned.id:
                     raise ExternalAgentArgumentError(
                         "external_agent_question_not_found",
-                        "先查看原 operation_id 的事件，"
-                        "question 用其中权限请求或提问的 permission_id。",
+                        "reply_to 用这个子任务卡片或时间线中权限请求或提问的 permission_id。",
                     )
                 assert event is not None
                 event_data = json.loads(event.payload_json)
                 if event.kind not in {"permission", "question"}:
                     raise ExternalAgentArgumentError(
                         "external_agent_question_not_found",
-                        "question 必须是原 operation_id 下的权限请求或提问事件。",
+                        "reply_to 必须是这个子任务的权限请求或提问的 permission_id。",
                     )
                 native_question = event_data["payload"]["native_request_id"]
+                if owned is not None:
+                    earlier = await session.scalar(
+                        select(AgentOperationModel.id).where(
+                            AgentOperationModel.instance_id == owned.instance_id,
+                            AgentOperationModel.action == "respond",
+                            AgentOperationModel.id != request_id,
+                            func.json_extract(
+                                AgentOperationModel.command_json, "$.arguments.native_request_id"
+                            )
+                            == str(native_question),
+                            func.json_extract(
+                                AgentOperationModel.command_json, "$.arguments.operation_id"
+                            )
+                            == owned.id,
+                            func.coalesce(
+                                func.json_type(AgentOperationModel.result_json, "$.error"), "null"
+                            )
+                            == "null",
+                        )
+                    )
+                    if earlier is not None:
+                        # The native request is consumed once: the first answer wins.
+                        raise ExternalAgentArgumentError(
+                            "request_already_answered",
+                            "这个请求已经有人回答（先答者生效），本次未派发；"
+                            "结果见该子任务的时间线。",
+                        )
                 question_execution = event_data.get("execution_id")
                 if execution is not None and execution.native_id != question_execution:
                     raise ValueError("external_agent_target_mismatch")
@@ -914,6 +977,55 @@ class ExternalAgentService:
                 self._dispatch(operation.id, connection, command),
             )
         return await self._view(operation)
+
+    async def release(
+        self,
+        work_id: str,
+        source: dict[str, Any],
+        *,
+        request_id: str,
+        close_owner: bool,
+    ) -> list[dict[str, Any]]:
+        """End Yuki's relationship with every live operation of one record.
+
+        Each operation is detached (offline: released without the device). With
+        ``close_owner`` a connector declaring ``release`` also closes the native
+        process Yuki opened for it once the current turn ends, so the user can take
+        the session back without a fork (G9). Nothing native is cancelled.
+        """
+        async with self.database.read_session() as reader:
+            live = list(
+                await reader.scalars(
+                    select(AgentOperationModel)
+                    .where(
+                        AgentOperationModel.work_id == work_id,
+                        AgentOperationModel.run_id.is_not(None),
+                        AgentOperationModel.detached_at.is_(None),
+                        func.coalesce(
+                            func.json_type(AgentOperationModel.result_json, "$.pending"), "true"
+                        )
+                        != "false",
+                    )
+                    .order_by(AgentOperationModel.created_at, AgentOperationModel.id)
+                )
+            )
+        results = []
+        for operation in live:
+            arguments: dict[str, Any] = {"action": "detach", "operation_id": operation.id}
+            if close_owner:
+                arguments["release"] = True
+            results.append(
+                await self.execute(
+                    arguments,
+                    f"{request_id}:{operation.id}"[:256],
+                    source,
+                    owner_work_id=work_id,
+                )
+            )
+            # The relationship ends now, a server fact; the device's detach follows in
+            # the background, so no later cleanup mistakes it for work to cancel.
+            await self._detached(operation)
+        return results
 
     async def _release(
         self,

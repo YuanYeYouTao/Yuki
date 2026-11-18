@@ -26,6 +26,7 @@ from yuki.external_agents.db_models import (
     AgentOperationModel,
     AgentSessionModel,
 )
+from yuki.external_agents.delegation import Delegations, executor_of
 from yuki.external_agents.identity import ConnectorIdentityService
 from yuki.identity.credentials import require_person
 from yuki.identity.person_identity import person_family_condition, same_person_id
@@ -68,6 +69,7 @@ class AgentRepository:
     def __init__(self, database: Database) -> None:
         self.database = database
         self.identity = ConnectorIdentityService(database)
+        self.delegations = Delegations(database)
 
     async def authorize(
         self, session: AsyncSession, instance_id: str, actor_person_id: str
@@ -714,7 +716,123 @@ class AgentRepository:
             )
         )
 
+    async def _followups(self, device_id: str, events: list[dict[str, Any]]) -> None:
+        """Register the follow-up operation of a turn the native owner started itself.
+
+        The owner process exists because of one delegation (taskbook §4.8): a turn it
+        starts on its own (a wake-up, a background task notice) belongs to that
+        delegation as a deterministic follow-up operation with its own run and
+        receipt; it never claims the original prompt's execution slot.
+        """
+        wanted: dict[str, str] = {}
+        for event in events:
+            owner = event.get("owner_operation_id")
+            turn = event.get("followup_execution")
+            if event.get("operation_id") or not isinstance(owner, str) or not turn:
+                continue
+            identity = f"followup:{owner}:{turn}"[:256]
+            event["operation_id"] = identity
+            wanted[identity] = owner
+        if not wanted:
+            return
+        async with self.database.read_session() as reader:
+            existing = set(
+                await reader.scalars(
+                    select(AgentOperationModel.id).where(AgentOperationModel.id.in_(wanted))
+                )
+            )
+            owners = {
+                row.id: row
+                for row in await reader.scalars(
+                    select(AgentOperationModel).where(
+                        AgentOperationModel.id.in_(set(wanted.values()))
+                    )
+                )
+            }
+        missing = {key: value for key, value in wanted.items() if key not in existing}
+        for event in events:
+            followup = event.get("operation_id")
+            owner_row = owners.get(wanted.get(followup, "")) if isinstance(followup, str) else None
+            if followup in missing and (owner_row is None or owner_row.detached_at is not None):
+                # No live owner to attribute to: the turn stays unowned (metadata only).
+                event["operation_id"] = None
+        creatable = {
+            key: owners[value]
+            for key, value in missing.items()
+            if value in owners and owners[value].detached_at is None
+        }
+        if not creatable:
+            return
+        now = datetime.now(UTC)
+        async with self.database.immediate_session() as session:
+            await self.identity.require_device(session, device_id)
+            for identity, owner in creatable.items():
+                run_id = str(uuid5(NAMESPACE_URL, f"yuki:external-agent:{identity}"))
+                command = encode(
+                    {
+                        "type": "followup",
+                        "id": identity,
+                        "action": "followup",
+                        "owner_operation_id": owner.id,
+                    }
+                )
+                inserted = await session.scalar(
+                    insert(AgentOperationModel)
+                    .values(
+                        id=identity,
+                        instance_id=owner.instance_id,
+                        session_id=owner.session_id,
+                        actor_person_id=owner.actor_person_id,
+                        work_id=owner.work_id,
+                        source_json=owner.source_json,
+                        action="followup",
+                        payload_hash=hashlib.sha256(command.encode()).hexdigest(),
+                        command_json=command,
+                        run_id=run_id,
+                        created_at=now,
+                        dispatched_at=now,
+                    )
+                    .on_conflict_do_nothing()
+                    .returning(AgentOperationModel.id)
+                )
+                if inserted is None:
+                    continue
+                source = json.loads(owner.source_json)
+                session.add(
+                    SandboxTaskRunModel(
+                        request_id=identity,
+                        source_conversation_id=source["conversation_id"],
+                        source_json=owner.source_json,
+                        payload_hash=hashlib.sha256(command.encode()).hexdigest(),
+                        run_id=run_id,
+                        status="waiting",
+                        progress_json=encode(
+                            {
+                                "kind": "external_agent",
+                                "ownership": "execute",
+                                "operation_id": identity,
+                                "instance_id": owner.instance_id,
+                                "session_id": owner.session_id,
+                            }
+                        ),
+                        created_at=now,
+                        updated_at=now,
+                    )
+                )
+                # The delegation runs again: its owner started a new native turn.
+                await session.execute(
+                    update(work)
+                    .where(work.c.id == owner.work_id, work.c.state.in_(("completed", "failed")))
+                    .values(
+                        state="waiting_external",
+                        reason="native_followup",
+                        revision=work.c.revision + 1,
+                        updated=time.time(),
+                    )
+                )
+
     async def receive_events(self, device_id: str, events: list[dict[str, Any]]) -> None:
+        await self._followups(device_id, events)
         # Decode/serialize before taking the writer. No model, native RPC or network under it.
         prepared: list[tuple[dict[str, Any], str, str, Any, Any, bool]] = []
         for event in events:
@@ -858,6 +976,19 @@ class AgentRepository:
                     ):
                         await self._bind_native(session, operation, state)
                     await self._project(session, operation, state, state_json)
+                    executor = await executor_of(session, operation.work_id)
+                    if executor is not None:
+                        await self._settle_record(
+                            session,
+                            operation,
+                            executor,
+                            event,
+                            payload,
+                            state,
+                            wake=wake and pending_type != "false",
+                            permission_id=str(added),
+                        )
+                        continue
                     if wake and state.get("pending") is not False and pending_type != "false":
                         native_execution = event.get("execution_id")
                         observe = operation.action == "watch"
@@ -885,6 +1016,63 @@ class AgentRepository:
                             request=request,
                         )
             return
+
+    async def _settle_record(
+        self,
+        session: AsyncSession,
+        operation: AgentOperationModel,
+        executor: dict[str, Any],
+        event: dict[str, Any],
+        payload: dict[str, Any],
+        state: dict[str, Any],
+        *,
+        wake: bool,
+        permission_id: str,
+    ) -> None:
+        """A delegation or observation record: settle it; progress only stays on file."""
+        observe = executor["relationship"] == "observe"
+        native_execution = event.get("execution_id")
+        request = event["kind"] in {"permission", "question"}
+
+        def card() -> str:
+            return external_agent_card(
+                event=event["kind"],
+                operation_id=operation.id,
+                run_id=operation.run_id,
+                relationship="observe" if observe else executor["relationship"],
+                status=state.get("status"),
+                payload=payload,
+                permission_id=permission_id if request and not observe else None,
+                session_id=operation.session_id,
+                execution_id=execution_key(operation.session_id, native_execution)
+                if operation.session_id and native_execution
+                else None,
+                read={"get_tasks": {"id": operation.work_id}},
+            )
+
+        if wake:
+            await self.delegations.settle(
+                session,
+                operation,
+                executor,
+                event_id=event["event_id"],
+                kind=event["kind"],
+                payload=payload,
+                state=state,
+                card=card(),
+                request_key=str(payload["native_request_id"])
+                if "native_request_id" in payload
+                else None,
+            )
+        elif (
+            isinstance(payload.get("permission_resolved"), str)
+            or payload.get("native_method") == "serverRequest/resolved"
+        ):
+            await self.delegations.resolved(session, operation)
+        elif observe and payload.get("execution_status") in {"completed", "failed"}:
+            await self.delegations.observed_turn_end(
+                session, operation, event["event_id"], payload, card()
+            )
 
     async def dispatchable(self, identity: str) -> bool:
         """Whether a registered command's original source still permits writing it."""
@@ -1018,6 +1206,22 @@ class AgentRepository:
                     continue
                 current = await writer.get(AgentOperationModel, identity)
                 assert current is not None
+                if await executor_of(writer, current.work_id) is not None:
+                    # A control on a delegation (an answer, a cancel) changes the record,
+                    # not a model's context; only a failed control is told to the parent.
+                    if result.get("error") is None and current.action == "respond":
+                        await self.delegations.resolved(writer, current)
+                    elif result.get("error") is not None:
+                        record = (
+                            (await writer.execute(select(work).where(work.c.id == current.work_id)))
+                            .mappings()
+                            .first()
+                        )
+                        if record is not None:
+                            await self.delegations._tell_parent(
+                                writer, record, f"control:{identity}", input_json
+                            )
+                    return
                 await self._input(
                     writer,
                     current,
@@ -1050,6 +1254,24 @@ class AgentRepository:
         )
         if online:
             # Reconnecting is progress: the original runs carry on, nobody is woken.
+            # A delegation's displayed "device offline" fact is cleared.
+            async with self.database.immediate_session() as writer:
+                for work_id in set(
+                    await writer.scalars(
+                        select(AgentOperationModel.work_id)
+                        .join(
+                            AgentInstanceModel,
+                            AgentInstanceModel.id == AgentOperationModel.instance_id,
+                        )
+                        .join(work, work.c.id == AgentOperationModel.work_id)
+                        .where(
+                            AgentInstanceModel.device_id == device_id,
+                            work.c.reason == "device_offline",
+                        )
+                    )
+                ):
+                    if work_id is not None:
+                        await self.delegations.device_online(writer, work_id)
             return
         waits = WorkWaitRepository(WorkRepository(self.database))
         event_id = f"transport:{connection_id}:device_offline"
@@ -1077,6 +1299,22 @@ class AgentRepository:
                 if changed:
                     continue
                 for row in current:
+                    if await executor_of(writer, row.work_id) is not None:
+                        await self.delegations.device_offline(
+                            writer,
+                            row,
+                            event_id,
+                            external_agent_card(
+                                event="device_offline",
+                                operation_id=row.id,
+                                run_id=row.run_id,
+                                relationship="observe" if row.action == "watch" else "delegate",
+                                status="unknown",
+                                device_id=device_id,
+                                read={"get_tasks": {"id": row.work_id}},
+                            ),
+                        )
+                        continue
                     await self._input(
                         writer,
                         row,

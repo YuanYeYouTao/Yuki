@@ -100,7 +100,7 @@ async def permission_gate(native_app, permission, monkeypatch):
         result = await original_response(scenario, request)
         if result is not None and result.tool_calls:
             tool = result.tool_calls[0].function
-            if tool.name == "use_coding_agent" and json.loads(tool.arguments)["action"] == "answer":
+            if tool.name == "message_task" and "answer" in json.loads(tool.arguments):
                 control = current_work_control.get()
                 gate.response = SimpleNamespace(
                     trigger_event_id=control.source["trigger_event_id"],
@@ -180,7 +180,10 @@ async def test_app_native_original_work_waits_for_real_receipt_and_never_repromp
     original = prompt[0]
     assert waiting["event_id"] == event_id
     assert original["actor_person_id"] == f.state["owner_person_id"]
-    assert original["work_id"] == waiting["work"]["id"]
+    # The native run belongs to the delegation record, a child of the original Work.
+    parent = waiting["work"]["id"]
+    assert original["work_id"] == waiting["delegation"]["id"]
+    assert waiting["delegation"]["parent_work_id"] == parent
     assert original["task_status"] == "waiting" and original["completion"] is None
     assert original["command"]["arguments"]["prompt"] == marker
     assert len([row for row in f.peer.commands if row["action"] == "prompt"]) == 1
@@ -235,12 +238,12 @@ async def test_app_native_original_work_waits_for_real_receipt_and_never_repromp
         assert native_response["arguments"]["permission_id"] == "original-native-permission"
         assert native_response["arguments"]["response"] == {"decision": "accept"}
         assert permission_gate.response.trigger_event_id == event_id
-        assert permission_gate.response.work_id == original["work_id"]
+        assert permission_gate.response.work_id == parent
         reply_inputs = [
             row for row in (await facts())["inputs"] if row["event_id"] == response_event_id
         ]
         assert len(reply_inputs) == 1
-        assert reply_inputs[0]["work_id"] == original["work_id"]
+        assert reply_inputs[0]["work_id"] == parent
         assert reply_inputs[0]["state"] in {"staged", "consumed"}
         assert reply_inputs[0]["id"] in permission_gate.response.input_ids
         repeated = await f.client.post("client/v1/messages", headers=f.headers, json=response_body)
@@ -266,6 +269,8 @@ async def test_app_native_original_work_waits_for_real_receipt_and_never_repromp
         original["id"], "completed", {"status": terminal, "text": marker}
     )
     final = await eventually(facts, lambda v: v["work"]["state"] == "completed")
+    assert final["work"]["id"] == parent
+    assert final["delegation"]["state"] == ("completed" if terminal == "completed" else "failed")
     same = [row for row in final["operations"] if row["action"] == "prompt"]
     assert len(same) == 1 and same[0]["id"] == original["id"]
     assert same[0]["run_id"] == original["run_id"]
@@ -290,10 +295,19 @@ async def test_app_native_original_work_waits_for_real_receipt_and_never_repromp
         "text": marker,
         "operation_id": original["id"],
     }
-    assert any(
-        same[0]["run_id"] in row["payload_json"] and row["work_id"] == original["work_id"]
-        for row in final["inputs"]
+    # The terminal fact reached the original Work once, as its delegation's result.
+    # The terminal fact settled the record once, as one bounded card naming the original
+    # native run; native progress never became an input of the original Work.
+    settled_card = json.loads(
+        json.loads(final["delegation"]["checkpoint_json"])[
+            "sync_result" if terminal == "completed" else "reason"
+        ]
     )
+    assert settled_card["kind"] == "external_agent_card"
+    assert (settled_card["event"], settled_card["status"]) == ("completed", terminal)
+    assert settled_card["operation_id"] == original["id"]
+    assert settled_card["run_id"] == same[0]["run_id"]
+    assert not any("Actual protocol milestone" in row["payload_json"] for row in final["inputs"])
     completion_events = [row for row in final["events"] if row["kind"] == "completed"]
     assert len(completion_events) == 1
     assert completion_events[0]["event_id"] == completed["event_id"]

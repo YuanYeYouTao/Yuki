@@ -529,6 +529,9 @@ class WorkRepository:
                     or_(
                         func.json_extract(inputs.c.payload_json, "$.child_id") == inputs.c.work_id,
                         child_kind == "subagent_question",
+                        # A delegation's request or lost executor needs the parent's
+                        # decision exactly like a child's question (taskbook §4.6).
+                        child_kind == "external_agent_card",
                     ),
                 ),
             ),

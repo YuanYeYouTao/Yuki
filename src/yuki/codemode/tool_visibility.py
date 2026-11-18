@@ -39,8 +39,6 @@ DIRECT_TOOL_NAMES = frozenset(
         "start_subtask",
         "message_task",
         "wait",
-        "get_coding_agents",
-        "use_coding_agent",
         "execute_code",
         TOOL_LOOKUP_NAME,
     }

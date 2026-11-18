@@ -121,7 +121,10 @@ class MainAgentContract:
                         #     clicks, key repeat and paste on Yuki's own computer.
                         # 39: coding-agent actions return on registration; Claude queue
                         #     appends without steer; deny-only answers for unowned waits.
-                        "version": 39,
+                        # 40: one subtask tool set; native agents are executors of
+                        #     start_subtask (delegate/observe/takeover, fixed scope) and the
+                        #     two coding-agent tools are retired without successor.
+                        "version": 40,
                         "mode": self.mode,
                         "code_api": CODE_API_REVISION,
                         "direct_names": sorted(DIRECT_TOOL_NAMES),

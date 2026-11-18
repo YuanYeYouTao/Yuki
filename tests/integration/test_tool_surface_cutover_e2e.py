@@ -4,10 +4,12 @@ Failure cases were listed before the implementation in
 docs/operations/tool-surface-cutover-20261107.md. This file covers the
 cross-cutting ones; each domain has its own E2E test.
 
-* A1/A2/A6: the frozen manifest of the offline application is exactly the 29
-  tools (direct mode; the 27 of the cutover plus computer/browser, contract 36),
-  no old or deleted name is declared, every history-map successor is declared,
-  and Code Mode keeps its frozen direct view.
+* A1/A2/A6: the frozen manifest of the offline application is exactly the 27
+  tools (direct mode; the cutover surface plus computer/browser, minus the two
+  coding-agent tools whose native agents became subtask executors, contract 40),
+  no old or deleted name is declared, every history-map successor is declared
+  (except the retired coding-agent name, which has no successor), and Code Mode
+  keeps its frozen direct view.
 * B7: every Host tool carries its capability namespace and effect on the
   declaration itself (no separate name table).
 * B12/D25: a model calling an old name is refused as an unknown tool and
@@ -84,10 +86,15 @@ TOOLS = {
     "wait",
     "get_schedules",
     "manage_schedule",
+}
+DELETED = {
+    "environment_service",
+    "get_my_capabilities",
+    "time_get_current",
+    # Retired without a successor (phase-2 §4.2): history is read by these names only.
     "get_coding_agents",
     "use_coding_agent",
 }
-DELETED = {"environment_service", "get_my_capabilities", "time_get_current"}
 # Task book §6.1: production direct declaration before the cutover (trace 411675).
 BASELINE = {"tools": 29, "parameters": 176, "json_bytes_utf8": 45800}
 
@@ -162,7 +169,7 @@ async def test_offline_app_freezes_exactly_the_new_tool_surface(
     # A1/A2: exactly the new surface; nothing old or deleted is declared.
     assert business == TOOLS
     assert not (set(full) & (set(RECORDED_TOOL_NAMES) | DELETED))
-    assert set(RECORDED_TOOL_NAMES.values()) <= TOOLS
+    assert set(RECORDED_TOOL_NAMES.values()) - DELETED <= TOOLS
     if code_enabled:
         # A6: Code Mode keeps its own frozen direct view over the same manifest.
         assert set(model) == (DIRECT_TOOL_NAMES & set(full))
@@ -201,13 +208,15 @@ async def test_offline_app_freezes_exactly_the_new_tool_surface(
         "json_bytes_utf8": sum(item["json_bytes_utf8"] for item in manifest.values()),
     }
     _write("manifest.json", {"baseline": BASELINE, "totals": totals, "tools": manifest})
-    assert totals["tools"] == 29
-    # Except read_chat (its filters) and computer (its coordinates, frozen once by the
-    # computer/browser task book §5.1), no tool exceeds 8 parameters (§6.8).
+    assert totals["tools"] == 27
+    # Except read_chat (its filters), computer (its coordinates, frozen once by the
+    # computer/browser task book §5.1) and start_subtask (its executor parameters,
+    # frozen once by the phase-2 delegation task book §4.2), no tool exceeds 8
+    # parameters (§6.8).
     assert all(
         len(item["parameters"]) <= 8
         for name, item in manifest.items()
-        if name not in {"read_chat", "computer"}
+        if name not in {"read_chat", "computer", "start_subtask"}
     ), {name: item["parameters"] for name, item in manifest.items()}
 
 
@@ -356,13 +365,8 @@ CURRENT_STEPS = [
     ("save_memory", {}, {"ok": True}, "memory"),
     ("edit_memory", {}, {"ok": True}, "memory"),
     ("search_memory", {}, {"ok": True, "side_effecting": False}, "memory"),
-    (
-        "use_coding_agent",
-        {"action": "prompt"},
-        {"ok": True, "status": "running", "run_id": "r2"},
-        "agent",
-    ),
-    ("get_coding_agents", {}, {"ok": True, "side_effecting": False}, "agent"),
+    # A delegation is a subtask like its recorded predecessor ``subagent_start``.
+    ("start_subtask", {}, {"ok": True, "pending": True, "run_id": "r2"}, "other"),
     ("web_search", {}, {"ok": True}, "search"),
     ("read_webpage", {}, {"ok": True}, "web"),
     ("send", {}, {"ok": True, "status": "succeeded"}, "message"),

@@ -127,7 +127,7 @@ async def test_fixed_contract_and_execution_retire_only_local_device(
     )
     names = {tool.name for tool in await contract.definitions()}
     assert "local_device" not in names
-    assert {"use_coding_agent", "run_command", "send"} <= names
+    assert {"start_subtask", "get_tasks", "run_command", "send"} <= names
     runtime = replace(runtime, runtime_config=await chat._runtime_config.snapshot())
     result = await chat._tools.execute("local_device", json.dumps({"action": "execute"}), runtime)
     assert result.ok is False

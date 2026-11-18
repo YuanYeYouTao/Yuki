@@ -171,6 +171,9 @@ class StepDetail(BaseModel):
     target_kind: Literal["group", "private", "channel"] | None = None
     # Present only when the viewer may read that agent operation now.
     operation_id: str | None = None
+    # The subtask or delegation record a subtask tool created or targeted (revision 14).
+    subtask_id: str | None = None
+    relationship: Literal["delegate", "observe", "takeover"] | None = None
 
 
 class PublicStep(BaseModel):

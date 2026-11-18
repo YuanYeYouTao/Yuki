@@ -871,6 +871,8 @@ def _missed_results() -> Select[Any]:
         .join(CanonicalConversationModel, CanonicalConversationModel.id == work.c.conversation_id)
         .where(
             children.c.archived_at.is_(None),
+            # An observation record is a root: it has no parent to notify.
+            work.c.parent_work_id.is_not(None),
             children.c.lease_until <= (func.julianday("now") - 2440587.5) * 86400,
             work.c.generation == CanonicalConversationModel.generation,
             work.c.state.in_(_RESULT_STATES),

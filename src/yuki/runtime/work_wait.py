@@ -40,6 +40,7 @@ from yuki.plugin_host.db_models import (
     PluginBackgroundTargetGrantModel,
     PluginInstallationModel,
 )
+from yuki.runtime.subagent_schema import children
 from yuki.runtime.work_repository import WorkConflict, WorkLease, WorkRepository, encode_json
 from yuki.runtime.work_schema_v1 import inputs, work
 from yuki.runtime.work_wait_schema import waits
@@ -892,6 +893,11 @@ class WorkWaitRepository:
                 func.json_extract(work.c.source_json, "$.origin") == "user_message",
                 func.json_type(work.c.source_json, "$.trigger_event_id") == "integer",
                 same_person_condition(actor, event.author_person_id),
+                # A delegation waiting on a native request has no Yuki loop to read a
+                # reply; the person's message belongs to the Work that owns it.
+                ~select(children.c.work_id)
+                .where(children.c.work_id == work.c.id, children.c.executor_json.is_not(None))
+                .exists(),
             )
             if event.reply_to_event_id is not None:
                 query = query.where(

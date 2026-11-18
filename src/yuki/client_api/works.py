@@ -19,6 +19,7 @@ from yuki.client_api.agent_target import (
     authorize_target,
     input_content,
     stored_target,
+    target_record,
     target_segments,
 )
 from yuki.client_api.agent_target import (
@@ -38,7 +39,12 @@ from yuki.client_api.work_projection import (
 from yuki.conversation.canonical_db_models import (
     CanonicalConversationModel,
 )
-from yuki.external_agents.db_models import AgentInstanceModel, AgentOperationModel
+from yuki.external_agents.db_models import (
+    AgentEventModel,
+    AgentInstanceModel,
+    AgentOperationModel,
+)
+from yuki.external_agents.delegation import Delegations, executor_of
 from yuki.gateway.providers.app.ingress import AppGateway
 from yuki.identity.canonical_uow import InboundPreparation
 from yuki.identity.db_models import IdentityBindingModel, PresenceModel, SpaceBindingModel
@@ -48,6 +54,7 @@ from yuki.identity.person_state import ObservationChanged
 from yuki.persistence.database import write_failure_committed
 from yuki.persistence.history_search import prepare_terms
 from yuki.persistence.models import ChatEventModel
+from yuki.runtime.subagent_schema import children as executor_records
 from yuki.runtime.work_budget_schema import budgets
 from yuki.runtime.work_management import WorkManagementError, manage_work
 from yuki.runtime.work_recovery_schema import deliveries
@@ -462,8 +469,115 @@ class ClientWorks:
             }
             if self.computer is not None:
                 projection["help_requested"] = self.computer.help_for(row["id"])
+            projection["parent_work_id"] = row["parent_work_id"]
+            card = await Delegations(self.database).card(session, row["id"])
+            if card is not None:
+                projection["delegation"] = {
+                    key: card[key]
+                    for key in (
+                        "id",
+                        "executor",
+                        "relationship",
+                        "state",
+                        "status_line",
+                        "pending",
+                        "last_event_at",
+                    )
+                }
             projections.append(projection)
         return projections
+
+    async def delegations(
+        self, principal: ClientPrincipal, group: str = "active"
+    ) -> dict[str, Any]:
+        """Every delegation and observation of this person, across all their devices."""
+        async with self.database.read_session() as session:
+            principal = await self.identity.require_principal(session, principal)
+            query = (
+                select(work)
+                .join(executor_records, executor_records.c.work_id == work.c.id)
+                .where(
+                    executor_records.c.executor_json.is_not(None),
+                    work_access(principal.person_id),
+                    work.c.state.not_in(TERMINAL)
+                    if group == "active"
+                    else work.c.state.in_(TERMINAL),
+                )
+                .order_by(work.c.updated.desc(), work.c.id)
+                .limit(200)
+            )
+            rows = [dict(row) for row in (await session.execute(query)).mappings()]
+            return {"delegations": await self.public_many(session, rows)}
+
+    async def answer(
+        self,
+        principal: ClientPrincipal,
+        identity: str,
+        permission_id: str,
+        request_id: str,
+        option_id: str | None,
+        response: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        """The device's person answers a native request directly (Q2): no Main, no model.
+
+        The answer is the same original respond registration Yuki would make; the
+        connector consumes a native request once, so whoever answers first wins.
+        """
+        service = self.database.external_agents
+        if service is None:
+            raise ClientError("unavailable")
+        async with self.database.read_session() as session:
+            principal = await self.identity.require_principal(session, principal)
+            await personal_work(session, principal.person_id, identity)
+            executor = await executor_of(session, identity)
+            try:
+                event = await session.get(AgentEventModel, int(permission_id))
+            except ValueError:
+                event = None
+            operation = (
+                await session.get(AgentOperationModel, event.operation_id)
+                if event is not None and event.operation_id is not None
+                else None
+            )
+        if executor is None or event is None or operation is None or operation.work_id != identity:
+            raise ClientError("not_found")
+        if executor["relationship"] == "observe":
+            # Observation never answers, not even for the person: handle it in the terminal.
+            raise ClientError("observe_only")
+        payload = json.loads(event.payload_json).get("payload") or {}
+        native: dict[str, Any] = {
+            "action": "respond",
+            "operation_id": operation.id,
+            "permission_id": permission_id,
+        }
+        if response is not None:
+            native["response"] = response
+        elif option_id is not None:
+            native["option_id"] = option_id
+        else:
+            raise ClientError("validation_error")
+        request = f"client-answer:{principal.device_id}:{request_id}"
+        try:
+            result = await service.execute(
+                native,
+                request,
+                {
+                    "actor_person_id": principal.person_id,
+                    "origin": "client_api",
+                    "answered_via": "desktop",
+                    "answer_request": {"kind": event.kind, "tool": payload.get("tool")},
+                },
+                owner_work_id=identity,
+            )
+        except ValueError as error:
+            raise ClientError(getattr(error, "code", None) or str(error)) from error
+        return {
+            "work_id": identity,
+            "permission_id": permission_id,
+            "operation_id": str(result.get("operation_id", request)),
+            "status": str(result.get("status", "unknown")),
+            "replay": False,
+        }
 
     async def get(self, principal: ClientPrincipal, identity: str) -> dict[str, Any]:
         async with self.database.read_session() as session:
@@ -665,7 +779,9 @@ class ClientWorks:
         operation = "client.work_input"
         bound = fingerprint(operation, identity, agent_request_payload(body, agent_target))
         original_body = body
-        body = input_content(body, agent_target)
+        # Rendered from the original operation's record; authorization of a new
+        # input happens below, after a replay of the original request is answered.
+        body = input_content(body, agent_target, await target_record(self.database, agent_target))
         canonical_event_id = str(uuid4())
         while True:
             lease = None
