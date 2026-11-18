@@ -51,7 +51,8 @@ def pid_alive(pid: int) -> bool:
         kernel = ctypes.windll.kernel32
         handle = kernel.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
         if not handle:
-            return False
+            # ERROR_ACCESS_DENIED: it exists, we may not query it (POSIX EPERM).
+            return bool(kernel.GetLastError() == 5)
         code = ctypes.c_ulong()
         try:
             return bool(kernel.GetExitCodeProcess(handle, ctypes.byref(code))) and (
@@ -120,8 +121,10 @@ class ManagedSession:
     # The latest Yuki operation whose input this owner took up. The process exists
     # for it, so turns the CLI starts by itself belong to it until it is detached.
     owner_operation: str | None = None
-    # The native ID of a self-started turn attributed to owner_operation.
+    # The native ID of a self-started turn and the operation it belongs to, fixed
+    # for the whole native turn even if another input is merged into it.
     followup: str | None = None
+    followup_owner: str | None = None
     release_after_turn: bool = False
 
 
@@ -173,6 +176,8 @@ class ClaudeDriver:
         # Why prompt/queue are not offered by this CLI, if they are not.
         self._inputs_refused: str | None = None
         self.scopes: dict[str, Scope] = {}
+        # Operations detached through this driver: never an owner again.
+        self.detached: set[str] = set()
         # Observe watches: metadata only, never an answerer (§4.3).
         self.observers: set[str] = set()
         # Observe watches of sessions no SDK owner of ours holds (terminal sessions).
@@ -261,7 +266,7 @@ class ClaudeDriver:
         } | ({session.operation} if session.operation else set())
         request = kind in {"permission", "question"}
         answerers = set()
-        if session.followup is not None and session.owner_operation is not None:
+        if session.followup is not None and session.followup_owner is not None:
             # A turn the CLI started by itself inside this held owner (§4.8).
             await self.emit(
                 kind,
@@ -269,12 +274,12 @@ class ClaudeDriver:
                     "session_id": session.id,
                     "execution_id": session.followup,
                     "operation_id": None,
-                    "owner_operation_id": session.owner_operation,
+                    "owner_operation_id": session.followup_owner,
                     "followup_execution": session.followup,
                     "payload": payload,
                 },
             )
-            answerers.add(followup_id(session.owner_operation, session.followup))
+            answerers.add(followup_id(session.followup_owner, session.followup))
         for operation in operations:
             if operation in session.watches and session.watches[operation] == "":
                 session.watches[operation] = session.execution
@@ -336,7 +341,7 @@ class ClaudeDriver:
         )
 
     def _inside_scope(self, session: ManagedSession, tool: str, arguments: dict[str, Any]) -> bool:
-        owner = session.operation or (session.owner_operation if session.followup else None)
+        owner = session.operation or session.followup_owner
         scope = self.scopes.get(owner) if owner else None
         if scope is None:
             return False
@@ -616,8 +621,10 @@ class ClaudeDriver:
     async def _taken_up(self, session: ManagedSession, identity: str) -> None:
         """The CLI took up a written input (its UUID was replayed)."""
         operation = session.inputs.pop(identity)
-        if operation is not None:
-            session.owner_operation = operation
+        if operation is not None and operation not in self.detached:
+            previous, session.owner_operation = session.owner_operation, operation
+            if previous is not None and previous != operation:
+                self._forget_scope(previous)
         if session.active and operation is not None and session.operation is None:
             # Absorbed into a turn no operation owns (the CLI started it by itself just
             # before taking this input up): the turn now also answers this input, so
@@ -674,7 +681,7 @@ class ClaudeDriver:
         session.execution = native
         session.operation = session.active_operation = None
         if session.owner_operation is not None and not session.inputs:
-            session.followup = native
+            session.followup, session.followup_owner = native, session.owner_operation
             await self._publish(
                 session, "progress", {"status": "running", "pending": True, "self_started": True}
             )
@@ -718,9 +725,13 @@ class ClaudeDriver:
                         "total_cost_usd": message.total_cost_usd,
                     },
                 )
-                session.followup = None
+                ended_owner = session.followup_owner
+                session.followup = session.followup_owner = None
                 if session.operation == completed_operation:
                     session.operation = None
+                for finished in (completed_operation, ended_owner):
+                    if finished is not None:
+                        self._forget_scope(finished)
                 session.watches = {
                     key: value for key, value in session.watches.items() if value is None
                 }
@@ -769,13 +780,22 @@ class ClaudeDriver:
         return cast(dict[str, Any], json.loads(output))
 
     def _held(self, session: ManagedSession) -> bool:
-        """Whether any Yuki operation of this connector still holds this SDK owner."""
+        """Whether any non-detached Yuki operation of this connector holds this owner."""
         return bool(
             session.operation
-            or session.owner_operation
+            or (session.owner_operation and session.owner_operation not in self.detached)
             or session.watches
             or any(writer is not None for writer in session.inputs.values())
         )
+
+    def _forget_scope(self, operation: str) -> None:
+        """Drop a scope no turn, input or later self-started turn can still use."""
+        for session in self.sessions.values():
+            if operation in {session.operation, session.owner_operation, session.followup_owner}:
+                return
+            if operation in session.inputs.values():
+                return
+        self.scopes.pop(operation, None)
 
     async def _release(self, sessions: list[ManagedSession]) -> str | None:
         """Close Yuki's SDK owner at the turn boundary once no operation holds it."""
@@ -957,6 +977,7 @@ class ClaudeDriver:
             )
         if action == "detach":
             detached = arguments["operation_id"]
+            self.detached.add(detached)
             self.scopes.pop(detached, None)
             self.observers.discard(detached)
             watcher = self.terminal_watches.pop(detached, None)
@@ -977,7 +998,9 @@ class ClaudeDriver:
                     attached.operation = None
                 if attached.owner_operation == detached:
                     # Its self-started turns from now on are nobody's (deny-only).
-                    attached.owner_operation = attached.followup = None
+                    attached.owner_operation = None
+                if attached.followup_owner == detached:
+                    attached.followup = attached.followup_owner = None
                 # An input it wrote that the CLI has not taken up yet starts or joins
                 # a turn nobody owns, so its waits stay discoverable.
                 for written, writer in attached.inputs.items():

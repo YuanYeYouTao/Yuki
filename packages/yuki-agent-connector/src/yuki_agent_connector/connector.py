@@ -520,6 +520,8 @@ class Connector:
                         self.pending_events.set()
                     return None
                 recorded = True
+                # From here a duplicate waits for this original's own receipt.
+                self.dispatching.add(key)
                 self._refuse_observed(command)
                 if (
                     original_id
@@ -545,7 +547,12 @@ class Connector:
                         result = self.journal.operation(arguments["operation_id"])
             elif command["action"] == "detach":
                 detached_observation = self.journal.observation(arguments["operation_id"])
-                driver = self._original_driver(command["instance_id"], arguments["operation_id"])
+                driver = self.operations.get(arguments["operation_id"])
+                if driver is None and command["instance_id"] not in self.errors:
+                    # A finished original holds no owner here, but its driver still
+                    # keeps facts about it (owner of later turns, scope) and Yuki's
+                    # native hold on the session that a release closes (§4.11).
+                    driver = self.drivers.get(command["instance_id"])
                 result = (
                     await driver.execute(command)
                     if driver is not None
