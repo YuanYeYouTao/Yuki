@@ -27,7 +27,8 @@ def subagent_tools() -> tuple[ChatTool, ...]:
                 "relationship 默认 delegate；observe 只看用户自己的会话：绝不发送输入、绝不"
                 "回答或拒绝它的请求，只在需要时提醒用户，不需要当前任务，notify_turn_end "
                 "仅在用户说做完告诉他时设为 true；takeover 接手用户已有的会话，只在用户明确"
-                "要求时使用。子任务结果回到当前任务，不会自动发给用户。"
+                "要求时使用。会话在别处活着时会被拒绝（session_live_elsewhere），用户同意后可用 "
+                "fork=true 从它分叉出新会话，原会话不动。子任务结果回到当前任务，不会自动发给用户。"
             ),
             result_cacheable=False,
             parameters={
@@ -59,6 +60,7 @@ def subagent_tools() -> tuple[ChatTool, ...]:
                         "additionalProperties": False,
                     },
                     "notify_turn_end": {"type": "boolean"},
+                    "fork": {"type": "boolean"},
                 },
                 "required": ["goal"],
                 "additionalProperties": False,
@@ -113,8 +115,9 @@ async def message_task(control: Any, args: dict[str, Any], key: str) -> dict[str
 
         executor = await record_executor(control, args["id"])
         if executor is not None:
-            if executor["relationship"] != "observe":
-                await owned_child_parent(control, args["id"])
+            from yuki.external_agents.subtasks import authorize_record
+
+            await authorize_record(control, args["id"])
             return await message_external(control, args, key, args["id"], executor)
     if "text" not in args:
         raise ValueError("invalid_subagent_message")

@@ -36,6 +36,7 @@ from yuki.runtime.work_wait_schema import waits
 RELATIONSHIPS = ("delegate", "observe", "takeover")
 OWNING = frozenset({"delegate", "takeover"})
 _REQUESTS = frozenset({"permission", "question"})
+_RUNNING_REASONS = frozenset({None, "native_executor", "native_followup", "native_request"})
 _TERMINAL_NATIVE = {
     "completed": "completed",
     "succeeded": "completed",
@@ -58,14 +59,28 @@ def native_prompt(brief: dict[str, Any]) -> str:
 
 
 def delegation_state(state: str, reason: str | None) -> str:
-    """Card state: Yuki's settlement, not a native status string."""
+    """Card state: Yuki's settlement, not a native status string.
+
+    While waiting on its executor, any recorded loss fact (device offline, a lost SDK
+    or ACP process, an unknown result) makes the record unknown, never running.
+    """
     if state == "waiting_user":
         return "waiting"
     if state in TERMINAL:
         return state
-    if reason in {"device_offline", "executor_lost"}:
-        return "unknown"
-    return "running"
+    if reason in _RUNNING_REASONS:
+        return "running"
+    return "unknown"
+
+
+def resolution_key(payload: dict[str, Any]) -> str | None:
+    """The native request a progress fact says is resolved (by anyone)."""
+    if payload.get("permission_resolved") is not None:
+        return str(payload["permission_resolved"])
+    native = payload.get("native")
+    if payload.get("native_method") == "serverRequest/resolved" and isinstance(native, dict):
+        return str(native.get("requestId"))
+    return None
 
 
 class Delegations:
@@ -223,7 +238,13 @@ class Delegations:
                     updated=now,
                 )
             )
-            await self._tell_parent(session, record, f"delegation:{record['id']}:{event_id}", card)
+            # A re-delivered native request (same id, new event) is told once.
+            await self._tell_parent(
+                session,
+                record,
+                f"delegation:{record['id']}:request:{request_key or event_id}"[:256],
+                card,
+            )
             return
         if state.get("pending") is False:
             if await self._other_runs_pending(session, record["id"], operation.id):
@@ -258,7 +279,7 @@ class Delegations:
             .values(reason=reason, updated=now)
         )
         await self._tell_parent(
-            session, record, f"delegation:{record['id']}:lost:{operation.id}:{reason}", card
+            session, record, f"delegation:{record['id']}:lost:{operation.id}"[:256], card
         )
 
     @staticmethod
@@ -337,40 +358,13 @@ class Delegations:
         )
 
     async def resolved(self, session: AsyncSession, operation: AgentOperationModel) -> None:
-        """A request was answered (by anyone): the delegation runs again."""
+        """A request was answered (by anyone): the delegation runs again once none is left.
+
+        Reads only this record's own requests and answers (indexed by its operations).
+        """
         if operation.work_id is None:
             return
-        pending = await session.scalar(
-            select(func.count())
-            .select_from(AgentEventModel)
-            .join(AgentOperationModel, AgentOperationModel.id == AgentEventModel.operation_id)
-            .where(
-                AgentOperationModel.work_id == operation.work_id,
-                AgentEventModel.kind.in_(tuple(_REQUESTS)),
-            )
-        )
-        resolutions = await session.scalar(
-            select(func.count())
-            .select_from(AgentEventModel)
-            .join(AgentOperationModel, AgentOperationModel.id == AgentEventModel.operation_id)
-            .where(
-                AgentOperationModel.work_id == operation.work_id,
-                func.json_extract(
-                    AgentEventModel.payload_json, "$.payload.permission_resolved"
-                ).is_not(None),
-            )
-        )
-        answered = await session.scalar(
-            select(func.count())
-            .select_from(AgentOperationModel)
-            .where(
-                AgentOperationModel.work_id == operation.work_id,
-                AgentOperationModel.action == "respond",
-                func.json_type(AgentOperationModel.result_json, "$.error").is_(None),
-                AgentOperationModel.result_json.is_not(None),
-            )
-        )
-        if (pending or 0) > max(resolutions or 0, answered or 0):
+        if await pending_requests(session, operation.work_id, "delegate"):
             return
         await session.execute(
             update(work)
@@ -382,6 +376,51 @@ class Delegations:
                 updated=time.time(),
             )
         )
+
+    async def unowned(
+        self, session: AsyncSession, session_id: str, event: dict[str, Any], permission_id: str
+    ) -> None:
+        """A wait no operation received goes to the record that last held the session.
+
+        Only metadata was uploaded, so it is answerable only with deny (§4.5, §15.2 #9):
+        a delegation's parent gets the card; an observation's user is told where it is.
+        """
+        from yuki.external_agents.cards import external_agent_card
+
+        last = await session.scalar(
+            select(AgentOperationModel.work_id)
+            .join(children, children.c.work_id == AgentOperationModel.work_id)
+            .where(
+                AgentOperationModel.session_id == session_id,
+                children.c.executor_json.is_not(None),
+            )
+            .order_by(AgentOperationModel.created_at.desc())
+            .limit(1)
+        )
+        if last is None:
+            return
+        record = (await session.execute(select(work).where(work.c.id == last))).mappings().first()
+        executor = await executor_of(session, last)
+        if record is None or executor is None:
+            return
+        observe = executor["relationship"] == "observe"
+        payload = event["payload"]
+        card = external_agent_card(
+            event=event["kind"],
+            operation_id=None,
+            run_id=None,
+            relationship="observe" if observe else "unowned",
+            status="requires_action",
+            payload={key: payload[key] for key in ("tool", "options") if key in payload},
+            permission_id=None if observe else permission_id,
+            session_id=session_id,
+            read={"get_tasks": {"id": last}},
+        )
+        key = f"unowned:{payload.get('native_request_id') or event['event_id']}"
+        if observe:
+            await self._notice(session, record, key, card)
+        else:
+            await self._tell_parent(session, record, f"delegation:{last}:{key}"[:256], card)
 
     async def device_offline(
         self, session: AsyncSession, operation: AgentOperationModel, event_id: str, card: str
@@ -495,7 +534,10 @@ class Delegations:
         if kind in _REQUESTS:
             await self._notice(session, record, f"request:{request_key or event_id}", card)
             return
-        if payload.get("reason") in {"session_not_found", "not_live"}:
+        if (
+            payload.get("reason") in {"session_not_found", "not_live"}
+            or state.get("pending") is False
+        ):
             # The observed session is gone: the observation ends with it (Q3).
             await session.execute(
                 update(work)
@@ -542,6 +584,30 @@ class Delegations:
         source_key = f"observe-notice:{record['id']}:{key}"[:256]
         identity = str(uuid5(NAMESPACE_URL, f"yuki:{source_key}"))
         now = time.time()
+        # A notice not yet started takes the new fact too: one Main tells both (§4.5).
+        waiting = await session.scalar(
+            select(work.c.id).where(
+                work.c.conversation_id == record["conversation_id"],
+                work.c.state == "queued",
+                work.c.source_key.like(f"observe-notice:{record['id']}:%"),
+            )
+        )
+        if waiting is not None:
+            await session.execute(
+                insert(inputs)
+                .values(
+                    conversation_id=record["conversation_id"],
+                    generation=record["generation"],
+                    source_key=f"{source_key}:card"[:256],
+                    work_id=waiting,
+                    kind="control",
+                    ready=True,
+                    payload_json=json.dumps({"text": card}, ensure_ascii=False, sort_keys=True),
+                    created=now,
+                )
+                .on_conflict_do_nothing(index_elements=[inputs.c.source_key])
+            )
+            return
         inserted = await session.scalar(
             insert(work)
             .values(
@@ -749,7 +815,7 @@ async def pending_requests(
         )
     )
     answered = {
-        json.loads(command).get("arguments", {}).get("native_request_id")
+        str(json.loads(command).get("arguments", {}).get("native_request_id"))
         for command, result in (
             await reader.execute(
                 select(AgentOperationModel.command_json, AgentOperationModel.result_json).where(
@@ -779,8 +845,8 @@ async def pending_requests(
                 # Observation never answers: the user handles it at the native terminal.
                 "answer_at": "native_terminal" if relationship == "observe" else "yuki_or_user",
             }
-        elif isinstance(payload.get("permission_resolved"), str):
-            pending.pop(payload["permission_resolved"], None)
+        elif (resolved := resolution_key(payload)) is not None:
+            pending.pop(resolved, None)
     return list(pending.values())
 
 

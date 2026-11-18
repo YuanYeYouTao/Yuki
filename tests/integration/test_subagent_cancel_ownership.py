@@ -84,7 +84,11 @@ async def test_native_retirement_is_not_duplicated_by_shell_cancel_scan(bridge, 
             assert actions == ["list", "prompt", "cancel"]
             command = computer.commands[-1]
             assert command["arguments"]["operation_id"] == operation_id
-            assert command["id"] == f"external-retire:{operation_id}:{operation_id}:cancel"
+            # One attempt per connection (a refused-before-writing attempt is retried
+            # on the next connection, never twice on one).
+            assert command["id"].startswith(
+                f"external-retire:{operation_id}:{operation_id}:cancel:"
+            )
             await computer.event(operation_id, "completed", {"status": "cancelled"})
             retained = await bridge.service.tasks.get(operation_id)
             assert retained.status == "completed" and retained.run_id == original.run_id

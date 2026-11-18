@@ -715,3 +715,83 @@ Bot 在自动化运行中途重启，该次运行丢失（协调者转述的运�
 - 用户真实的 managed daemon（按规定不碰）；已登录的第二个 Claude profile；Windows。
 - 用户 PreToolUse hook 返回 allow、MCP 工具与 WebFetch 在 `ask` 覆盖下的表现；Codex `networkAccess=false` 是否被执行；超过 150 s 的挂起。
 - "同一 task 先 stopped 后 completed"未复现。
+
+---
+
+## 16. 实施、复审与发布边界（2026-11-18）
+
+### 16.1 交付与分段
+
+后端 PR YuanYeYouTao/Yuki#639（分支 `docs/external-agent-delegation-phase2`）按 §8 分段提交；Desktop 为 Institute-of-Agent-Life/Yuki-Desktop#87（分支 `feat/delegation-phase2`）。没有合并，没有上线。
+
+| 段 | 提交 | 内容 |
+|---|---|---|
+| 1 实验 | `79f585ef`、`280c2b27` | E1–E9 产物；按实验修订本书（§15） |
+| 2 observe 安全 | `0c565ce9` | watch 即观察：输入、回答（含 deny）、原生控制一律 `observe_only` |
+| 3 唤醒与卡片 | `1fd5f4d5` | 进展不写输入不唤醒；唤醒类事实以有界、键序确定的卡片进入 Work；只等消息的根 Work 被请求唤醒 |
+| 4 迁移 0159 | `f5e5ecf2` | `executor_json`；事件 `instance_id`、`native_session_id` 与会话索引 |
+| 5 连接器 0.9.0 | `aea3db90`…`9f9f2c23` | 协议 5 回执、observe、范围映射、Codex 归属、ACP 无主、自发回合、活会话检测与分叉、释放 |
+| 6 一套工具 | `c6bbf452` | 合同 40、委派/观察记录、Client API 14 |
+| 7 协议 5 | `cb0e46ff` | 回执走事件流、删除重连读回、清理登记后派发 |
+| 8 遗留项 | `cf812f57` | `close()` 循环收集；file_copy 测试竞态 |
+| 9 文档与 CI | `da5df536`、`1432dce4` | 现行文档、更新日志、跨版本 CI |
+| 复审处理 | 见 §16.4 | 连接器 `e3b8f340`…`eb5641d8`；服务端随后的提交 |
+
+### 16.2 与设计的差异（如实）
+
+- **Codex 范围**：0.169 的 `thread/queue/add` 不接受策略参数，范围只能经 `thread/settings/update`（不开回合）施加，回合结束或释放时按记录的原设置恢复，恢复失败以 `scope_restore_failed` 上报并在下次重试；接口不可用、或 `write_paths` 不覆盖线程 cwd（workspaceWrite 总把 cwd 设为可写）时返回 `scope_unsupported`，不在放宽的范围下执行。§4.4 写的"恢复不了时只接受不超出现有策略的范围"没有实现，改为拒绝。设置在 Yuki 的输入排队时就生效，紧接着开始的用户回合会沿用收窄后的设置：这是记录的竞态，不加锁。`thread/settings/update` 只在测试替身中验证过。
+- **Claude 范围**：`settings` 的 `ask` 覆盖 Bash、Edit、Write、MultiEdit、NotebookEdit、WebFetch、WebSearch、SendMessage；MCP 工具不在清单内（§15.3 未验证）。SDK 进程开时没带范围、之后来了带范围的输入时返回 `scope_conflict`。
+- **一次性回答**：连接器拒绝持续性的选项（ACP `allow_always`／`reject_always`，Codex `acceptForSession`、带策略修订的决定），返回 `one_time_only`，落实"批准只对这一个请求生效"。
+- **ACP 自发回合**：ACP 不报告自发回合何时结束；Yuki 结束它时（下一次 prompt 或释放）以 `cancelled`、`reason: native_turn_end_not_reported` 收尾，不编造完成。
+- **协议 5 与跨版本**：见 §7.2 实施注。
+- **E9／Q6**：前提不成立，不改准入排序（§15.2 第 10 条），交用户决定。
+- **E4／Q5**：只记录。
+- **前缀字节**：§5.2 的 P1–P4 进 E2E（`tests/integration/test_external_agent_prompt_prefix_e2e.py`，Claude Messages 与 Chat Completions）；P5（观察通知）、P6（两个委派交错完成）与 OpenAI Responses 没有覆盖。P6 中"同输入同字节"由单元级 F17 覆盖。
+- **Desktop**：DT5 的 `plugin`／`retired` 分类没有做（服务端 kind 列举里没有这两个值）。
+
+### 16.3 测试
+
+- 失败情况先写：F1–F6、F17（`test_external_agent_observe_and_wake.py`）；F7、F8、F10、F14–F16、F18–F20、观察、释放（`test_external_agent_delegation.py`）；协议 5（`test_external_agent_protocol5.py`）；迁移（`tests/unit/test_migration_0159.py`）；连接器 F1、F9、F11–F13、F16 与协议 5（`packages/yuki-agent-connector/tests/test_*_phase2.py`、`test_protocol5_receipts.py`）；复审发现（`test_external_agent_review_fixes.py`、连接器 `test_review_fixes.py`）。各文件都先在实现前确认失败。
+- E2E：前缀字节（A3）、跨版本（A9，CI `claude-cross-version`）、删除核对（A10，`git grep` 只剩历史读取分支与日期文档）、Codex 委派（`test_codex_connector_delegation_e2e.py`）。真实 Agent 的 A1、A2、A4–A8 见 §16.5。
+
+### 16.4 三路独立复审与处理
+
+三路复审由新开的只读 agent 完成（服务端／运行时、连接器、Desktop），只给代码与本书，不给结论。每项修复都先写失败测试并确认失败。
+
+**服务端（1 个 blocker，其余为 major 与 minor）**
+
+| 发现 | 处理 |
+|---|---|
+| B：首次派发被拒（如 `session_live_elsewhere`）后记录永不结算，completion 还把记录改成 queued | 已修：终结记录运行的回执按终态结算记录；记录拥有的运行不再走父子 completion 路由。测试 `test_refused_start_…`、`test_a_finished_run_never_queues_…` |
+| Codex 整数 requestId 让回答去重与 pending 失效 | 已修：按文本比较。`test_integer_native_request_ids_…` |
+| 重复上报的请求唤醒两次；`serverRequest/resolved` 不让记录恢复 | 已修：按原生请求 ID 去重；解决按与 pending 同一套判断。`test_redelivered_request_…` |
+| 执行者消失后卡片仍显示 running（F14 断言接受了它） | 已修：等待执行者期间任何丢失事实都是 unknown；断言收紧 |
+| message_task／resume 没派发却报成功 | 已修：未派发即失败结果；resume 被拒时记录回到原状态 |
+| 无主等待没人处理，deny 入口随旧工具消失 | 已修：交给最后持有该会话的记录（委派 → 父 Work 卡片，`answer_at: deny_only`；观察 → 通知）；`message_task`／Desktop 回答可 deny。`test_unowned_wait_…` |
+| 连接器重启的快照恢复（unknown）被当成执行者消失 | 已修：`native_snapshot_restored` 不唤醒（§4.9）。丢失按操作只告诉一次 |
+| 观察通知逐条启动 Main | 已修：排队中的通知 Work 合并新事实 |
+| 被拒的清理控制永不重试 | 已修：每个连接一次尝试 |
+| release 的 detach 可能因记录先结束而不发出 | 已修：结束关系的 detach 不受记录终态限制 |
+| 写事务中按记录读取事件与 json 查询 | 部分保留：结算时读取的是该记录自己操作下的行（经操作与事件索引），不是历史扫描；`session_owner` 先查操作的会话索引。记录在此 |
+| 回执不匹配使设备永久断开 | 已修：确认并丢弃，记日志 |
+| Desktop 回答离线时误报成功 | 已修：返回错误 |
+| 旧 Desktop 的 agent_target 不可用 | 已修：记录按所代表的人物授权（不要求从父 Work 操作）；不属于任何委派的旧操作渲染为说明而非工具参数 |
+| 父 Work 自己结束（取消、释放、派发失败）仍被结果唤醒 | 已修：只结算不通知 |
+| F2（Desktop 对观察请求）、F6（先提问后等待）、F15（离线→上线→真实终态）缺测试 | 已补 |
+
+**连接器**
+
+| 发现 | 处理 |
+|---|---|
+| B1：空闲委派的 release 到不了连接器，SDK owner／ACP 会话一直占着 | 已修：服务端对记录的全部未解除操作发带 `release` 的 detach；连接器对已结束的操作也交给驱动，`_held()` 不计已解除的 owner |
+| B2：范围只随第一条 prompt 下发 | 已修：追加与恢复都带范围 |
+| M1：Codex workspaceWrite 隐含 cwd 与 /tmp | 已修：设 `excludeSlashTmp`／`excludeTmpdirEnvVar`；不覆盖 cwd 时 `scope_unsupported` |
+| M2：线程设置取消时不恢复、恢复失败无声、重启后丢失 | 已修：取消即恢复；失败上报并重试；原设置随回执持久化；竞态写进说明 |
+| M3：ACP 把模式更新当自发回合，且自发回合永不结束 | 已修：只有回合内容开后续执行；Yuki 结束时给终态 |
+| M4：Claude 自发回合吸收输入后归属断开 | 已修：整个原生回合固定后续执行身份 |
+| M5：可以回答"总是允许"，扩大范围 | 已修：`one_time_only` |
+| M6：Codex 重启不恢复排队中的 prompt | 已修 |
+| S4／S7／S8（Windows 存活判断、detach 进入派发中、资源泄漏） | 已修 |
+| S1–S3（MCP 不在 ask 清单、ACP default 模式仍加载用户 allow、`thread/settings/update` 未经真实 Codex 验证） | 记录为风险与未验证，不在本阶段改变用户设置读取方式 |
+
+**Desktop**：见 Desktop PR 的复审处理记录（实时状态改随 `refresh` 刷新、查询键、旧服务端回退、`unknown` 提交不确定、同一请求两处回答共用一次尝试、失败提示、F19 测试强度、三语状态文案、读屏、只有 `answer_at = yuki_or_user` 可答）。

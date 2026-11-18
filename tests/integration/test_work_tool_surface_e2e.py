@@ -195,6 +195,7 @@ def test_declarations_are_the_new_work_and_schedule_tools():
         "cwd",
         "executor",
         "files",
+        "fork",
         "goal",
         "notify_turn_end",
         "relationship",

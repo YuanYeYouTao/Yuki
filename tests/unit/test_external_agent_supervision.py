@@ -190,7 +190,11 @@ async def test_native_offline_detach_keeps_real_device_receipt_boundary(
         [control] = await env.service.cleanup_tasks([observation.id], "cleanup-original")
         if device_online:
             # Registered before it is written; its receipt event settles the target.
-            assert control["operation_id"] == f"cleanup-original:{observation.id}:detach"
+            # One registered attempt per connection.
+            assert (
+                control["operation_id"]
+                == f"cleanup-original:{observation.id}:detach:{connection.id}"
+            )
             assert control["pending"] is True
             assert (await env.repository.operation(observation.id, env.actor)).detached_at is None
     else:

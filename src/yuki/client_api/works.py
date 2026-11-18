@@ -539,17 +539,29 @@ class ClientWorks:
                 if event is not None and event.operation_id is not None
                 else None
             )
-        if executor is None or event is None or operation is None or operation.work_id != identity:
+        unowned = None
+        if executor is not None and event is not None and event.operation_id is None:
+            from yuki.external_agents.subtasks import unowned_session
+
+            unowned = await unowned_session(self.database, identity, event)
+        if (
+            executor is None
+            or event is None
+            or (unowned is None and (operation is None or operation.work_id != identity))
+        ):
             raise ClientError("not_found")
         if executor["relationship"] == "observe":
             # Observation never answers, not even for the person: handle it in the terminal.
             raise ClientError("observe_only")
         payload = json.loads(event.payload_json).get("payload") or {}
-        native: dict[str, Any] = {
-            "action": "respond",
-            "operation_id": operation.id,
-            "permission_id": permission_id,
-        }
+        # A wait no operation received is answered on its session, deny only (the
+        # service enforces it); an owned request on its original operation.
+        native: dict[str, Any] = {"action": "respond", "permission_id": permission_id}
+        if unowned is not None:
+            native["session_id"] = unowned
+        else:
+            assert operation is not None
+            native["operation_id"] = operation.id
         if response is not None:
             native["response"] = response
         elif option_id is not None:
@@ -567,10 +579,14 @@ class ClientWorks:
                     "answered_via": "desktop",
                     "answer_request": {"kind": event.kind, "tool": payload.get("tool")},
                 },
-                owner_work_id=identity,
+                owner_work_id=None if unowned is not None else identity,
             )
         except ValueError as error:
             raise ClientError(getattr(error, "code", None) or str(error)) from error
+        refusal = result.get("error")
+        if refusal and result.get("executed") is False:
+            # Nothing was written to the device; no operation exists to report.
+            raise ClientError(str(refusal.get("code") if isinstance(refusal, dict) else refusal))
         return {
             "work_id": identity,
             "permission_id": permission_id,

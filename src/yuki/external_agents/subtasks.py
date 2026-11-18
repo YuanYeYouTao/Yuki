@@ -41,6 +41,17 @@ def _request_id(work_id: str, key: str, purpose: str) -> str:
     return f"delegation:{work_id}:{purpose}:{digest}"
 
 
+def _dispatched(result: dict[str, Any]) -> dict[str, Any]:
+    """Nothing native was written: say so as a failed tool result, never as success."""
+    error = result.get("error")
+    if error and result.get("executed") is False:
+        code = error.get("code") if isinstance(error, dict) else str(error)
+        raise ExternalAgentArgumentError(
+            str(code), f"本次未派发（{code}），原生没有收到；处理原因后再试。"
+        )
+    return result
+
+
 def _actor(control: Any) -> str:
     actor = control.source.get("actor_person_id")
     if not isinstance(actor, str):
@@ -82,7 +93,8 @@ async def start_external(control: Any, args: dict[str, Any], key: str) -> dict[s
         if name in args:
             executor[name] = args[name]
     if session_id is not None:
-        executor["session_id"] = session_id
+        # A fork starts a new native session: the original is not owned or touched.
+        executor["forked_from" if args.get("fork") else "session_id"] = session_id
     if relationship == "observe" and args.get("notify_turn_end"):
         executor["notify_turn_end"] = True
     brief = {name: args[name] for name in _BRIEF if name in args}
@@ -122,6 +134,8 @@ async def start_external(control: Any, args: dict[str, Any], key: str) -> dict[s
         native.update(action="prompt", prompt=native_prompt(brief))
         if session_id is not None:
             native["resume"] = True
+        if args.get("fork"):
+            native["fork"] = True
         for name in ("cwd", "scope"):
             if name in args:
                 native[name] = args[name]
@@ -147,6 +161,19 @@ async def start_external(control: Any, args: dict[str, Any], key: str) -> dict[s
     }
 
 
+async def _settled_by_parent(writer: Any, identity: str) -> None:
+    """The parent ended this record itself: settled without a result notice (§4.1)."""
+    from yuki.runtime.subagent_schema import children
+
+    await writer.execute(
+        update(children)
+        .where(children.c.work_id == identity)
+        .values(
+            notified_revision=select(work.c.revision).where(work.c.id == identity).scalar_subquery()
+        )
+    )
+
+
 async def _end_unstarted(control: Any, identity: str, error: BaseException) -> None:
     """Nothing native was registered: the record fails with that fact, never retried."""
     code = getattr(error, "code", None) or str(error) or type(error).__name__
@@ -161,6 +188,8 @@ async def _end_unstarted(control: Any, identity: str, error: BaseException) -> N
                 updated=time.time(),
             )
         )
+        # The parent already holds this failure as its tool result.
+        await _settled_by_parent(writer, identity)
 
 
 async def _latest_operation(control: Any, identity: str) -> AgentOperationModel | None:
@@ -201,6 +230,8 @@ async def message_external(
                 if event is not None and event.operation_id is not None
                 else None
             )
+        if event is not None and event.operation_id is None:
+            return await _deny_unowned(control, service, identity, key, event, args)
         if event is None or operation is None or operation.work_id != identity:
             raise ExternalAgentArgumentError(
                 "external_agent_question_not_found", "reply_to 不是这个子任务的待回答请求。"
@@ -222,8 +253,10 @@ async def message_external(
             "answer_reason": text,
             "answer_request": {"kind": event.kind, "tool": payload.get("tool")},
         }
-        result = await service.execute(
-            native, _request_id(identity, key, "answer"), source, owner_work_id=identity
+        result = _dispatched(
+            await service.execute(
+                native, _request_id(identity, key, "answer"), source, owner_work_id=identity
+            )
         )
         return {"id": identity, "answered": str(event_key), "status": result.get("status")}
     if not text:
@@ -235,12 +268,17 @@ async def message_external(
         )
     mode = args.get("mode", "queue")
     native = {"action": mode, "prompt": text}
+    if mode == "queue" and "scope" in executor:
+        # The fixed scope travels with every dispatch of the delegation (§4.4).
+        native["scope"] = executor["scope"]
     if mode == "steer":
         native["operation_id"] = latest.id
     else:
         native["session_id"] = latest.session_id
-    result = await service.execute(
-        native, _request_id(identity, key, mode), control.source, owner_work_id=identity
+    result = _dispatched(
+        await service.execute(
+            native, _request_id(identity, key, mode), control.source, owner_work_id=identity
+        )
     )
     return {
         "id": identity,
@@ -248,6 +286,48 @@ async def message_external(
         "operation_id": result.get("operation_id"),
         "pending": result.get("pending"),
     }
+
+
+async def _deny_unowned(
+    control: Any, service: Any, identity: str, key: str, event: Any, args: dict[str, Any]
+) -> dict[str, Any]:
+    """A wait no operation received, on a session this record held: deny only."""
+    session_id = await unowned_session(control.repository.database, identity, event)
+    if session_id is None:
+        raise ExternalAgentArgumentError(
+            "external_agent_question_not_found", "reply_to 不是这个子任务会话上的等待。"
+        )
+    answer = args["answer"]
+    native: dict[str, Any] = {
+        "action": "respond",
+        "session_id": session_id,
+        "permission_id": str(event.id),
+    }
+    if isinstance(answer, dict):
+        native["response"] = answer
+    else:
+        native["option_id"] = str(answer)
+    result = _dispatched(
+        await service.execute(native, _request_id(identity, key, "deny"), control.source)
+    )
+    return {"id": identity, "answered": str(event.id), "status": result.get("status")}
+
+
+async def unowned_session(database: Any, identity: str, event: Any) -> str | None:
+    """The internal session of an unowned wait, if this record's operations held it."""
+    from yuki.external_agents.repository import session_key
+
+    if event.instance_id is None or event.native_session_id is None:
+        return None
+    session_id = session_key(event.instance_id, event.native_session_id)
+    async with database.read_session() as reader:
+        held = await reader.scalar(
+            select(AgentOperationModel.id).where(
+                AgentOperationModel.work_id == identity,
+                AgentOperationModel.session_id == session_id,
+            )
+        )
+    return session_id if held is not None else None
 
 
 async def manage_external(
@@ -272,6 +352,8 @@ async def manage_external(
                 "resume_text_required", "恢复编码 Agent 子任务需要 text：在同一会话继续的要求。"
             )
         latest = await _latest_operation(control, identity)
+        async with database.read_session() as reader:
+            prior = await reader.scalar(select(work.c.state).where(work.c.id == identity))
         async with database.immediate_session() as writer:
             await control.repository._assert_lease(writer, control.lease)
             await writer.execute(
@@ -293,9 +375,20 @@ async def manage_external(
         session = executor.get("session_id") or (latest.session_id if latest else None)
         if session is not None:
             native["session_id"] = session
+        if "scope" in executor:
+            native["scope"] = executor["scope"]
         result = await service.execute(
             native, _request_id(identity, key, "resume"), control.source, owner_work_id=identity
         )
+        if result.get("error") and result.get("executed") is False:
+            # Nothing was written: the record keeps the state it had before.
+            async with database.immediate_session() as writer:
+                await writer.execute(
+                    update(work)
+                    .where(work.c.id == identity, work.c.state == "waiting_external")
+                    .values(state=prior, revision=work.c.revision + 1, updated=time.time())
+                )
+            _dispatched(result)
         return {"id": identity, "status": "running", "dispatch": result.get("status")}
     if action == "release" or observe:
         # Release (or stopping an observation) detaches Yuki's operations first; a
@@ -328,7 +421,23 @@ async def manage_external(
                     await manage_work(writer, identity, row["revision"], "cancel", reason=text)
                 except WorkManagementError as exc:
                     raise ValueError(exc.code) from exc
+            await _settled_by_parent(writer, identity)
     return {"id": identity, "status": "cancelled", "relationship": executor["relationship"]}
+
+
+async def authorize_record(control: Any, identity: str) -> None:
+    """A record is managed by the person it acts for, from any of their conversations.
+
+    The Desktop's "this computer" actions reach a delegation from the person's own
+    conversation, not from the parent Work (§7.3); another person never can.
+    """
+    from yuki.identity.person_identity import same_person_id
+
+    async with control.repository.database.read_session() as reader:
+        source_json = await reader.scalar(select(work.c.source_json).where(work.c.id == identity))
+        actor = json.loads(source_json).get("actor_person_id") if source_json else None
+        if not isinstance(actor, str) or not await same_person_id(reader, actor, _actor(control)):
+            raise ValueError("subtask_not_owned")
 
 
 async def record_executor(control: Any, identity: str) -> dict[str, Any] | None:

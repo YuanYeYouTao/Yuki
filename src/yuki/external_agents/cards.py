@@ -32,7 +32,11 @@ def wake_event(kind: str, payload: dict[str, Any], state: dict[str, Any] | None)
         return True
     if isinstance(state, dict) and state.get("pending") is False:
         return True
-    return payload.get("status") == "unknown"
+    # A restored snapshot after a connector restart is not a loss: the original ID is
+    # queried, and the user is told only if that finds nothing (§4.9).
+    return (
+        payload.get("status") == "unknown" and payload.get("reason") != "native_snapshot_restored"
+    )
 
 
 def _bounded(value: Any, budget: int, name: str, truncated: list[str]) -> Any:
@@ -86,7 +90,11 @@ def external_agent_card(
             if "native_request" in payload
             else None,
             # An observed session's requests belong to the user at the native terminal.
-            "answer_at": "native_terminal" if relationship == "observe" else "yuki",
+            "answer_at": "native_terminal"
+            if relationship == "observe"
+            else "deny_only"
+            if relationship == "unowned"
+            else "yuki",
         }
         pending = {key: value for key, value in pending.items() if value is not None}
     summary = next(

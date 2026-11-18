@@ -1682,6 +1682,19 @@ class WorkRepository:
             if parent is None or parent["state"] in TERMINAL:
                 receipt.state, receipt.reason = "blocked", "work_terminal_or_deleted"
                 return
+            from yuki.runtime.subagent_schema import children
+
+            if (
+                await session.scalar(
+                    select(children.c.executor_json).where(children.c.work_id == parent["id"])
+                )
+                is not None
+            ):
+                # A delegation or observation record owns this run: its settlement is
+                # the record's own (no Yuki loop reads a completion input there).
+                receipt.state, receipt.reason = "observed", "settled_by_native_executor_record"
+                receipt.updated_at = datetime.now(UTC)
+                return
             if (
                 task.source_conversation_id != parent["conversation_id"]
                 or source.get("generation") != parent["generation"]

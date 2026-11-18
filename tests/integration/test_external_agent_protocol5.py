@@ -108,10 +108,12 @@ async def test_a_device_never_settles_an_operation_it_does_not_hold(bridge):
                 "operation_id": operation_id,
                 "payload": {"result": {"status": "completed", "pending": False}},
             }
+            computer.receipts[forged["event_id"]] = forged
             await computer.socket.send(json.dumps(forged))
+            # Acknowledged and dropped: a refused ACK would be resent forever.
             async with asyncio.timeout(5):
-                await computer.reader
-            assert computer.receipt_acks.empty() and computer.acknowledged.empty()
+                assert await computer.receipt_acks.get() == forged["event_id"]
+            assert bridge.service.connections.online(bridge.device["device_id"])
             assert await receipt(bridge, operation_id) is None
     finally:
         await computer.close()

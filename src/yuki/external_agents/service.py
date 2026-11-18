@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import func, literal, or_, select, update
+from sqlalchemy import String, cast, func, literal, or_, select, update
 
 from yuki.client_api.errors import ClientError
 from yuki.conversation.canonical_db_models import CanonicalConversationModel
@@ -651,7 +651,8 @@ class ExternalAgentService:
                     .mappings()
                     .first()
                 )
-            if record is None or record["state"] in TERMINAL:
+            if record is None or (record["state"] in TERMINAL and action != "detach"):
+                # Ending a relationship (release of a finished delegation) is still allowed.
                 raise ValueError("external_agent_source_obsolete")
             trusted = {
                 **trusted,
@@ -886,8 +887,13 @@ class ExternalAgentService:
                             AgentOperationModel.instance_id == owned.instance_id,
                             AgentOperationModel.action == "respond",
                             AgentOperationModel.id != request_id,
-                            func.json_extract(
-                                AgentOperationModel.command_json, "$.arguments.native_request_id"
+                            # Codex request ids are integers; compare their text form.
+                            cast(
+                                func.json_extract(
+                                    AgentOperationModel.command_json,
+                                    "$.arguments.native_request_id",
+                                ),
+                                String,
                             )
                             == str(native_question),
                             func.json_extract(
@@ -940,7 +946,8 @@ class ExternalAgentService:
             arguments=args,
             command=command,
             source=trusted,
-            session_id=session_id,
+            # A fork's receipt names its new native session; the original is only its source.
+            session_id=None if args.get("fork") else session_id,
             native_execution_id=native_execution,
             lease=control.lease if control is not None and trusted.get("work_id") else None,
         )
@@ -1006,13 +1013,10 @@ class ExternalAgentService:
                 await reader.scalars(
                     select(AgentOperationModel)
                     .where(
+                        # Finished operations too: an idle owner still holds the session.
                         AgentOperationModel.work_id == work_id,
                         AgentOperationModel.run_id.is_not(None),
                         AgentOperationModel.detached_at.is_(None),
-                        func.coalesce(
-                            func.json_type(AgentOperationModel.result_json, "$.pending"), "true"
-                        )
-                        != "false",
                     )
                     .order_by(AgentOperationModel.created_at, AgentOperationModel.id)
                 )
@@ -1031,8 +1035,19 @@ class ExternalAgentService:
                 )
             )
             # The relationship ends now, a server fact; the device's detach follows in
-            # the background, so no later cleanup mistakes it for work to cancel.
+            # the background, so no later cleanup mistakes it for work to cancel and no
+            # later self-started turn is attributed to it.
             await self._detached(operation)
+        if live:
+            async with self.database.immediate_session() as writer:
+                await writer.execute(
+                    update(AgentOperationModel)
+                    .where(
+                        AgentOperationModel.id.in_([item.id for item in live]),
+                        AgentOperationModel.detached_at.is_(None),
+                    )
+                    .values(detached_at=datetime.now(UTC))
+                )
         return results
 
     async def _release(
@@ -1175,8 +1190,13 @@ class ExternalAgentService:
                 or instance.device_id != device_id
                 or instance.local_id != receipt.get("instance_id")
             ):
-                # A device settles only its own original operations.
-                raise ValueError("external_agent_receipt_mismatch")
+                # A device settles only its own original operations. The receipt is
+                # acknowledged and dropped: refusing the ACK would make the device resend
+                # it forever and stay offline.
+                logger.warning(
+                    "external_agent_receipt_mismatch device=%s operation=%s", device_id, identity
+                )
+                continue
             await self._settle(identity, result)
 
     async def cleanup_tasks(
@@ -1215,7 +1235,9 @@ class ExternalAgentService:
             except (DeviceOffline, ClientError):
                 results.append({"operation_id": row.id, "status": "unknown", "pending": True})
                 continue
-            identity = f"{operation_id}:{row.id}:{action}"[:256]
+            # One attempt per connection: a control the source check refused before
+            # writing is written again on the next connection, never twice on one.
+            identity = f"{operation_id}:{row.id}:{action}:{connection.id}"[:256]
             command = {
                 "type": "command",
                 "id": identity,

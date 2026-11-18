@@ -530,7 +530,8 @@ class AgentRepository:
                     .mappings()
                     .first()
                 )
-                if owner is None or owner["state"] in TERMINAL:
+                if owner is None or (owner["state"] in TERMINAL and action != "detach"):
+                    # Only ending a relationship may name an ended record.
                     raise ValueError("external_agent_source_obsolete")
             row = AgentOperationModel(
                 id=identity,
@@ -582,6 +583,54 @@ class AgentRepository:
                 raise ValueError("external_agent_not_found")
             await self._bind_native(session, row, result)
             await self._project(session, row, result, serialized)
+            if (
+                row.run_id is not None
+                and result.get("pending") is False
+                and (executor := await executor_of(session, row.work_id)) is not None
+            ):
+                # A receipt that ends a record's run (a refusal, an immediate terminal)
+                # settles the record exactly like a terminal event would.
+                await self.delegations.settle(
+                    session,
+                    row,
+                    executor,
+                    event_id=f"receipt:{row.id}",
+                    kind="receipt",
+                    payload={
+                        key: value
+                        for key, value in result.items()
+                        if key in {"error", "reason", "text"} and isinstance(value, str)
+                    }
+                    | (
+                        {"error": str(result["error"].get("code"))}
+                        if isinstance(result.get("error"), dict)
+                        else {}
+                    ),
+                    state=result,
+                    card=external_agent_card(
+                        event="failed" if result.get("error") else "completed",
+                        operation_id=row.id,
+                        run_id=row.run_id,
+                        relationship="observe"
+                        if executor["relationship"] == "observe"
+                        else executor["relationship"],
+                        status=str(
+                            result.get("status") or ("failed" if result.get("error") else "")
+                        ),
+                        payload={
+                            "error": str(
+                                result["error"].get("code")
+                                if isinstance(result.get("error"), dict)
+                                else result.get("error") or ""
+                            )
+                        }
+                        if result.get("error")
+                        else {},
+                        session_id=row.session_id,
+                        read={"get_tasks": {"id": row.work_id}},
+                    ),
+                    request_key=None,
+                )
             return row
 
     async def _bind_native(
@@ -958,7 +1007,21 @@ class AgentRepository:
                         if original[0] != payload_json and not same_legacy_fact:
                             raise ValueError("external_agent_event_conflict")
                         continue
-                    if operation is None or operation.detached_at is not None:
+                    if operation is None:
+                        if (
+                            event["kind"] in {"permission", "question"}
+                            and isinstance(event.get("payload"), dict)
+                            and event["payload"].get("unowned") is True
+                            and isinstance(event.get("session_id"), str)
+                        ):
+                            await self.delegations.unowned(
+                                session,
+                                session_key(instance.id, event["session_id"]),
+                                event,
+                                str(added),
+                            )
+                        continue
+                    if operation.detached_at is not None:
                         continue
                     payload = event.get("payload", {})
                     if (
@@ -1077,7 +1140,13 @@ class AgentRepository:
         """Whether a registered command's original source still permits writing it."""
         async with self.database.read_session() as reader:
             row = await reader.get(AgentOperationModel, identity)
-            if row is None or row.result_json is not None or row.detached_at is not None:
+            if row is None or row.result_json is not None:
+                return False
+            if row.action == "detach" and row.work_id is not None:
+                # Ending a relationship (release, stopping an observation) is written even
+                # though its record ended right after registering it.
+                return True
+            if row.detached_at is not None:
                 return False
             if row.work_id is None:
                 return True

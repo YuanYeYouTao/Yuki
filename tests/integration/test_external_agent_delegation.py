@@ -304,7 +304,7 @@ async def test_f14_f15_lost_executor_is_told_once_stays_unknown_and_real_termina
             told = await _inputs(bridge, control.current["id"])
             assert len(told) == 1
             view = await control.tool_outcome("get_tasks", {"id": identity}, "read-lost")
-            assert view.data["card"]["state"] in {"unknown", "running"}
+            assert view.data["card"]["state"] == "unknown"
             assert [item["action"] for item in computer.commands].count("prompt") == 1
             await computer.event(operation.id, "completed", {"status": "completed", "text": "ok"})
             assert (await _row(bridge, identity))["state"] == "completed"
@@ -619,5 +619,98 @@ async def test_lost_result_of_a_delegation_control_reads_its_original_receipt(br
             assert value["action"] == "steer" and value["replay_forbidden"] is True
             assert value["admitted"] is True and value.get("error") is None
             assert [item["action"] for item in computer.commands].count("steer") == 1
+    finally:
+        await computer.close()
+
+
+# Review B1: releasing an idle delegation (its turn already finished) still reaches the
+# device, for every operation it holds, so the native process can be closed (G9, F13).
+async def test_release_of_an_idle_delegation_reaches_the_device(bridge):
+    computer = await NativeComputer(bridge).start()
+    try:
+        instance, session_id = await directory(bridge)
+        async with accepted_work(bridge) as control:
+            identity, operation = await _delegate(bridge, control, instance, session_id)
+            await computer.event(operation.id, "completed", {"status": "completed", "text": "ok"})
+            released = await control.tool_outcome(
+                "manage_task", {"action": "release", "id": identity}, "release-idle"
+            )
+            assert released.ok, released
+            await settled(bridge)
+            [detach] = [item for item in computer.commands if item["action"] == "detach"]
+            assert detach["arguments"] == {"operation_id": operation.id, "release": True}
+            assert detach["session_id"] == computer.native_session
+    finally:
+        await computer.close()
+
+
+# Review B2: every dispatch of a scoped delegation carries its fixed scope (§4.4),
+# including text added later and a resume on the same session.
+async def test_follow_up_input_and_resume_carry_the_delegation_scope(bridge):
+    scope = {"write_paths": ["/tmp/fixture"], "network": False, "commands": ["pytest"]}
+    scoped = NativeComputer(bridge)
+    scoped.capabilities = [*scoped.capabilities, "scope"]
+    computer = await scoped.start()
+    try:
+        instance, session_id = await directory(bridge)
+        async with accepted_work(bridge) as control:
+            identity, operation = await _delegate(
+                bridge, control, instance, session_id, scope=scope
+            )
+            added = await control.tool_outcome(
+                "message_task", {"id": identity, "text": "also lint"}, "scoped-queue"
+            )
+            assert added.ok, added
+            await settled(bridge)
+            await computer.event(operation.id, "completed", {"status": "completed", "text": "ok"})
+            for item in [i for i in computer.commands if i["action"] == "queue"]:
+                await computer.event(item["id"], "completed", {"status": "completed"})
+            resumed = await control.tool_outcome(
+                "manage_task",
+                {"action": "resume", "id": identity, "text": "one more"},
+                "scoped-resume",
+            )
+            assert resumed.ok, resumed
+            await settled(bridge)
+            inputs_sent = [i for i in computer.commands if i["action"] in {"prompt", "queue"}]
+            assert len(inputs_sent) == 3
+            assert all(item["arguments"].get("scope") == scope for item in inputs_sent)
+    finally:
+        await computer.close()
+
+
+# A live Claude session is refused by the device; an explicit fork starts a new session
+# and the record binds to the new session, never conflicting with the original (S7).
+async def test_explicit_fork_binds_the_record_to_the_new_session(bridge):
+    computer = await NativeComputer(bridge).start()
+    try:
+        instance, session_id = await directory(bridge)
+        async with accepted_work(bridge) as control:
+            computer.hold = {"prompt"}
+            outcome = await _start(
+                control, "call-fork", executor={"agent": instance}, session=session_id, fork=True
+            )
+            assert outcome.ok, outcome
+            await settled(bridge)
+            [prompt] = [item for item in computer.commands if item["action"] == "prompt"]
+            assert prompt["arguments"]["fork"] is True and prompt["session_id"]
+            identity = outcome.data["id"]
+            [operation] = await _operations(bridge, identity)
+            forked = {
+                "execution_id": computer.native_execution,
+                "status": "running",
+                "pending": True,
+                "admitted": True,
+                "session_id": "forked-native-session",
+                "forked_from": computer.native_session,
+            }
+            await computer.answer(prompt["id"], forked)
+            await settled(bridge)
+            [operation] = await _operations(bridge, identity)
+            async with bridge.database.read_session() as reader:
+                from yuki.external_agents.db_models import AgentSessionModel
+
+                bound = await reader.get(AgentSessionModel, operation.session_id)
+            assert bound.native_id == "forked-native-session"
     finally:
         await computer.close()

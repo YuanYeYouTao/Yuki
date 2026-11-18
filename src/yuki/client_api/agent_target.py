@@ -65,10 +65,14 @@ def tool_arguments(target: AgentTarget, record: str | None = None) -> dict[str, 
     else:
         arguments = {"tool": "manage_task", "action": "cancel" if intent == "cancel" else "release"}
     if intent in {"queue", "steer", "respond", "cancel", "detach"}:
+        if record is None:
+            # An operation recorded before contract 40 belongs to no delegation; the
+            # retired tools that controlled it have no successor (tool-kernel.md).
+            return {
+                "note": "所选原操作不属于任何委派，现行工具不能控制它；可查看其回执或新建委派。",
+                "operation_id": data.get("operation_id"),
+            }
         arguments["id"] = record
-        if record is None and "operation_id" in data:
-            # An operation that belongs to no delegation (recorded before contract 40).
-            arguments["operation_id"] = data["operation_id"]
     return arguments
 
 

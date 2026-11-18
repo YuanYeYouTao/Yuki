@@ -172,7 +172,7 @@ Memory 重建按来源事件处理提案，保留有界账号的运行选择集�
 重放先核当前本人访问权与原事件作者／App 会话，再核规范化正文和附件，
 已有请求不构造新入站、不通知轮次。并发首次提交在原入账处遇到 receipt_conflict 时，
 回到同一授权与内容核对；同号不同操作或正文返回 request_conflict。正文是个人聊天输入，
-App 消息与 `POST /works/{id}/inputs` 可附显式 `agent_target`：本人设备、实例、会话、执行、原 operation、项目 cwd，以及可选 intent、permission_id、option_id、response JSON 对象。intent 不默认为 prompt；没有显式意图时以用户正文为准。目标在首次接纳前沿原 Person／资源／当前 connector 授权查证，以子任务工具的术语（`start_subtask` 的 executor／session／relationship、`message_task`、`manage_task`）随原事件与 Work 输入进入 Main，不由个人 HTTP 另建执行驱动；唯一例外是设备所属人物对自己设备上原生请求的回答：`POST /works/{id}/native-requests/{permission_id}/answer`（revision 14）由服务端直接结算到原生请求，不经 Main、不花模型调用，与 Yuki 的回答走同一原 respond 登记，原生只消费一次、先答者生效；观察记录的请求返回 `observe_only`。目标、意图和原问题答案都参与同 UUID 一致性；未提供 target 的旧输入保持原正文和指纹。原请求查证先返回原回执，不依赖该电脑当前在线或目录就绪。此选择不构成整个 Work 后续工具操作的固定锁；实际控制继续核原资源、原问题和真实执行回执。
+App 消息与 `POST /works/{id}/inputs` 可附显式 `agent_target`：本人设备、实例、会话、执行、原 operation、项目 cwd，以及可选 intent、permission_id、option_id、response JSON 对象。intent 不默认为 prompt；没有显式意图时以用户正文为准。目标在首次接纳前沿原 Person／资源／当前 connector 授权查证，以子任务工具的术语（`start_subtask` 的 executor／session／relationship、`message_task`、`manage_task`）随原事件与 Work 输入进入 Main，不由个人 HTTP 另建执行驱动；唯一例外是设备所属人物对自己设备上原生请求的回答：`POST /works/{id}/native-requests/{permission_id}/answer`（revision 14）由服务端直接结算到原生请求，不经 Main、不花模型调用，与 Yuki 的回答走同一原 respond 登记，原生只消费一次、先答者生效；观察记录的请求返回 `observe_only`；无主等待（`answer_at: deny_only`）只接受 deny；未派发时返回原错误（如 `device_offline`），不报告操作。目标、意图和原问题答案都参与同 UUID 一致性；未提供 target 的旧输入保持原正文和指纹。原请求查证先返回原回执，不依赖该电脑当前在线或目录就绪。此选择不构成整个 Work 后续工具操作的固定锁；实际控制继续核原资源、原问题和真实执行回执。
 
 不在个人 API 中执行 QQ `/ai` 管理命令。附件使用本人已登记的 media_id，经原媒体链准备。
 

@@ -1004,20 +1004,9 @@ class WorkControl:
 
             executor = await record_executor(self, target)
             if executor is not None:
-                if executor["relationship"] != "observe":
-                    from yuki.runtime.subagent_tools import owned_child_parent
+                from yuki.external_agents.subtasks import authorize_record
 
-                    await owned_child_parent(self, target)
-                else:
-                    from yuki.runtime.work_queries import WorkQueries
-
-                    if (
-                        await WorkQueries(self.repository).get(
-                            self.lease, self.source, target, local=True
-                        )
-                        is None
-                    ):
-                        raise ValueError("work_not_found_or_not_authorized")
+                await authorize_record(self, target)
                 return await manage_external(self, action, target, call_key, text, executor)
         if action == "release":
             raise ValueError("release_requires_agent_subtask")

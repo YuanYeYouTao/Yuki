@@ -1277,6 +1277,21 @@ async def settled(bridge):
     ACKs after settling it; settled means every receipt sent so far is ACKed.
     """
     async with asyncio.timeout(5):
+        # A written command may not have reached the peer yet; give it a bounded moment
+        # to arrive (commands written to a closed socket never do).
+        async with bridge.database.read_session() as reader:
+            unanswered = set(
+                await reader.scalars(
+                    select(AgentOperationModel.id).where(AgentOperationModel.result_json.is_(None))
+                )
+            )
+        for _ in range(100):
+            received = {
+                command["id"] for peer in getattr(bridge, "peers", ()) for command in peer.commands
+            }
+            if unanswered <= received:
+                break
+            await asyncio.sleep(0.02)
         while True:
             await bridge.service.drain()
             peers = [
