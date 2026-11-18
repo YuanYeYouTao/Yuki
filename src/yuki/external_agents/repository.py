@@ -206,10 +206,9 @@ class AgentRepository:
                         AgentEventModel.created_at,
                     )
                     .where(
+                        AgentEventModel.instance_id == instance.id,
+                        AgentEventModel.native_session_id == native_session,
                         AgentEventModel.operation_id.is_(None),
-                        AgentEventModel.device_id == instance.device_id,
-                        func.json_extract(stored, "$.instance_id") == instance.local_id,
-                        func.json_extract(stored, "$.session_id") == native_session,
                         or_(
                             and_(
                                 AgentEventModel.kind.in_(("permission", "question")),
@@ -811,6 +810,8 @@ class AgentRepository:
                             kind=event["kind"],
                             payload_json=payload_json,
                             created_at=received_at,
+                            instance_id=instance.id,
+                            native_session_id=event.get("session_id"),
                         )
                         .on_conflict_do_nothing(index_elements=["device_id", "event_id"])
                         .returning(AgentEventModel.id)
