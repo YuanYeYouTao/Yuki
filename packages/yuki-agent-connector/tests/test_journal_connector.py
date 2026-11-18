@@ -27,6 +27,23 @@ def command(identity: str = "original", action: str = "prompt") -> dict[str, Any
     }
 
 
+def result_of(journal: Journal, key: str) -> dict[str, Any]:
+    """Protocol 5: the result carried by the last receipt event answering a command."""
+    rows = journal.db.execute(
+        "SELECT event FROM events WHERE json_extract(event, '$.kind')='receipt' "
+        "AND json_extract(event, '$.operation_id')=? ORDER BY sequence",
+        (key,),
+    ).fetchall()
+    return json.loads(rows[-1][0])["payload"]["result"]  # type: ignore[no-any-return]
+
+
+def ack_receipts(journal: Journal) -> None:
+    for (key,) in journal.db.execute(
+        "SELECT id FROM events WHERE json_extract(event, '$.kind')='receipt'"
+    ).fetchall():
+        journal.ack(key)
+
+
 @pytest.fixture
 def journal(tmp_path: Path) -> Any:
     value = Journal(tmp_path / "private" / "journal.db", namespace="server/device")
@@ -61,6 +78,7 @@ def test_events_are_committed_before_send_and_ack_prunes_only_original(journal: 
             },
         },
     )
+    ack_receipts(journal)
     event = {
         "type": "event",
         "event_id": "e1",
@@ -142,9 +160,8 @@ async def test_live_instance_edit_and_delete_preserve_original_work(
     assert connector.hello()["instances"][0]["label"] == "New"
     assert connector.drivers["sibling"] is other and not other.stopped
     assert connector.drivers["local"] is not old and not old.stopped
-    receipts = {}
     for action in ("respond", "steer", "cancel", "queue", "watch"):
-        receipts[action] = await connector.dispatch(
+        await connector.dispatch(
             {**command(f"control-{action}", action), "arguments": {"operation_id": "original"}}
         )
         assert old.calls[-1]["id"] == f"control-{action}"
@@ -160,32 +177,32 @@ async def test_live_instance_edit_and_delete_preserve_original_work(
     Config("ws://localhost/", "device", "token", [sibling]).save(path)
     await connector.dispatch({**status, "id": "status-after-delete"})
     assert [item["id"] for item in connector.hello()["instances"]] == ["sibling"]
-    assert (await connector.dispatch(command("new")))["result"]["error"][
-        "code"
-    ] == "instance_unavailable"
+    await connector.dispatch(command("new"))
+    assert result_of(journal, "new")["error"]["code"] == "instance_unavailable"
     assert not old.stopped and connector.drivers["sibling"] is other
     await connector.dispatch(
         {**command("cancel-after-delete", "cancel"), "arguments": {"operation_id": "original"}}
     )
     assert old.calls[-1]["id"] == "cancel-after-delete"
     for action in ("queue", "watch"):
-        rejected = await connector.dispatch(
+        await connector.dispatch(
             {
                 **command(f"new-{action}-after-delete", action),
                 "arguments": {"operation_id": "original"},
             }
         )
-        assert rejected["result"]["error"]["code"] == "instance_unavailable"
+        rejected = result_of(journal, f"new-{action}-after-delete")
+        assert rejected["error"]["code"] == "instance_unavailable"
         assert old.calls[-1]["id"] == "cancel-after-delete"
-    assert (
-        await connector.dispatch(
-            {**command("control-queue", "queue"), "arguments": {"operation_id": "original"}}
-        )
-        == receipts["queue"]
+    calls = len(old.calls)
+    await connector.dispatch(
+        {**command("control-queue", "queue"), "arguments": {"operation_id": "original"}}
     )
+    assert len(old.calls) == calls  # A duplicate is never executed again.
 
     old.finish.set()
-    assert (await work)["result"]["execution_id"] == "native-turn"
+    await work
+    assert result_of(journal, "original")["execution_id"] == "native-turn"
     for action in ("queue", "watch"):
         await old.emit(
             "completed",
@@ -307,10 +324,10 @@ async def test_recovery_requires_the_original_connection_source(
         "AND json_extract(event, '$.payload.reason')='original_owner_not_attached'"
     ).fetchone()
     assert queued is not None and json.loads(queued[0])["operation_state"] == lost
-    result = await restarted.dispatch(
+    await restarted.dispatch(
         {**command("sdk-cancel", "cancel"), "arguments": {"operation_id": "sdk-original"}}
     )
-    assert result["result"]["error"]["code"] == "instance_unavailable"
+    assert result_of(journal, "sdk-cancel")["error"]["code"] == "instance_unavailable"
 
     monkeypatch.setenv("CODEX_HOME", str(tmp_path / "different-profile"))
     await started(spec)
@@ -376,6 +393,7 @@ async def test_detached_original_owner_is_released_only_after_real_work_finishes
     )
     detached = journal.operation("original")
     assert detached["status"] == "detached" and not old.stopped
+    ack_receipts(journal)
     assert journal.next_event() is None
     await old.emit("work_finished", {"operation_id": "original"})
     await asyncio.sleep(0)
@@ -406,14 +424,16 @@ async def test_duplicate_original_and_parameter_mismatch_never_dispatch_twice(
     connector.drivers["local"] = driver
     task = asyncio.create_task(connector.dispatch(command()))
     await driver.started.wait()
-    duplicate = await connector.dispatch(command())
-    assert duplicate["result"]["status"] == "unknown"
-    mismatch = await connector.dispatch({**command(), "arguments": {"prompt": "changed"}})
-    assert mismatch["error"]["code"] == "invalid_command"
+    assert await connector.dispatch(command()) is None
+    assert await connector.dispatch({**command(), "arguments": {"prompt": "changed"}}) is None
+    assert result_of(journal, "original")["error"]["code"] == "invalid_command"
     assert journal.operation("original")["status"] == "unknown"
     driver.finish.set()
-    response = await task
-    assert await connector.dispatch(command()) == response
+    assert await task is None
+    original = result_of(journal, "original")
+    assert original["execution_id"] == "native-turn"
+    assert await connector.dispatch(command()) is None
+    assert result_of(journal, "original")["execution_id"] == "native-turn"
     assert len(driver.calls) == 1
     assert journal.operation("original")["execution_id"] == "native-turn"
 
@@ -448,9 +468,13 @@ async def test_network_disconnect_leaves_native_dispatch_running_and_replays_eve
             await driver.started.wait()
             await socket.close()
         else:
-            event = json.loads(await socket.recv())
-            received.append(event)
-            await socket.send(json.dumps({"type": "ack", "event_id": event["event_id"]}))
+            # The original's receipt (completed while offline) is retransmitted too.
+            while True:
+                event = json.loads(await socket.recv())
+                received.append(event)
+                await socket.send(json.dumps({"type": "ack", "event_id": event["event_id"]}))
+                if event["event_id"] == "offline-event":
+                    break
             acked.set()
             await socket.wait_closed()
 
@@ -476,6 +500,7 @@ async def test_network_disconnect_leaves_native_dispatch_running_and_replays_eve
             await socket.close()
             await task
     assert len(driver.calls) == 1
+    assert [item["kind"] for item in received[2:]] == ["receipt", "completed"]
     assert received[-1]["event_id"] == "offline-event"
     assert journal.next_event() is None
 
@@ -594,10 +619,10 @@ async def test_unknown_control_is_never_admitted_or_used_to_detach(journal: Jour
     )
     connector = Connector(Config("ws://localhost/", "device", "token"), journal)
     connector.drivers["local"] = driver
-    response = await connector.dispatch(
+    await connector.dispatch(
         {**command("detach", "detach"), "arguments": {"operation_id": "watch-original"}}
     )
-    assert "admitted" not in response["result"]
+    assert "admitted" not in result_of(journal, "detach")
     assert journal.observations()[0][0]["id"] == "watch-original"
 
 

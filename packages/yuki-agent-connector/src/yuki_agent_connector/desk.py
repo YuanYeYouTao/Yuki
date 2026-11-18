@@ -488,9 +488,7 @@ class Desk:
 
     # Accessibility nodes (task book §6.7)
 
-    def _list(
-        self, target: Target, limits: tuple[int, int], scale: int | None, text: Any
-    ) -> str:
+    def _list(self, target: Target, limits: tuple[int, int], scale: int | None, text: Any) -> str:
         """Register this window's nodes under a fresh tag and render them like a snapshot."""
         area = target.window
         width, height = frame(area, *limits)
@@ -632,17 +630,10 @@ class Desk:
             if action in actions.CLICKS:
                 assert aim is not None
                 posted += 1
-                if (
-                    node is not None
-                    and action == "click"
-                    and not parsed.modifiers
-                    and node.press()
-                ):
+                if node is not None and action == "click" and not parsed.modifiers and node.press():
                     routes.append("accessibility")
                 else:
-                    routes.append(
-                        screen.click(*aim, parsed.button, parsed.count, parsed.modifiers)
-                    )
+                    routes.append(screen.click(*aim, parsed.button, parsed.count, parsed.modifiers))
             elif action == "move":
                 assert aim is not None
                 posted += 1

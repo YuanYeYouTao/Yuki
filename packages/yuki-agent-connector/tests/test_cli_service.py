@@ -42,7 +42,7 @@ def test_pair_exchanges_explicit_code_and_status_never_exposes_secrets(
     assert cli.main([*args, "status", "--json"]) == 0
     assert json.loads(capsys.readouterr().out) == {
         "version": __version__,
-        "protocol": 4,
+        "protocol": 5,
         "full_access": False,
         "computer": computer_status(),
         "runtime": sys.executable,
@@ -148,7 +148,7 @@ def test_machine_status_preserves_unicode_through_a_non_utf8_cli_pipe(
     status = json.loads(result.stdout.decode("utf-8"))
     assert status == {
         "version": __version__,
-        "protocol": 4,
+        "protocol": 5,
         "full_access": False,
         "computer": computer_status(),
         "runtime": sys.executable,

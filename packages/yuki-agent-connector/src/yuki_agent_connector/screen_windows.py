@@ -619,9 +619,7 @@ class WindowsScreen:
         self._send([self._mouse(0, (x, y))])
         return "global_input"
 
-    def click(
-        self, x: float, y: float, button: str, count: int, modifiers: tuple[str, ...]
-    ) -> str:
+    def click(self, x: float, y: float, button: str, count: int, modifiers: tuple[str, ...]) -> str:
         down, up = BUTTON_FLAGS[button]
         # One batch: the clicks of a triple click arrive within the double-click time.
         self._send(
@@ -633,9 +631,7 @@ class WindowsScreen:
         )
         return "global_input"
 
-    def drag(
-        self, x: float, y: float, x2: float, y2: float, modifiers: tuple[str, ...]
-    ) -> str:
+    def drag(self, x: float, y: float, x2: float, y2: float, modifiers: tuple[str, ...]) -> str:
         down, up = BUTTON_FLAGS["left"]
         codes = [VIRTUAL_KEYS[name] for name in modifiers]
         # Modifiers go down with the button and up with it: held only while dragging (A18).
@@ -1124,9 +1120,7 @@ class WindowsTarget:
             )
         return "accessibility"
 
-    def click(
-        self, x: float, y: float, button: str, count: int, modifiers: tuple[str, ...]
-    ) -> str:
+    def click(self, x: float, y: float, button: str, count: int, modifiers: tuple[str, ...]) -> str:
         def expand_or_collapse(pattern: Any, collapsed: int) -> None:
             if pattern.CurrentExpandCollapseState == collapsed:
                 pattern.Expand()
@@ -1155,9 +1149,7 @@ class WindowsTarget:
                     (
                         module.UIA_ExpandCollapsePatternId,
                         module.IUIAutomationExpandCollapsePattern,
-                        lambda pattern, collapsed=collapsed: expand_or_collapse(
-                            pattern, collapsed
-                        ),
+                        lambda pattern, collapsed=collapsed: expand_or_collapse(pattern, collapsed),
                     ),
                 ):
                     pattern = _pattern(node, identifier, interface)
@@ -1193,9 +1185,7 @@ class WindowsTarget:
         # at x,y is remembered and ``type`` writes its value.
         def run() -> bool:
             for module, node in self._ancestors(x, y):
-                value = _pattern(
-                    node, module.UIA_ValuePatternId, module.IUIAutomationValuePattern
-                )
+                value = _pattern(node, module.UIA_ValuePatternId, module.IUIAutomationValuePattern)
                 if value is not None and not value.CurrentIsReadOnly:
                     self.field = value
                     return True
@@ -1225,9 +1215,7 @@ class WindowsTarget:
             "device_not_supported", "Windows 上不能在后台移动指针。", cause="no_background_route"
         )
 
-    def drag(
-        self, x: float, y: float, x2: float, y2: float, modifiers: tuple[str, ...]
-    ) -> str:
+    def drag(self, x: float, y: float, x2: float, y2: float, modifiers: tuple[str, ...]) -> str:
         raise Refused(
             "device_not_supported", "Windows 上不能在后台拖拽。", cause="no_background_route"
         )
