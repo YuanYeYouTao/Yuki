@@ -329,7 +329,7 @@ async def test_scope_sends_every_side_effect_through_the_connector_and_never_wid
         ]
         for key, tool, arguments in outside:
             await transport.incoming.put(tool_request(key, tool, arguments))
-            kind, reported = await until(events, lambda kind, value: kind == "permission")
+            _kind, reported = await until(events, lambda kind, value: kind == "permission")
             assert reported["operation_id"] == "delegated"
             assert reported["payload"]["native_request_id"] == key
             assert response_for(transport, f"request-{key}") is None
@@ -356,7 +356,7 @@ async def test_network_scope_allows_fetch_but_never_cross_session_messages(
         await transport.incoming.put(tool_request("fetch", "WebFetch", {"url": "https://x"}))
         assert (await answered(transport, "request-fetch"))["behavior"] == "allow"
         await transport.incoming.put(tool_request("message", "SendMessage", {"to": "peer"}))
-        kind, reported = await until(events, lambda kind, value: kind == "permission")
+        _kind, reported = await until(events, lambda kind, value: kind == "permission")
         assert reported["payload"]["native_request_id"] == "message"
         # Default write path is the session cwd.
         await transport.incoming.put(

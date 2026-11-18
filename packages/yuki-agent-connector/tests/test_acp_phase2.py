@@ -160,7 +160,7 @@ async def test_scoped_session_asks_and_the_connector_decides_only_inside_the_sco
         assert mode["mode"] == "default"
         reported = []
         for _ in range(3):
-            kind, value = await until(events, lambda kind, value: kind == "permission")
+            _kind, value = await until(events, lambda kind, value: kind == "permission")
             assert value["operation_id"] == "scoped"
             reported.append(value["payload"]["tool"]["toolCallId"])
             await driver.execute(
@@ -209,7 +209,7 @@ async def test_codex_style_agent_gets_an_asking_mode_and_a_cancelling_reject_is_
         task = asyncio.create_task(driver.execute(prompt("scoped", script, scope={})))
         [mode] = await traced_until(trace, "session/set_mode")
         assert mode["mode"] in {"read-only", "workspace-write"}
-        kind, value = await until(events, lambda kind, value: kind == "permission")
+        _kind, value = await until(events, lambda kind, value: kind == "permission")
         assert value["payload"]["reject_ends_prompt"] is True
         await driver.execute(
             {
@@ -248,7 +248,7 @@ async def test_request_without_receiver_is_metadata_only_and_deny_only(tmp_path:
     script = {"during": [permission("wait", "execute", raw={"command": "rm -rf secret"})]}
     try:
         task = asyncio.create_task(driver.execute(prompt("owner", script)))
-        kind, owned = await until(events, lambda kind, value: kind == "permission")
+        _, owned = await until(events, lambda kind, value: kind == "permission")
         assert owned["operation_id"] == "owner"
         await driver.execute(
             {
@@ -258,7 +258,7 @@ async def test_request_without_receiver_is_metadata_only_and_deny_only(tmp_path:
                 "arguments": {"operation_id": "owner"},
             }
         )
-        kind, unowned = await until(events, lambda kind, value: kind == "permission")
+        _, unowned = await until(events, lambda kind, value: kind == "permission")
         assert unowned["operation_id"] is None
         payload = unowned["payload"]
         assert payload["unowned"] is True and payload["options"] == ["deny"]
@@ -284,7 +284,7 @@ async def test_request_without_receiver_is_metadata_only_and_deny_only(tmp_path:
         await driver.execute(
             {**answer, "id": "deny", "arguments": {**answer["arguments"], "option_id": "reject"}}
         )
-        kind, resolved = await until(events, lambda kind, value: kind == "progress")
+        _kind, resolved = await until(events, lambda kind, value: kind == "progress")
         assert resolved["payload"]["permission_resolved"] == payload["permission_id"]
         await task
         [row] = await traced_until(trace, "session/request_permission")
@@ -305,11 +305,11 @@ async def test_agent_initiated_turn_belongs_to_the_held_owner(tmp_path: Path) ->
     try:
         await driver.execute(prompt("owner", script))
         await until(events, lambda kind, value: kind == "work_finished")
-        kind, begun = await until(events, lambda kind, value: kind == "progress")
+        _, begun = await until(events, lambda kind, value: kind == "progress")
         assert begun["operation_id"] is None and begun["owner_operation_id"] == "owner"
         followup = begun["followup_execution"]
         assert followup and begun["execution_id"] == followup
-        kind, waiting = await until(events, lambda kind, value: kind == "permission")
+        _kind, waiting = await until(events, lambda kind, value: kind == "permission")
         assert waiting["owner_operation_id"] == "owner"
         assert waiting["followup_execution"] == followup
         assert waiting["payload"].get("unowned") is not True
@@ -356,7 +356,7 @@ async def test_observe_watch_receives_metadata_only(tmp_path: Path) -> None:
         )
         seen: dict[str, dict[str, Any]] = {}
         while len(seen) < 2:
-            kind, value = await until(events, lambda kind, value: kind == "permission")
+            _kind, value = await until(events, lambda kind, value: kind == "permission")
             seen[value["operation_id"]] = value["payload"]
         observed = seen["observer"]
         assert observed["observed"] is True and observed["tool"] == "execute"
@@ -387,7 +387,7 @@ async def test_release_closes_the_session_at_the_turn_boundary(tmp_path: Path) -
     script = {"during": [permission("hold", "execute", raw={"command": "make"})]}
     try:
         task = asyncio.create_task(driver.execute(prompt("owner", script)))
-        kind, waiting = await until(events, lambda kind, value: kind == "permission")
+        _, waiting = await until(events, lambda kind, value: kind == "permission")
         session_id = waiting["session_id"]
         released = await driver.execute(
             {
@@ -399,7 +399,7 @@ async def test_release_closes_the_session_at_the_turn_boundary(tmp_path: Path) -
         )
         assert released["detached"] is True and released["closed"] == "after_turn"
         assert traced(trace, "session/close") == []
-        kind, unowned = await until(events, lambda kind, value: kind == "permission")
+        _kind, unowned = await until(events, lambda kind, value: kind == "permission")
         await driver.execute(
             {
                 "id": "deny",

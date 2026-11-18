@@ -218,7 +218,7 @@ async def test_yuki_input_is_a_queue_item_attributed_by_client_id_never_turn_sta
             assert "turn/start" not in owner.methods()
             add = next(c for c in owner.calls if c.get("method") == "thread/queue/add")
             assert add["params"]["clientUserMessageId"] == "yuki-prompt"
-            kind, started = await until(events, lambda kind, value: value.get("execution_id"))
+            _kind, started = await until(events, lambda kind, value: value.get("execution_id"))
             assert started["operation_id"] == "yuki-prompt" and started["execution_id"] == "turn-1"
             # The user's TUI starts its own turn later: it never becomes Yuki's.
             await owner.complete("turn-1")
@@ -247,7 +247,7 @@ async def test_requests_of_user_tui_turns_reach_yuki_only_as_terminal_metadata(
             await owner.request(
                 7, "item/commandExecution/requestApproval", "turn-1", command="rm -rf x"
             )
-            kind, seen = await until(events, lambda kind, value: kind == "permission")
+            _kind, seen = await until(events, lambda kind, value: kind == "permission")
             payload = seen["payload"]
             assert payload["answer_at"] == "native_terminal"
             assert payload["native_request_id"] == 7
@@ -293,7 +293,7 @@ async def test_yuki_turn_request_is_answerable_and_observe_watch_sees_metadata_o
             )
             seen: dict[str, dict[str, Any]] = {}
             while len(seen) < 2:
-                kind, value = await until(events, lambda kind, value: kind == "permission")
+                _kind, value = await until(events, lambda kind, value: kind == "permission")
                 seen[value["operation_id"]] = value["payload"]
             assert "native_request" in seen["yuki-prompt"]
             observed = seen["observer"]
@@ -394,7 +394,7 @@ async def test_scope_narrows_thread_settings_for_yuki_turn_and_restores_them(
                 (6, "item/permissions/requestApproval", {"permissions": {}}),
             ]:
                 await owner.request(identity, method, "turn-1", **extra)
-                kind, reported = await until(events, lambda kind, value: kind == "permission")
+                _kind, reported = await until(events, lambda kind, value: kind == "permission")
                 assert reported["payload"]["native_request_id"] == identity
             assert owner.answers.empty()
             await owner.complete("turn-1")

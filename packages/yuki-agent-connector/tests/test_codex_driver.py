@@ -433,7 +433,7 @@ async def test_native_request_exact_original_and_cannot_answer_twice(tmp_path: P
                 )
             )
             await asyncio.wait_for(question.wait(), 2)
-            while events[-1]["kind"] != "question":
+            while events[-1]["kind"] != "question":  # noqa: ASYNC110
                 await asyncio.sleep(0.01)
             assert events[-1]["payload"]["native_request_id"] == 17
             await driver.execute(
