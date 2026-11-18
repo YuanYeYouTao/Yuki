@@ -125,55 +125,6 @@ async def test_native_failure_without_transport_error_code_remains_readable(case
     assert view["error"] == error
 
 
-async def test_session_watch_response_uses_original_question_turn_and_connection(case):
-    env, _ = await owned(case)
-    env.service = ExternalAgentService(case.db, case.tasks)
-    observation, _ = await prepare(
-        env,
-        identity="session-watch",
-        action="watch",
-        command={"id": "session-watch", "action": "watch", "observation_scope": "session"},
-        native_execution_id=None,
-        lease=case.control.lease,
-    )
-    question = event(
-        "original-question",
-        operation=observation.id,
-        kind="question",
-        execution_id="question-turn",
-        payload={"native_request_id": "7", "connection_id": "original-native-connection"},
-    )
-    question["operation_state"].pop("execution_id")
-    await env.repository.receive_events(env.device["device_id"], [question])
-    permission = (await env.repository.event_page(observation.id, 0))[0]["permission_id"]
-    sent = []
-
-    class QuestionSocket(Socket):
-        async def send_json(self, value):
-            if value["action"] == "get":
-                # Reconnect reads the unconfirmed original watch back by its own ID only.
-                assert value["arguments"] == {"operation_id": observation.id}
-                connection.respond({"id": value["id"], "result": {"status": "not_found"}})
-                return
-            sent.append(value)
-            assert value["execution_id"] == "question-turn"
-            assert value["arguments"]["connection_id"] == "original-native-connection"
-            connection.respond(
-                {"id": value["id"], "result": {"status": "responded", "pending": False}}
-            )
-
-    connection = DeviceConnection(env.device["device_id"], QuestionSocket())
-    await connect(env, connection)
-    await env.service.execute(
-        {"action": "respond", "operation_id": observation.id, "permission_id": permission},
-        "answer-original-question",
-        env.source,
-    )
-    await env.service.drain()
-    assert len(sent) == 1
-    assert (await env.repository.operation(observation.id, env.actor)).native_execution_id is None
-
-
 @pytest.mark.parametrize("cleanup", [False, True])
 @pytest.mark.parametrize("device_online", [False, True])
 async def test_native_offline_detach_keeps_real_device_receipt_boundary(
@@ -232,7 +183,7 @@ async def test_native_offline_detach_keeps_real_device_receipt_boundary(
         )
         assert not connection.instances
         result = await env.service.execute(
-            {"action": "prompt", "operation_id": observation.id, "prompt": "original"},
+            {"action": "prompt", "session_id": observation.session_id, "prompt": "original"},
             "unavailable-prompt",
             env.source,
         )

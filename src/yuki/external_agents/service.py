@@ -649,6 +649,13 @@ class ExternalAgentService:
                 "generation": control.lease.generation,
             }
         owned = await self._operation_target(args, actor)
+        if owned is not None and owned.action == "watch" and action != "detach":
+            # Observation only looks (D6): no input, no answer (not even deny), no control.
+            raise ExternalAgentArgumentError(
+                "observe_only",
+                "这是观察关系：只看不答，不发送输入、不回答或拒绝权限、不发原生控制；"
+                "等待需由用户在本机终端处理。停止观察用 detach。本次未派发。",
+            )
         execution = (
             await self.repository.native_execution(args["execution_id"], actor)
             if isinstance(args.get("execution_id"), str)
