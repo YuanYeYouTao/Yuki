@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy import select
-from tests.unit.test_external_agent_repository import connect, event, prepare
+from tests.unit.test_external_agent_repository import connect, event, prepare, receipt
 from tests.unit.test_external_agent_repository import native as native
 from tests.unit.test_external_agent_work import case as case
 from tests.unit.test_external_agent_writer_contract import owned
@@ -140,28 +140,25 @@ async def test_native_offline_detach_keeps_real_device_receipt_boundary(
         native_execution_id=None,
         lease=case.control.lease,
     )
-    sent = []
+    sent, receipts = [], []
 
     class DetachSocket(Socket):
         async def send_json(self, value):
-            if value["action"] == "get":
-                assert value["arguments"] == {"operation_id": observation.id}
-                connection.respond({"id": value["id"], "result": {"status": "not_found"}})
-                return
+            # Protocol 5: connecting reads nothing back; only the detach is written.
             sent.append(value)
             assert value["action"] == "detach"
             assert value["arguments"]["operation_id"] == observation.id
-            connection.respond(
-                {
-                    "id": value["id"],
-                    "result": {
+            receipts.append(
+                receipt(
+                    value,
+                    {
                         "status": "detached",
                         "pending": False,
                         "detached": True,
                         "admitted": True,
                         "executed": True,
                     },
-                }
+                )
             )
 
     connection = DeviceConnection(env.device["device_id"], DetachSocket())
@@ -170,7 +167,7 @@ async def test_native_offline_detach_keeps_real_device_receipt_boundary(
             env.device["device_id"],
             connection,
             {
-                "protocol_version": 4,
+                "protocol_version": 5,
                 "instances": [
                     {
                         "id": "profile",
@@ -190,15 +187,22 @@ async def test_native_offline_detach_keeps_real_device_receipt_boundary(
         assert result["error"] == "device_offline" and result["executed"] is False
         assert not sent
     if cleanup:
-        result = (await env.service.cleanup_tasks([observation.id], "cleanup-original"))[0]
+        [control] = await env.service.cleanup_tasks([observation.id], "cleanup-original")
+        if device_online:
+            # Registered before it is written; its receipt event settles the target.
+            assert control["operation_id"] == f"cleanup-original:{observation.id}:detach"
+            assert control["pending"] is True
+            assert (await env.repository.operation(observation.id, env.actor)).detached_at is None
     else:
         await env.service.execute(
             {"action": "detach", "operation_id": observation.id}, "detach-original", env.source
         )
-        await env.service.drain()
-        result = await env.service.execute(
-            {"action": "get", "operation_id": "detach-original"}, "read-detach", env.source
-        )
+        control = {"operation_id": "detach-original"}
+    await env.service.drain()
+    await env.service.receive_events(env.device["device_id"], receipts)
+    result = await env.service.execute(
+        {"action": "get", "operation_id": control["operation_id"]}, "read-detach", env.source
+    )
     original = await env.repository.operation(observation.id, env.actor)
     # Source cleanup still needs the device; an explicit detach ends the Work
     # relationship without it and says so, never claiming a native detach.
@@ -211,8 +215,8 @@ async def test_native_offline_detach_keeps_real_device_receipt_boundary(
     else:
         assert result["status"] == "released" and result["released_without_device"] is True
         assert result["executed"] is False
-        receipt = json.loads(original.result_json)
-        assert receipt["native_status"] == "unknown" and receipt["admitted"] is False
+        released = json.loads(original.result_json)
+        assert released["native_status"] == "unknown" and released["admitted"] is False
 
 
 async def test_get_persists_unknown_snapshot_instead_of_showing_old_running(native):

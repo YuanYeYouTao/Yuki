@@ -5,7 +5,13 @@ import json
 import pytest
 from sqlalchemy import event as sql_events
 from sqlalchemy import func, select
-from tests.unit.test_external_agent_repository import connect, event, prepare, register_device
+from tests.unit.test_external_agent_repository import (
+    connect,
+    event,
+    prepare,
+    receipt,
+    register_device,
+)
 from tests.unit.test_external_agent_repository import native as native_fixture
 from tests.unit.test_external_agent_work import case as work_case
 
@@ -153,11 +159,12 @@ async def test_detach_ends_work_relationship_without_claiming_native_success(
                     "admitted": True,
                     "detached": True,
                 }
-            connection.respond({"id": command["id"], "result": result})
+            receipts.append(receipt(command, result))
 
         async def close(self, code=1000, reason=None):
             pass
 
+    receipts = []
     connection = DeviceConnection(env.device["device_id"], Socket())
     await connect(env, connection)
     source = {"actor_person_id": env.actor}
@@ -166,8 +173,10 @@ async def test_detach_ends_work_relationship_without_claiming_native_success(
         f"original-{action}",
         source,
     )
-    # The native receipt (turn or queue item) is recorded after the tool returned.
+    # The native receipt (turn or queue item) arrives as an event after the tool returned.
     await env.service.drain()
+    await env.service.receive_events(env.device["device_id"], receipts)
+    receipts.clear()
     owner = case.control.current["id"]
     repository, lease = case.control.repository, case.control.lease
     effect_key = f"original-{action}-effect"
@@ -209,6 +218,7 @@ async def test_detach_ends_work_relationship_without_claiming_native_success(
         {"action": "detach", "operation_id": original["operation_id"]}, f"detach-{action}", source
     )
     await env.service.drain()
+    await env.service.receive_events(env.device["device_id"], receipts)
     assert not await case.control.repository.has_owned_execution(case.control.lease, owner)
     result = await env.service.execute(
         {"action": "get", "operation_id": original["operation_id"]},
@@ -222,12 +232,12 @@ async def test_detach_ends_work_relationship_without_claiming_native_success(
     assert [command["action"] for command in commands] == [action, "detach"]
     await case.control.reconcile_completed_children()
     async with database.read_session() as session:
-        receipt = json.loads(
+        effect_receipt = json.loads(
             await session.scalar(
                 select(effects.c.receipt_json).where(effects.c.effect_key == effect_key)
             )
         )
-    outcome = receipt["outcome"]
+    outcome = effect_receipt["outcome"]
     assert outcome["status"] == outcome["operation_status"] == "detached"
     assert outcome["native_status"] == native_status and outcome["native_pending"] is True
     assert outcome["pending"] is False and execution_finished(outcome)
@@ -266,17 +276,6 @@ async def test_unavailable_hello_keeps_failure_fact_and_routes_original_control(
     class Socket:
         async def send_json(self, command):
             commands.append(command)
-            connection.respond(
-                {
-                    "id": command["id"],
-                    "error": {
-                        "code": "instance_unavailable",
-                        "message": "The original native owner is unavailable",
-                        "admitted": False,
-                        "executed": False,
-                    },
-                }
-            )
 
         async def close(self, code=1000, reason=None):
             pass
@@ -286,7 +285,7 @@ async def test_unavailable_hello_keeps_failure_fact_and_routes_original_control(
         native.device["device_id"],
         connection,
         {
-            "protocol_version": 4,
+            "protocol_version": 5,
             "instances": [
                 {
                     "id": "profile",
@@ -312,12 +311,8 @@ async def test_unavailable_hello_keeps_failure_fact_and_routes_original_control(
     )
     assert result["error"] == "device_offline" and result["executed"] is False
     await native.service.drain()
-    # Reconnect may read the unconfirmed original back by its own ID; nothing else.
-    assert all(
-        command["action"] == "get" and command["arguments"] == {"operation_id": original.id}
-        for command in commands
-    )
-    commands.clear()
+    # Protocol 5: connecting reads nothing back; the original stays unknown.
+    assert commands == []
     with pytest.raises(ValueError, match="external_agent_not_found"):
         await native.repository.operation("not-dispatched-to-missing-driver", native.actor)
     await native.service.execute(
@@ -326,6 +321,20 @@ async def test_unavailable_hello_keeps_failure_fact_and_routes_original_control(
         native.source,
     )
     await native.service.drain()
+    await native.service.receive_events(
+        native.device["device_id"],
+        [
+            receipt(
+                commands[0],
+                error={
+                    "code": "instance_unavailable",
+                    "message": "The original native owner is unavailable",
+                    "admitted": False,
+                    "executed": False,
+                },
+            )
+        ],
+    )
     result = await native.service.execute(
         {"action": "get", "operation_id": "original-owner-control"}, "read-control", native.source
     )
@@ -377,11 +386,12 @@ async def test_exact_queue_cancel_settles_but_submitted_interrupt_waits_for_nati
                 else:
                     assert command["execution_id"] == "native-turn"
                 result = {"status": cancel_status, "pending": False, "admitted": True}
-            connection.respond({"id": command["id"], "result": result})
+            receipts.append(receipt(command, result))
 
         async def close(self, code=1000, reason=None):
             pass
 
+    receipts = []
     connection = DeviceConnection(env.device["device_id"], Socket())
     await connect(env, connection)
     source = {"actor_person_id": env.actor}
@@ -391,12 +401,15 @@ async def test_exact_queue_cancel_settles_but_submitted_interrupt_waits_for_nati
         source,
     )
     await env.service.drain()
+    await env.service.receive_events(env.device["device_id"], receipts)
+    receipts.clear()
     await env.service.execute(
         {"action": "cancel", "operation_id": original["operation_id"]},
         f"cancel-{action}",
         source,
     )
     await env.service.drain()
+    await env.service.receive_events(env.device["device_id"], receipts)
     owner = case.control.current["id"]
     async with database.read_session() as session:
         task = await session.get(SandboxTaskRunModel, original["operation_id"])

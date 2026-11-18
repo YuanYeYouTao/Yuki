@@ -116,13 +116,29 @@ async def connect(env, connection, *, profiles=("profile",)):
         env.device["device_id"],
         connection,
         {
-            "protocol_version": 4,
+            "protocol_version": 5,
             "instances": [
                 {"id": local_id, "driver": "codex", "capabilities": CODEX_CAPABILITIES}
                 for local_id in profiles
             ],
         },
     )
+
+
+def receipt(command, result=None, *, error=None):
+    """Device protocol 5: a mutating command is answered by a retransmittable receipt event."""
+    return {
+        "type": "event",
+        "event_id": str(uuid4()),
+        "instance_id": command["instance_id"],
+        "kind": "receipt",
+        "operation_id": command["id"],
+        "payload": {
+            "result": result
+            if error is None
+            else {"error": error, "executed": False, "pending": False}
+        },
+    }
 
 
 def event(identity="event-one", *, operation="original-operation", **changes):
@@ -411,7 +427,7 @@ async def test_connector_cannot_mix_another_credential_with_its_original_device_
         await native.service.connect(
             native.device["device_id"],
             connection,
-            {"protocol_version": 4, "device_id": str(uuid4()), "instances": []},
+            {"protocol_version": 5, "device_id": str(uuid4()), "instances": []},
         )
     assert not native.service.connections.online(native.device["device_id"])
 
@@ -511,9 +527,6 @@ async def test_permission_uses_internal_event_id_and_resolves_exact_native_quest
     class Socket:
         async def send_json(self, command):
             commands.append(command)
-            connection.respond(
-                {"id": command["id"], "result": {"pending": False, "status": "responded"}}
-            )
 
         async def close(self, code=1000, reason=None):
             pass
@@ -546,6 +559,14 @@ async def test_permission_uses_internal_event_id_and_resolves_exact_native_quest
     assert commands[0]["arguments"]["permission_id"] == "native-question"
     assert commands[0]["arguments"]["native_request_id"] == "native-question"
     assert result["run_id"] is None
+    await native.service.receive_events(
+        native.device["device_id"],
+        [receipt(commands[0], {"pending": False, "status": "responded"})],
+    )
+    answered = await native.service.execute(
+        {"action": "get", "operation_id": result["operation_id"]}, "read-answer", native.source
+    )
+    assert answered["status"] == "responded" and answered["pending"] is False
     replay = await native.service.execute(
         {
             "action": "respond",
@@ -638,7 +659,8 @@ async def test_dispatch_disconnect_keeps_original_operation_unknown_without_new_
     class Socket:
         async def send_json(self, command):
             commands.append(command)
-            connection.disconnected()
+            # The socket drops during the write: delivery is unknown, never resent.
+            raise ConnectionResetError("device_disconnected")
 
         async def close(self, code=1000, reason=None):
             pass
@@ -743,11 +765,12 @@ async def test_detach_settles_only_supervision_and_does_not_cancel_native(
                         "error": {"code": "request_not_found"},
                     }
                 )
-            connection.respond({"id": command["id"], "result": result})
+            receipts.append(receipt(command, result))
 
         async def close(self, code=1000, reason=None):
             pass
 
+    receipts = []
     connection = DeviceConnection(env.device["device_id"], Socket())
     await connect(env, connection)
     source = {"actor_person_id": env.actor}
@@ -755,10 +778,14 @@ async def test_detach_settles_only_supervision_and_does_not_cancel_native(
         {"action": "watch", "session_id": env.session}, "observe-existing", source
     )
     assert watching["ownership"] == "observe" and watching["pending"]
+    await env.service.drain()
+    await env.service.receive_events(env.device["device_id"], receipts)
+    receipts.clear()
     await env.service.execute(
         {"action": "detach", "operation_id": watching["operation_id"]}, "end-supervision", source
     )
     await env.service.drain()
+    await env.service.receive_events(env.device["device_id"], receipts)
     original = await env.repository.operation(watching["operation_id"], env.actor)
     assert (original.detached_at is not None) is detach_succeeds
     async with database.read_session() as session:
@@ -845,9 +872,6 @@ async def test_revocation_during_intent_preparation_cannot_dispatch_on_an_old_co
     class Socket:
         async def send_json(self, command):
             commands.append(command)
-            connection.respond(
-                {"id": command["id"], "result": {"admitted": True, "status": "running"}}
-            )
 
         async def close(self, code=1000, reason=None):
             pass

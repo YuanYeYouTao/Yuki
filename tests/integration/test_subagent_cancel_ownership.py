@@ -12,6 +12,7 @@ from tests.integration.test_external_agent_bridge import (
     NativeComputer,
     accepted_work,
     directory,
+    settled,
 )
 from tests.integration.test_external_agent_bridge import bridge as bridge
 from tests.integration.test_local_device_transport import actual_connector, python_command
@@ -71,6 +72,8 @@ async def test_native_retirement_is_not_duplicated_by_shell_cancel_scan(bridge, 
         assert [command["action"] for command in computer.commands] == ["list", "prompt"]
         await bridge.service.reconcile()
         await asyncio.gather(*bridge.service._retiring.values())
+        # The registered cleanup control is written in the background (protocol 5).
+        await settled(bridge)
         actions = [command["action"] for command in computer.commands]
         if revoked:
             assert actions == ["list", "prompt"]

@@ -36,7 +36,7 @@ from yuki.runtime.work_schema_v1 import work
 from yuki.sandbox.db_models import SandboxTaskRunModel
 from yuki.sandbox.task_repository import SandboxTaskRepository
 
-CONNECTOR_PROTOCOL = 4
+CONNECTOR_PROTOCOL = 5
 # Actions that create a Work-owned run. Their device RPC belongs to this service,
 # never to the activation: the run, events and completion carry the outcome.
 _SUBMITTED = frozenset({"prompt", "queue", "watch"})
@@ -125,9 +125,6 @@ class ExternalAgentService:
             return
         self.database.commit_hints.publish()
         await self.repository.connection_event(device_id, connection.id, True)
-        # Answers lost with the previous socket are read back by original ID only.
-        for identity, local_id in await self.repository.unconfirmed(device_id):
-            self._query_original(identity, connection, local_id)
 
     async def disconnect(self, connection: DeviceConnection) -> None:
         if self.connections.detach(connection):
@@ -227,17 +224,17 @@ class ExternalAgentService:
                 await self.repository.control_settled(identity)
             return
         try:
-            result = await connection.request(command)
+            # Protocol 5: the device's answer is a retransmitted receipt event settled
+            # in receive_events before its ACK, never an RPC reply awaited here.
+            await connection.send(command)
         except Exception as error:
-            # Whatever ended the socket call (offline, a closed or replaced socket), delivery
-            # is unknown. The original ID is queried after reconnect; it is never resent.
+            # Whatever ended the write, delivery is unknown; the original ID stays
+            # queryable and is never resent.
             logger.info(
                 "external_agent_dispatch_unconfirmed operation=%s error=%s",
                 identity,
                 type(error).__name__,
             )
-            return
-        await self._settle(identity, result)
 
     async def _settle(self, identity: str, result: dict[str, Any]) -> None:
         """Record one device answer and everything it settles, idempotently.
@@ -1146,7 +1143,30 @@ class ExternalAgentService:
                 )
 
     async def receive_events(self, device_id: str, events: list[dict[str, Any]]) -> None:
-        await self.repository.receive_events(device_id, events)
+        """Commit native facts and receipts; the caller ACKs only after this returns."""
+        facts = [event for event in events if event.get("kind") != "receipt"]
+        if facts:
+            await self.repository.receive_events(device_id, facts)
+        for receipt in (event for event in events if event.get("kind") == "receipt"):
+            identity = receipt.get("operation_id")
+            result = (receipt.get("payload") or {}).get("result")
+            if not isinstance(identity, str) or not isinstance(result, dict):
+                raise ValueError("invalid_external_agent_receipt")
+            async with self.database.read_session() as reader:
+                operation = await reader.get(AgentOperationModel, identity)
+                instance = (
+                    await reader.get(AgentInstanceModel, operation.instance_id)
+                    if operation is not None
+                    else None
+                )
+            if (
+                instance is None
+                or instance.device_id != device_id
+                or instance.local_id != receipt.get("instance_id")
+            ):
+                # A device settles only its own original operations.
+                raise ValueError("external_agent_receipt_mismatch")
+            await self._settle(identity, result)
 
     async def cleanup_tasks(
         self, tasks: Any, operation_id: str, *, purge: bool = False
@@ -1184,30 +1204,46 @@ class ExternalAgentService:
             except (DeviceOffline, ClientError):
                 results.append({"operation_id": row.id, "status": "unknown", "pending": True})
                 continue
-            try:
-                result = await connection.request(
-                    {
-                        "type": "command",
-                        "id": f"{operation_id}:{row.id}:{action}",
-                        "action": action,
-                        "instance_id": instance.local_id,
-                        "execution_id": row.native_execution_id,
-                        "session_id": resource.native_id if resource is not None else None,
-                        "arguments": {
-                            "operation_id": row.id,
-                            **(
-                                {"queued_submission_id": current["queued_submission_id"]}
-                                if "queued_submission_id" in current
-                                else {}
-                            ),
-                        },
-                    }
+            identity = f"{operation_id}:{row.id}:{action}"[:256]
+            command = {
+                "type": "command",
+                "id": identity,
+                "action": action,
+                "instance_id": instance.local_id,
+                "execution_id": row.native_execution_id,
+                "session_id": resource.native_id if resource is not None else None,
+                "arguments": {
+                    "operation_id": row.id,
+                    **(
+                        {"queued_submission_id": current["queued_submission_id"]}
+                        if "queued_submission_id" in current
+                        else {}
+                    ),
+                },
+            }
+            # Registered first, then written: the receipt event settles the target.
+            source = {
+                key: value
+                for key, value in json.loads(row.source_json).items()
+                if key not in {"work_id", "generation"}
+            }
+            control, created = await self.repository.prepare(
+                identity=identity,
+                instance_id=row.instance_id,
+                actor=row.actor_person_id,
+                action=action,
+                arguments={"action": action, "operation_id": row.id, "source_cleanup": True},
+                command=command,
+                source={**source, "source_cleanup": operation_id},
+                session_id=row.session_id,
+                native_execution_id=None,
+                lease=None,
+            )
+            if created:
+                self._background(
+                    self._dispatches, identity, self._dispatch(identity, connection, command)
                 )
-            except (DeviceOffline, OSError):
-                results.append({"operation_id": row.id, "status": "unknown", "pending": True})
-                continue
-            results.append({"operation_id": row.id, **result})
-            await self._control_result(row, action, result)
+            results.append(await self._view(control))
         return results
 
     async def _retire_legacy(self, task: Any, operation_id: str, *, purge: bool) -> dict[str, Any]:

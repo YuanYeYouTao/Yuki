@@ -41,8 +41,15 @@ class BridgeServer(uvicorn.Server):
         self.ready.set()
 
 
+MUTATIONS = frozenset({"prompt", "queue", "watch", "steer", "respond", "cancel", "detach"})
+
+
 class NativeComputer:
-    """An explicit native protocol peer; no model or QQ effects are involved."""
+    """An explicit native protocol peer; no model or QQ effects are involved.
+
+    Device protocol 5: answers to mutating commands are retransmittable receipt
+    events (ACKed by the server after settlement), never RPC responses.
+    """
 
     local_id = "codex-profile-one"
     native_session = "thread-from-native-store"
@@ -77,6 +84,10 @@ class NativeComputer:
         self.catalog_ready = asyncio.Event()
         self.sequence = 0
         self.sent_events = {}
+        self.receipts = {}
+        self.receipt_acks = asyncio.Queue()
+        self.acked_receipts = set()
+        bridge.__dict__.setdefault("peers", []).append(self)
 
     async def start(self):
         self.socket = await connect(
@@ -89,7 +100,7 @@ class NativeComputer:
             json.dumps(
                 {
                     "type": "hello",
-                    "protocol_version": 4,
+                    "protocol_version": 5,
                     "instances": [
                         {
                             "id": self.local_id,
@@ -118,7 +129,11 @@ class NativeComputer:
                     self.catalog_ready.set()
                     continue
                 if message["type"] == "ack":
-                    self.acknowledged.put_nowait(message["event_id"])
+                    if message["event_id"] in self.receipts:
+                        self.acked_receipts.add(message["event_id"])
+                        self.receipt_acks.put_nowait(message["event_id"])
+                    else:
+                        self.acknowledged.put_nowait(message["event_id"])
                     continue
                 if message["type"] != "command":
                     continue
@@ -129,11 +144,7 @@ class NativeComputer:
                     continue
                 if action in self.fail:
                     # The connector's protocol-level refusal of this command.
-                    await self.socket.send(
-                        json.dumps(
-                            {"type": "response", "id": message["id"], "error": self.fail[action]}
-                        )
-                    )
+                    await self.reply(message, None, error={**self.fail[action], "admitted": False})
                     continue
                 if self.drop_next == action:
                     self.drop_next = None
@@ -188,20 +199,36 @@ class NativeComputer:
                     self.results[message["id"]] = result
                 else:
                     result = {"status": "accepted", "pending": True, "admitted": True}
-                await self.socket.send(
-                    json.dumps(
-                        {
-                            "type": "response",
-                            "id": message["id"],
-                            "result": result,
-                        }
-                    )
-                )
+                await self.reply(message, result)
         except ConnectionClosed:
             pass
 
+    async def reply(self, message, result, *, error=None):
+        if message["action"] not in MUTATIONS or message.get("resource"):
+            frame = {"type": "response", "id": message["id"]}
+            frame.update({"error": error} if error is not None else {"result": result})
+            await self.socket.send(json.dumps(frame))
+            return
+        receipt = {
+            "type": "event",
+            "event_id": str(uuid4()),
+            "instance_id": message["instance_id"],
+            "kind": "receipt",
+            "operation_id": message["id"],
+            "payload": {
+                "result": result
+                if error is None
+                else {"error": error, "executed": False, "pending": False}
+            },
+        }
+        self.receipts[receipt["event_id"]] = receipt
+        await self.socket.send(json.dumps(receipt))
+
     async def answer(self, command_id, result):
-        await self.socket.send(json.dumps({"type": "response", "id": command_id, "result": result}))
+        held = self.held.get(command_id) or next(
+            item for item in self.commands if item["id"] == command_id
+        )
+        await self.reply(held, result)
 
     async def event(self, operation_id, kind, payload, *, event_id=None):
         self.sequence += 1
@@ -1244,8 +1271,30 @@ async def test_event_waiting_for_real_sqlite_commit_does_not_block_rpc_responses
 
 
 async def settled(bridge):
-    """Wait for this process's background device work; tests only observe its facts."""
-    await bridge.service.drain()
+    """Wait for this process's background device work and the receipts it caused.
+
+    Protocol 5: a written command is answered by a receipt event, which the server
+    ACKs after settling it; settled means every receipt sent so far is ACKed.
+    """
+    async with asyncio.timeout(5):
+        while True:
+            await bridge.service.drain()
+            peers = [
+                peer
+                for peer in getattr(bridge, "peers", ())
+                if peer.socket is not None and set(peer.receipts) - peer.acked_receipts
+            ]
+            if not peers and not any(
+                not task.done() for task in bridge.service._dispatches.values()
+            ):
+                await asyncio.sleep(0.02)
+                if not any(
+                    peer.socket is not None and set(peer.receipts) - peer.acked_receipts
+                    for peer in getattr(bridge, "peers", ())
+                ):
+                    return
+                continue
+            await asyncio.sleep(0.01)
 
 
 async def until(predicate):
@@ -1261,10 +1310,14 @@ async def receipt(bridge, operation_id):
         return json.loads(row.result_json) if row.result_json else None
 
 
-async def test_unanswered_prompt_never_holds_the_activation_and_reconnect_queries_original_id(
+async def test_unanswered_prompt_never_holds_the_activation_and_the_journal_receipt_settles_it(
     bridge,
 ):
-    """F1/F3/F4/F6/F7: a silent native owner cannot occupy the Work activation."""
+    """F1/F3/F4/F6/F7: a silent native owner cannot occupy the Work activation.
+
+    Protocol 5: after a reconnect the device's journal retransmits the original
+    receipt event; the server never reads the operation back on its own.
+    """
     computer = await NativeComputer(bridge).start()
     try:
         instance, session_id = await directory(bridge)
@@ -1297,8 +1350,6 @@ async def test_unanswered_prompt_never_holds_the_activation_and_reconnect_querie
                 again = await bridge.service.execute(arguments, operation_id, bridge.source)
             assert queried["operation_id"] == operation_id and queried["pending"] is True
             assert again["operation_id"] == operation_id
-            # The original command is still in flight; no query races it for the receipt.
-            assert [item["action"] for item in computer.commands].count("get") == 0
 
             await computer.close()
             await settled(bridge)
@@ -1312,7 +1363,11 @@ async def test_unanswered_prompt_never_holds_the_activation_and_reconnect_querie
                 "admitted": True,
                 "state_sequence": 1,
             }
+            gets = [item for item in computer.commands if item["action"] == "get"]
             await computer.start()
+            # Reconnecting reads nothing back on its own; the journal retransmits.
+            assert [item for item in computer.commands if item["action"] == "get"] == gets
+            await computer.answer(operation_id, computer.results[operation_id])
 
             async def confirmed():
                 return (await receipt(bridge, operation_id) or {}).get("admitted") is True
@@ -1320,8 +1375,7 @@ async def test_unanswered_prompt_never_holds_the_activation_and_reconnect_querie
             await until(confirmed)
             await settled(bridge)
             assert [item["action"] for item in computer.commands].count("prompt") == 1
-            queries = [item for item in computer.commands if item["action"] == "get"]
-            assert queries[-1]["arguments"] == {"operation_id": operation_id}
+            assert [item for item in computer.commands if item["action"] == "get"] == gets
     finally:
         await computer.close()
 
@@ -1344,6 +1398,10 @@ async def test_device_without_the_original_record_is_never_given_a_second_prompt
             await settled(bridge)
             computer.not_found = {operation_id}
             await computer.start()
+            # Only an explicit query reads the original back (protocol 5).
+            await bridge.service.execute(
+                {"action": "get", "operation_id": operation_id}, str(uuid4()), bridge.source
+            )
 
             async def reconciled():
                 return any(
@@ -1387,6 +1445,10 @@ async def test_reconciliation_answer_belongs_to_the_connection_that_gave_it(brid
             await settled(bridge)
             computer.not_found = {operation_id}
             await computer.start()
+            # Only an explicit query reads the original back (protocol 5).
+            await bridge.service.execute(
+                {"action": "get", "operation_id": operation_id}, str(uuid4()), bridge.source
+            )
 
             async def reconciled():
                 return any(
@@ -1414,70 +1476,6 @@ async def test_reconciliation_answer_belongs_to_the_connection_that_gave_it(brid
         await computer.close()
 
 
-async def test_reconnect_reads_back_only_controls_whose_answer_still_matters(bridge):
-    """F9: a control is read back while its target is unsettled, not forever."""
-    computer = await NativeComputer(bridge).start()
-    try:
-        instance, session_id = await directory(bridge)
-        targets = []
-        async with accepted_work(bridge):
-            for prompt in ("Finishes before the cancel answer", "Still running"):
-                operation_id = str(uuid4())
-                await bridge.service.execute(
-                    {
-                        "action": "prompt",
-                        "instance_id": instance,
-                        "session_id": session_id,
-                        "prompt": prompt,
-                    },
-                    operation_id,
-                    bridge.source,
-                )
-                targets.append(operation_id)
-            await settled(bridge)
-        finished, running = targets
-        computer.hold = {"cancel"}
-        controls = {}
-        for target in targets:
-            # Outside any Work: no initiating Work waits for these answers.
-            controls[target] = str(uuid4())
-            await bridge.service.execute(
-                {"action": "cancel", "operation_id": target}, controls[target], bridge.source
-            )
-
-        async def held():
-            return set(controls.values()) <= set(computer.held)
-
-        await until(held)
-        await computer.event(finished, "completed", {"status": "completed"})
-        assert (await receipt(bridge, finished))["pending"] is False
-        await computer.close()
-        await settled(bridge)
-        computer.hold = set()
-        computer.commands.clear()
-        await computer.start()
-
-        async def read_back():
-            return any(
-                item["action"] == "get"
-                and item["arguments"].get("operation_id") == controls[running]
-                for item in computer.commands
-            )
-
-        await until(read_back)
-        await settled(bridge)
-        queried = {
-            item["arguments"].get("operation_id")
-            for item in computer.commands
-            if item["action"] == "get"
-        }
-        assert controls[finished] not in queried
-        # Nothing was resent: no second cancel reached the device.
-        assert [item["action"] for item in computer.commands].count("cancel") == 0
-    finally:
-        await computer.close()
-
-
 async def control_inputs(bridge, work_id, control_id):
     async with bridge.database.read_session() as reader:
         rows = (
@@ -1489,74 +1487,6 @@ async def control_inputs(bridge, work_id, control_id):
             )
         ).scalars()
         return [json.loads(json.loads(row)["text"]) for row in rows]
-
-
-async def test_control_still_running_on_the_device_is_read_back_until_it_has_an_answer(bridge):
-    """F10: the device journal's placeholder for a begun control is not its answer."""
-    computer = await NativeComputer(bridge).start()
-    try:
-        instance, session_id = await directory(bridge)
-        async with accepted_work(bridge) as control:
-            target = str(uuid4())
-            await bridge.service.execute(
-                {
-                    "action": "prompt",
-                    "instance_id": instance,
-                    "session_id": session_id,
-                    "prompt": "Running when the cancel arrives",
-                },
-                target,
-                bridge.source,
-            )
-            await settled(bridge)
-            computer.hold = {"cancel"}
-            cancel = str(uuid4())
-            await bridge.service.execute(
-                {"action": "cancel", "operation_id": target}, cancel, bridge.source
-            )
-
-            async def held():
-                return cancel in computer.held
-
-            await until(held)
-            await computer.close()
-            await settled(bridge)
-            computer.hold = set()
-            computer.results[cancel] = {
-                "status": "unknown",
-                "reason": "original_dispatch_not_confirmed",
-                "state_sequence": 0,
-            }
-            await computer.start()
-
-            async def queried():
-                return any(
-                    item["action"] == "get" and item["arguments"].get("operation_id") == cancel
-                    for item in computer.commands
-                )
-
-            await until(queried)
-            await settled(bridge)
-            assert await receipt(bridge, cancel) is None
-            assert await control_inputs(bridge, control.current["id"], cancel) == []
-            await computer.close()
-            await settled(bridge)
-            computer.commands.clear()
-            computer.results[cancel] = {
-                "status": "accepted",
-                "pending": True,
-                "admitted": True,
-                "cancel_requested": True,
-            }
-            await computer.start()
-            await until(queried)
-            await settled(bridge)
-            assert (await receipt(bridge, cancel))["cancel_requested"] is True
-            [told] = await control_inputs(bridge, control.current["id"], cancel)
-            assert told["status"] == "accepted" and told["cancel_requested"] is True
-            assert [item["action"] for item in computer.commands].count("cancel") == 0
-    finally:
-        await computer.close()
 
 
 async def test_control_whose_source_ended_before_writing_still_tells_its_work(bridge, monkeypatch):

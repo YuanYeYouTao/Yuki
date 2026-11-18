@@ -13,7 +13,6 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 from sqlalchemy import and_, func, or_, select, text, update
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import aliased
 
 from yuki.client_api.db_models import ClientDeviceModel
 from yuki.client_api.errors import ClientError
@@ -1096,59 +1095,6 @@ class AgentRepository:
                 )
             )
             return owner is not None
-
-    async def unconfirmed(self, device_id: str) -> list[tuple[str, str]]:
-        """Operations whose device answer was never recorded and still matters.
-
-        Run-bearing operations of live Work; controls while their target is still
-        unsettled or their initiating Work is live. Once neither holds, the answer
-        changes nothing and the control keeps its unknown receipt. Each is only read
-        back by its original ID, never resent.
-        """
-        target = aliased(AgentOperationModel)
-        live_work = work.c.state.not_in(TERMINAL)
-        async with self.database.read_session() as reader:
-            rows = await reader.execute(
-                select(AgentOperationModel.id, AgentInstanceModel.local_id)
-                .join(AgentInstanceModel, AgentInstanceModel.id == AgentOperationModel.instance_id)
-                .outerjoin(work, work.c.id == AgentOperationModel.work_id)
-                .outerjoin(
-                    target,
-                    target.id
-                    == func.json_extract(
-                        AgentOperationModel.command_json, "$.arguments.operation_id"
-                    ),
-                )
-                .where(
-                    AgentInstanceModel.device_id == device_id,
-                    AgentOperationModel.result_json.is_(None),
-                    AgentOperationModel.detached_at.is_(None),
-                    or_(
-                        and_(AgentOperationModel.run_id.is_not(None), live_work),
-                        and_(
-                            AgentOperationModel.action.in_(
-                                ("steer", "respond", "cancel", "detach")
-                            ),
-                            or_(
-                                live_work,
-                                and_(
-                                    target.id.is_not(None),
-                                    target.detached_at.is_(None),
-                                    or_(
-                                        target.result_json.is_(None),
-                                        func.coalesce(
-                                            func.json_extract(target.result_json, "$.pending"), 1
-                                        )
-                                        != 0,
-                                    ),
-                                ),
-                            ),
-                        ),
-                    ),
-                )
-                .order_by(AgentOperationModel.created_at)
-            )
-            return [(identity, local_id) for identity, local_id in rows.all()]
 
     async def control_settled(self, identity: str) -> None:
         """Tell the Work that issued a control what it settled (private input)."""
