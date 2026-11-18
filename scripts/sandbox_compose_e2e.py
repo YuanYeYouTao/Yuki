@@ -139,6 +139,23 @@ class Deployment:
         print(self.compose("logs", "--tail", "60", "manager", check=False))
         raise Failure("the Manager did not become ready")
 
+    def wait_mode(self, mode: str, seconds: float = 1800) -> dict[str, Any]:
+        """The mode a profile change reaches once its packages are installed.
+
+        The install runs in the background of a ready Manager, after the environment's own
+        services started (U10); the mode is read from the installed manifest afterwards.
+        """
+        deadline = time.monotonic() + seconds
+        status = self.wait_ready(seconds)
+        while time.monotonic() < deadline:
+            status = self.status()
+            if status["browser_mode"] == mode:
+                return status
+            if status["programs"].get("installed") is False:
+                raise Failure(f"installing {mode} failed: {status['programs']}")
+            time.sleep(3)
+        raise Failure(f"the environment did not reach {mode}: {status}")
+
     def wait_snapshot(self, seconds: float = 600) -> dict[str, Any]:
         deadline = time.monotonic() + seconds
         while time.monotonic() < deadline:
@@ -242,6 +259,13 @@ def computer_use(deployment: Deployment, status: dict[str, Any]) -> None:
         "computer_action", {"action": "zoom", "region": [0, 0, 678, 424], **limits}
     )
     expect(zoom.get("frame") == {"width": 1356, "height": 848}, f"zoom: {zoom}")
+    # The profile's packages are installed after the environment's services started, in the
+    # background of a ready Manager (Computer Use task book §11 U10).
+    deadline = time.monotonic() + 1800
+    probe = "dpkg-query -W -f='${Status}' xclip 2>/dev/null | grep -q 'ok installed' && echo ready"
+    while "ready" not in str(deployment.terminal(probe)["output"]):
+        expect(time.monotonic() < deadline, f"packages not installed: {deployment.status()}")
+        time.sleep(10)
     facts = deployment.terminal(
         "dpkg-query -W -f='${Package} ${Version}\\n' at-spi2-core xclip; "
         "DISPLAY=:1 xprop -root AT_SPI_BUS | cut -c1-40; "
@@ -424,9 +448,10 @@ def main() -> int:
         environment.replace("YUKI_SANDBOX_PROFILE=lite", "YUKI_SANDBOX_PROFILE=headless")
     )
     deployment.compose("up", "-d")
-    status = deployment.wait_ready(1800)
+    status = deployment.wait_mode("headless")
     expect(status["profile"] == "headless", "the profile did not change")
-    expect(status["browser_mode"] == "headless" and not status["desktop"], f"headless: {status}")
+    expect(not status["desktop"], f"headless: {status}")
+    expect(status["programs"].get("installed") is True, f"headless install: {status}")
     opened = deployment.manager(
         "browser_action", {"action": "open", "url": "data:text/html,<h1>yuki-e2e</h1>"}
     )
@@ -452,7 +477,7 @@ def main() -> int:
             environment.replace("YUKI_SANDBOX_PROFILE=headless", "YUKI_SANDBOX_PROFILE=desktop")
         )
         deployment.compose("up", "-d")
-        status = deployment.wait_ready(1800)
+        status = deployment.wait_mode("headed")
         expect(status["desktop"] and status["profile"] == "desktop", f"desktop: {status}")
         sandbox_snapshot_e2e.desktop(deployment)
         deployment.record("desktop_computer", limits=status["limits"])

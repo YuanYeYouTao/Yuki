@@ -276,3 +276,103 @@ async def test_u8_feature_packages_that_fail_to_install_keep_the_desktop(tmp_pat
         assert manager.desktop_manifest["desktop"] is True
     finally:
         await manager.close()
+
+
+# Programs after the environment's services (Computer Use task book §11 U10–U14) ------
+
+
+def with_services(manager, *states):
+    """Enabled services whose current runs are in the given job states."""
+    from uuid import uuid4
+
+    for index, state in enumerate(states):
+        run = str(uuid4())
+        with manager.db:
+            manager.db.execute(
+                "INSERT INTO jobs VALUES (?,?,?,?,?,?,?)",
+                (run, f"service:{run}", "digest", "{}", state, "{}", 0.0),
+            )
+            manager.db.execute(
+                "INSERT INTO environment_services(name,spec,enabled,run_id) VALUES (?,?,1,?)",
+                (f"service-{index}", json.dumps({"restart": "on-failure"}), run),
+            )
+
+
+async def test_u10_recover_observes_and_installs_nothing(tmp_path):
+    """The DNS service is not back yet when recover() ends: no install happens there."""
+    essentials = [{"name": name, "version": "1"} for name in MODE_PACKAGES["headed"]]
+    engine = Engine(manifest=essentials)
+    manager = manager_at(tmp_path, browser_mode="headed")
+    manager.command = engine.command
+    try:
+        await manager.observe_programs()
+        assert not [
+            call for call in engine.calls if "/opt/yuki-runtime/environment_programs.py" in call
+        ]
+        assert manager.desktop_manifest["browser_mode"] == "headed"
+    finally:
+        await manager.close()
+
+
+async def test_u11_programs_wait_for_started_services_once_per_generation(tmp_path):
+    engine = Engine(manifest=[{"name": name, "version": "1"} for name in MODE_PACKAGES["headed"]])
+    manager = manager_at(tmp_path, browser_mode="headed")
+    manager.command = engine.command
+    manager.container_id = "environment:start"
+    try:
+        with_services(manager, "queued", "failed")
+        # One service was submitted and has not started: wait for it.
+        assert not manager.programs_due()
+        with manager.db:
+            manager.db.execute("UPDATE jobs SET state='running' WHERE state='queued'")
+        assert manager.programs_due()
+        await manager.install_programs()
+        installs = [c for c in engine.calls if "/opt/yuki-runtime/environment_programs.py" in c]
+        assert len(installs) == 1 and manager.programs["installed"] is True
+        # Once per generation, whatever the outcome (U14); a new generation installs again.
+        assert not manager.programs_due()
+        manager.container_id = "environment:restart"
+        assert manager.programs_due()
+    finally:
+        await manager.close()
+
+
+async def test_u13_u14_a_changed_mode_restarts_the_desktop_and_a_failure_waits(tmp_path):
+    engine = Engine(manifest=[], install_code=100)
+    manager = manager_at(tmp_path, browser_mode="headless")
+    manager.command = engine.command
+    manager.container_id = "environment:start"
+    try:
+        await manager.observe_programs()
+        assert manager.desktop_manifest["browser_mode"] == "none"
+        await manager.install_programs()
+        assert manager.programs["installed"] is False and not manager.programs_due()
+        assert manager.desktop_manifest["browser_mode"] == "none"
+        # The next generation installs; the mode follows and the desktop service restarts.
+        engine.install_code = 0
+        manager.container_id = "environment:rebuilt"
+        manager.control = AsyncMock()
+        run = "11111111-1111-1111-1111-111111111111"
+        with manager.db:
+            manager.db.execute(
+                "INSERT INTO jobs VALUES (?,?,?,?,?,?,?)",
+                (run, "service:desktop", "digest", "{}", "running", "{}", 0.0),
+            )
+            manager.db.execute(
+                "INSERT INTO environment_services(name,spec,enabled,run_id) VALUES (?,?,1,?)",
+                ("yuki-desktop", json.dumps({"restart": "on-failure"}), run),
+            )
+        await manager.install_programs()
+        assert manager.desktop_manifest["browser_mode"] == "headless"
+        manager.control.assert_awaited_once_with(run, "cancel")
+    finally:
+        await manager.close()
+
+
+def test_u12_apt_waits_for_the_dpkg_lock():
+    """The Manager is ready while it installs: her own apt may hold the lock meanwhile."""
+    from yuki.sandbox.environment_programs import apt
+
+    for command in (apt("update", "-qq"), apt("install", "-y", "xclip")):
+        assert command[0] == "apt-get"
+        assert "DPkg::Lock::Timeout=600" in command

@@ -54,7 +54,7 @@ external_agent 已移出环境工具和 Manager 新任务路径。用户电脑�
 - 三种来源：Yuki 的 `computer(action="snapshot"|"restore")`、本人桌面端（Client API `POST /computer/snapshots`、`/computer/restore`）、Manager 每日检查。快照与还原在 Manager worker 中串行执行，期间截图与输入动作排队，新的终端执行照常入队、快照结束后派发。暂停期间已运行的命令冻结后继续，显式 `timeout_seconds` 按墙钟可能提前到期。
 - 新快照就绪后才轮换最旧的一份，保留 `YUKI_SANDBOX_SNAPSHOT_KEEP` 份（至少 1 份；`checkpoint_image` 指向的那份永不轮换）：先在与新快照就绪同一事务里记为 `rotated`（此后不再受理还原），再删完成标记、副本与镜像标签；Manager 中途结束时由恢复清理残留；创建失败（如磁盘写满）删除自己的部分产物，不动任何旧快照。正在运行的容器所基于的镜像 Docker 拒绝删除，标签留到下一次重建后由恢复清理。
 - 每日：距最新一份快照满 `YUKI_SANDBOX_SNAPSHOT_INTERVAL_HOURS`（且距上次检查也满）时检查 HOME（Manager 一侧）与 rootFS（环境内跳过所有挂载点）有没有 ctime 晚于上一份快照的条目；有变化才拍，没有只记检查时间、不占名额。本人持有控制权时推迟到交还后。没有任何快照时视为有变化，所以升级后 Manager 就绪即拍第一份。
-- 还原：写入 `environment_restores` 即接纳；停容器之前先确认快照仍为 `ready`、HOME 副本完整、镜像存在，任一不满足就记 `failed`（`snapshot_not_found`／`snapshot_incomplete`／`snapshot_image_missing`），原电脑不动。随后停止并删除原容器，`rsync --delete` 把该快照的 HOME 写回（媒体缓存与 Chromium 缓存不动），以该快照镜像经原 `recover()` 创建新环境，`apply_programs()` 按当前档位补齐软件包（不按快照档位改配置）。旧代际已启动的执行结束为 `failed`、`interrupted`、`environment_restored`（附 `snapshot_id`），完成回执照常送到原 Work，不重放；未派发的执行在新环境里启动。Manager 中途结束时 `recover()` 继续收敛同一快照，HOME 写回完成前绝不启动环境；写回本身失败（如磁盘写满）时还原记 `failed`（`restore_home_partly_written`），环境以该快照镜像重建，可以再还原一次。只有容器确实重建后还原才记 `done`；`docker inspect` 的瞬时错误不被当成容器不存在。
+- 还原：写入 `environment_restores` 即接纳；停容器之前先确认快照仍为 `ready`、HOME 副本完整、镜像存在，任一不满足就记 `failed`（`snapshot_not_found`／`snapshot_incomplete`／`snapshot_image_missing`），原电脑不动。随后停止并删除原容器，`rsync --delete` 把该快照的 HOME 写回（媒体缓存与 Chromium 缓存不动），以该快照镜像经原 `recover()` 创建新环境，按当前档位补齐软件包（不按快照档位改配置；补装时机见下文“档位”）。旧代际已启动的执行结束为 `failed`、`interrupted`、`environment_restored`（附 `snapshot_id`），完成回执照常送到原 Work，不重放；未派发的执行在新环境里启动。Manager 中途结束时 `recover()` 继续收敛同一快照，HOME 写回完成前绝不启动环境；写回本身失败（如磁盘写满）时还原记 `failed`（`restore_home_partly_written`），环境以该快照镜像重建，可以再还原一次。只有容器确实重建后还原才记 `done`；`docker inspect` 的瞬时错误不被当成容器不存在。
 - `checkpoint_image` 始终指向最新快照：容器丢失而 HOME 还在时，只从最新快照重建 rootFS，HOME 保持当前，`environment_status.recreated_from` 报告来源快照与时间点。
 - Manager 在暂停中结束：`recover()` 先 `unpause`，未完成的快照记 `failed`（`interrupted`），删除 `.partial` 目录与已打的标签。runsc 下暂停期间整环境 OOM 时，这份快照记 `failed`，旧快照不动。
 
@@ -110,7 +110,7 @@ sh install.sh --dir ~/yuki --yes --profile lite --answers model.json   # 无交�
 
 安装器按 Docker 报告的内存推荐（低于 2 GiB `lite`，2–4 GiB `headless`，更多 `desktop`），由用户选，不拦截；Desktop 本机部署默认 `desktop`。`computer`、`browser` 工具三档都声明：`lite` 返回 `browser_unavailable`，`headless` 下 `computer` 返回 `display_unavailable`。`environment_status` 报告档位、模式、运行时、安装结果与实际限额。
 
-换档：改 `.env` 的 `YUKI_SANDBOX_PROFILE`，再 `docker compose up -d`。换大时 Manager 在原 rootFS 上安装所需 Debian 包（结果写入 `programs`，失败保留原安装、下次启动重试）；换小只改模式与资源，已装软件和浏览器资料保留。正在运行的桌面服务以新运行按新模式重启。内存、swap、CPU、进程数用 `docker update` 即时生效，Docker 拒绝时原文写入 `limits_update_error`；/tmp 与 /dev/shm 只在明确重建时生效，未生效项列在 `recreate_required`。
+换档：改 `.env` 的 `YUKI_SANDBOX_PROFILE`，再 `docker compose up -d`。换大时 Manager 在原 rootFS 上安装所需 Debian 包（结果写入 `programs`，失败保留原安装、下一个代际再装）。补装不在 `recover()` 里做：`recover()` 只按已装的软件包得出档位，Manager 随即就绪；worker 在本代际（每次创建、重建、还原或 Manager 重启）的环境服务都已启动之后，在后台补装一次，因为她自己的服务里可能有 resolv.conf 指向的 DNS 服务。补装期间终端和画面照常可用，apt 等待 dpkg 锁；补装改变档位时桌面服务按新档位重启。换小只改模式与资源，已装软件和浏览器资料保留。正在运行的桌面服务以新运行按新模式重启。内存、swap、CPU、进程数用 `docker update` 即时生效，Docker 拒绝时原文写入 `limits_update_error`；/tmp 与 /dev/shm 只在明确重建时生效，未生效项列在 `recreate_required`。
 
 运行时 `YUKI_SANDBOX_RUNTIME` 在首次安装时按 Docker 是否注册了带 `--overlay2=none` 的 runsc 写成 `runsc` 或 `runc`，之后保持，不会隐式从 gVisor 换成 runc。配置 runsc 但 Docker 没有时报 `gvisor_unavailable`；runsc 缺 `--overlay2=none` 时报 `gvisor_overlay_unsupported`（否则环境内安装不进 Docker 层，检查点会丢软件）。
 

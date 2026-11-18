@@ -424,19 +424,16 @@ def headless(deployment: Deployment, earlier: dict[str, Any]) -> None:
 
     # S22: back to the lite-era snapshot; the current profile installs what it needs.
     stage.restore(earlier["lite_snapshot"]["id"])
-    status = deployment.wait_ready(1800)
+    deployment.wait_ready(1800)
+    # U10 (Computer Use task book): the install runs after the environment's own services
+    # (such as sandbox-dns) started, in the background of a ready Manager; no restart.
+    status = stage.wait(
+        lambda: (current := deployment.status())["browser_mode"] == "headless" and current,
+        1800,
+        "S22 the profile's packages were not installed after the services started",
+    )
     first_try = status["programs"]
-    if status["browser_mode"] != "headless" and not first_try.get("installed"):
-        # The install ran before an environment DNS service (sandbox-dns) was back;
-        # a failed install keeps what is there and is retried on the next Manager start.
-        stage.wait(
-            lambda: "deb.debian.org" in stage.shell("getent hosts deb.debian.org || true"),
-            120,
-            "the environment's resolver did not come back",
-        )
-        deployment.compose("restart", "manager")
-        status = deployment.wait_ready(1800)
-    expect(status["browser_mode"] == "headless", f"S22 the profile follows .env: {status}")
+    expect(first_try.get("installed") is True, f"S22 one install after the services: {status}")
     after = stage.browser("open", url="data:text/html,<h1>after-s22</h1>")
     expect(not after.get("error"), f"S22 browser after restoring lite: {after}")
     stage.record(
