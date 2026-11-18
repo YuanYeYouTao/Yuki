@@ -29,7 +29,7 @@ Connector 的 hello 与 catalog 都是当前完整实例清单：缺席的实例
 
 安排列表和暂停、继续、删除复用现行 AutomationService 的创建者权限、不可变定义与脚本合同，领域状态、审计和个人命令回执共用 writer。主动收件入口按原 request Person namespace、当前本人 Binding、CAS 与原 UUID 处理；目标 Binding 只选择入口，不反向重建人物或证明可达性。角色能力目录是当前实际批准插件与 Manager manifest 的只读投影，不增加授权，不改主工具声明。
 
-`GET /artifacts` 保留全局可读产物目录及原发布版本，正文继续沿现有不可变 artifact 接口读取。`GET /works` 提供活动/结束与来源分页；`/works/{id}/steps` 投影当前 Work 效果与等待，不恢复旧执行状态机，不返回私有工具参数或原内部调用键。实际 HTTP DTO 从服务端统一导出，客户端不再维护另一份产品模型。
+`GET /artifacts` 保留全局可读产物目录及原发布版本，正文继续沿现有不可变 artifact 接口读取。`GET /works` 提供活动/结束与来源分页；`/works/{id}/steps` 投影当前 Work 效果与等待，不恢复旧执行状态机，不返回私有工具参数或原内部调用键。每步的 `kind` 按原调用（历史名称先映射到当前工具）分类，未知工具为 `tool` 并给出 `tool` 名，不再归入“其他”；`action` 只返回外部 Agent 调用记录的协议枚举；`detail` 只含结构化公开事实（终端退出码与执行位置、文本是否送出与目标类型、记录跨度）。跨资源引用（外部 Agent 的 `operation_id`）在生成前按查看者当前对该电脑的读取权限核验，能读 Work（actor 同人物族或私聊所有者同人物族）不等于能读其设备操作。旧字段 `category`／`label` 保留给旧客户端。分类只是展示，不参与授权或 Work 完成。实际 HTTP DTO 从服务端统一导出，客户端不再维护另一份产品模型。
 
 桌面使用 `home?works=active` 与 `stream?works=active` 读取活动根 Work，先过滤终态再聚合步骤提示；省略参数继续保持全量兼容。事件页的 `work_ids` 仅按本页内部事件、原 Work 触发来源或真实已送达 Social 回执关联，再核当前 Work ACL。历史终态卡片不依赖活动 Home，当前已打开的详情与目录可由既有提交提示复读，不逐提交扫描整份历史步骤。
 

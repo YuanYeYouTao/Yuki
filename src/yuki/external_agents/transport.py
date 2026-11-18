@@ -25,6 +25,8 @@ class DeviceConnection:
         self.socket = socket
         self.pending: dict[str, tuple[dict[str, Any], asyncio.Future[dict[str, Any]]]] = {}
         self.instances: set[str] = set()
+        # Native actions each available instance declared on this very connection.
+        self.declared: dict[str, frozenset[str]] = {}
         self.device_capabilities: dict[str, Any] = {}
         self._send_lock = asyncio.Lock()
 

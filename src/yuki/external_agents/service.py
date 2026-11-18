@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
+from collections.abc import Coroutine
 from datetime import UTC, datetime
 from typing import Any
+from uuid import uuid4
 
 from sqlalchemy import func, literal, or_, select, update
 
@@ -34,6 +37,26 @@ from yuki.sandbox.db_models import SandboxTaskRunModel
 from yuki.sandbox.task_repository import SandboxTaskRepository
 
 CONNECTOR_PROTOCOL = 4
+# Actions that create a Work-owned run. Their device RPC belongs to this service,
+# never to the activation: the run, events and completion carry the outcome.
+_SUBMITTED = frozenset({"prompt", "queue", "watch"})
+# New native input checked against the instance's own declared capabilities.
+_DECLARED = frozenset({"prompt", "queue", "watch", "steer"})
+# Controls of an original operation (or of a session wait). Their device RPC also
+# belongs to this service; the initiating Work is told through a private input.
+_CONTROLS = frozenset({"steer", "respond", "cancel", "detach"})
+# Receipt of an explicit relationship end the device never confirmed.
+_RELEASED = {
+    "status": "released",
+    "detached": True,
+    "pending": False,
+    "admitted": True,
+    "executed": False,
+    "released_without_device": True,
+}
+_TOOL_ACTION = {"respond": "answer"}
+
+logger = logging.getLogger(__name__)
 
 
 class ExternalAgentService:
@@ -47,6 +70,11 @@ class ExternalAgentService:
 
         self.local_devices = LocalDeviceService(self)
         self._retiring: dict[str, asyncio.Task[None]] = {}
+        self._dispatches: dict[str, asyncio.Task[None]] = {}
+        self._queries: dict[str, asyncio.Task[None]] = {}
+        # Last device answer that recorded nothing (for example not_found). Diagnostic only:
+        # it is never a receipt, never success and never permission to dispatch again.
+        self._reconciliation: dict[str, str] = {}
 
     async def close(self) -> None:
         # Closing Yuki's transport never sends native cancel or closes a user daemon.
@@ -61,7 +89,10 @@ class ExternalAgentService:
                 await self.repository.connection_event(connection.device_id, connection.id, False)
             except BaseException as close_error:
                 errors.append(close_error)
-        results = await asyncio.gather(*self._retiring.values(), return_exceptions=True)
+        # Each owned task's outcome is reported once, even if close() runs again.
+        owned = (*self._retiring.values(), *self._dispatches.values(), *self._queries.values())
+        self._retiring.clear()
+        results = await asyncio.gather(*owned, return_exceptions=True)
         errors.extend(result for result in results if isinstance(result, BaseException))
         if errors:
             cancellation = next(
@@ -96,6 +127,9 @@ class ExternalAgentService:
             return
         self.database.commit_hints.publish()
         await self.repository.connection_event(device_id, connection.id, True)
+        # Answers lost with the previous socket are read back by original ID only.
+        for identity, local_id in await self.repository.unconfirmed(device_id):
+            self._query_original(identity, connection, local_id)
 
     async def disconnect(self, connection: DeviceConnection) -> None:
         if self.connections.detach(connection):
@@ -127,9 +161,153 @@ class ExternalAgentService:
         connection.instances = {
             item["id"] for item in instances if item.get("status") != "unavailable"
         }
+        connection.declared = {
+            item["id"]: frozenset(str(action) for action in item["capabilities"])
+            for item in instances
+            if item["id"] in connection.instances and isinstance(item.get("capabilities"), list)
+        }
         if device_capabilities is not None:
             connection.device_capabilities = device_capabilities
         return True
+
+    async def drain(self) -> None:
+        """Wait for this process's in-flight device work (shutdown and tests)."""
+        # Finished tasks may still be listed until their done-callback runs; only
+        # unfinished ones are awaited, so this never spins on completed futures.
+        while pending := [
+            task
+            for task in (*self._dispatches.values(), *self._queries.values())
+            if not task.done()
+        ]:
+            await asyncio.wait(pending)
+
+    @staticmethod
+    def _background(
+        tasks: dict[str, asyncio.Task[None]],
+        identity: str,
+        job: Coroutine[Any, Any, None],
+    ) -> None:
+        task = asyncio.create_task(job, name=f"external-agent:{identity}")
+        tasks[identity] = task
+
+        def finished(done: asyncio.Task[None]) -> None:
+            if tasks.get(identity) is done:
+                tasks.pop(identity)
+            if not done.cancelled() and (error := done.exception()) is not None:
+                # The receipt stays as recorded; the original ID remains queryable.
+                logger.error(
+                    "external_agent_background_failed operation=%s error=%s",
+                    identity,
+                    type(error).__name__,
+                )
+
+        task.add_done_callback(finished)
+
+    async def _dispatch(
+        self, identity: str, connection: DeviceConnection, command: dict[str, Any]
+    ) -> None:
+        """Write one registered command and record the device's answer to it."""
+        changed = not self.connections.current(connection)
+        if not changed:
+            try:
+                async with self.database.read_session() as session:
+                    await self.identity.require_device(session, connection.device_id)
+            except ClientError:
+                changed = True
+        if changed or not await self.repository.dispatchable(identity):
+            # Nothing was written: the source, connection or grant ended first.
+            await self.repository.response(
+                identity,
+                {
+                    "error": "source_or_connection_changed_before_dispatch",
+                    "executed": False,
+                    "admitted": False,
+                    "pending": False,
+                },
+            )
+            return
+        try:
+            result = await connection.request(command)
+        except Exception as error:
+            # Whatever ended the socket call (offline, a closed or replaced socket), delivery
+            # is unknown. The original ID is queried after reconnect; it is never resent.
+            logger.info(
+                "external_agent_dispatch_unconfirmed operation=%s error=%s",
+                identity,
+                type(error).__name__,
+            )
+            return
+        await self._settle(identity, result)
+
+    async def _settle(self, identity: str, result: dict[str, Any]) -> None:
+        """Record one device answer and everything it settles, idempotently.
+
+        A control's target is parsed from the original control command. The target
+        is settled before the control's own receipt is written: if the process ends
+        in between, the control still has no receipt, so reconnect reads it back by
+        its original ID and settles again (every settlement step is idempotent).
+        """
+        async with self.database.read_session() as reader:
+            operation = await reader.get(AgentOperationModel, identity)
+            assert operation is not None
+            target_id = json.loads(operation.command_json).get("arguments", {}).get("operation_id")
+            target = (
+                await reader.get(AgentOperationModel, target_id)
+                if operation.action in _CONTROLS and isinstance(target_id, str)
+                else None
+            )
+        if target is not None:
+            refusal = result.get("error")
+            if (
+                operation.action == "detach"
+                and isinstance(refusal, dict)
+                and refusal.get("code") == "original_operation_not_found"
+            ):
+                # The device holds no such operation: nothing native to stop. End
+                # only the Work relationship and say the device never confirmed it.
+                await self._detached(target)
+                result = {**_RELEASED, "device_answer": result}
+            else:
+                await self._control_result(target, operation.action, result)
+        operation = await self.repository.response(identity, result)
+        if operation.action in _CONTROLS and operation.work_id is not None:
+            await self.repository.control_settled(identity)
+
+    def _query_original(self, identity: str, connection: DeviceConnection, local_id: str) -> None:
+        if identity in self._dispatches or identity in self._queries:
+            return
+        self._background(
+            self._queries, identity, self._read_original(identity, connection, local_id)
+        )
+
+    async def _read_original(
+        self, identity: str, connection: DeviceConnection, local_id: str
+    ) -> None:
+        try:
+            result = await connection.request(
+                {
+                    "type": "command",
+                    "id": f"query:{identity}:{uuid4()}",
+                    "action": "get",
+                    "instance_id": local_id,
+                    "arguments": {"operation_id": identity},
+                }
+            )
+        except Exception as error:
+            # A failed read records nothing; the persisted receipt stays as it was.
+            logger.info(
+                "external_agent_query_unanswered operation=%s error=%s",
+                identity,
+                type(error).__name__,
+            )
+            return
+        status = result.get("status")
+        if isinstance(status, str) and status != "not_found":
+            self._reconciliation.pop(identity, None)
+            await self._settle(identity, result)
+        else:
+            # Absence of a journal result never authorizes another dispatch.
+            self._reconciliation[identity] = status or "query_failed"
 
     async def _connection(
         self, instance: AgentInstanceModel, *, original: bool = False
@@ -282,30 +460,13 @@ class ExternalAgentService:
                 except (DeviceOffline, ClientError) as error:
                     view = self._unavailable_view(view, str(error))
                 else:
-                    try:
-                        result = await connection.request(
-                            {
-                                "type": "command",
-                                "id": request_id,
-                                "action": "get",
-                                "instance_id": instance.local_id,
-                                "arguments": {"operation_id": operation.id},
-                            }
-                        )
-                    except (DeviceOffline, OSError) as error:
-                        view = self._unavailable_view(view, str(error))
-                    else:
-                        # Absence of a journal result never authorizes another dispatch.
-                        status = result.get("status")
-                        if isinstance(status, str) and status != "not_found":
-                            operation = await self.repository.response(operation.id, result)
-                            view = await self._view(operation)
-                        else:
-                            view = self._unavailable_view(
-                                view, status or "query_failed", device_online=True
-                            )
-                            view["uncertain"] = True
-                            view["reconciliation_status"] = status or "query_failed"
+                    # Return persisted facts now; the device answer lands in the receipt.
+                    self._query_original(operation.id, connection, instance.local_id)
+                if (status := self._reconciliation.get(operation.id)) is not None:
+                    view = self._unavailable_view(
+                        view, status, device_online=self.connections.online(instance.device_id)
+                    )
+                    view["reconciliation_status"] = status
             events = await self.repository.event_page(operation.id, args.get("cursor", 0))
             return {
                 **view,
@@ -396,6 +557,10 @@ class ExternalAgentService:
                 "session_id": resource.native_id,
                 "execution_id": result.get("execution_id"),
             },
+            # Waits no operation received (metadata only); answerable with deny.
+            "pending_unowned_requests": await self.repository.unowned_requests(
+                instance, resource.native_id
+            ),
         }
 
     async def _operation_target(
@@ -464,6 +629,15 @@ class ExternalAgentService:
                 "conversation_id": control.lease.conversation_id,
                 "generation": control.lease.generation,
             }
+        elif control is not None and control.current is not None:
+            # A control issued inside a Work reports back to that Work. It never owns a
+            # run, so it neither blocks the Work's completion nor gains the target.
+            trusted = {
+                **trusted,
+                "work_id": control.current["id"],
+                "conversation_id": control.lease.conversation_id,
+                "generation": control.lease.generation,
+            }
         owned = await self._operation_target(args, actor)
         execution = (
             await self.repository.native_execution(args["execution_id"], actor)
@@ -506,7 +680,15 @@ class ExternalAgentService:
                 "operation_id_or_execution_id_required",
                 "steer、cancel 的 target 用原 operation_id 或目录中的 execution_id。",
             )
-        if action in {"detach", "respond"} and owned is None:
+        # A wait no operation received is answered on its session, and only with deny.
+        unowned_answer = (
+            action == "respond"
+            and owned is None
+            and execution is None
+            and native_session is not None
+            and isinstance(args.get("session_id"), str)
+        )
+        if action in {"detach", "respond"} and owned is None and not unowned_answer:
             raise ExternalAgentArgumentError(
                 "operation_id_required",
                 "answer、detach 的 target 用原 operation_id；execution_id 不能替代。",
@@ -515,7 +697,34 @@ class ExternalAgentService:
         try:
             connection = await self._connection(instance, original=original_control)
         except DeviceOffline:
+            if (
+                action == "detach"
+                and owned is not None
+                and owned.run_id is not None
+                and owned.detached_at is None
+                and json.loads(owned.result_json or "{}").get("pending") is not False
+            ):
+                # An explicit end of the Work relationship cannot wait for the device.
+                return await self._release(owned, instance, args, request_id, actor, trusted)
             return {"error": "device_offline", "executed": False, "pending": False}
+        # Only the declaration this live connection made for an available instance
+        # refuses early. Stored catalogs may be stale; original-owner controls and
+        # undeclared instances still go to the device, which decides.
+        declared = connection.declared.get(instance.local_id)
+        if (
+            action in _DECLARED
+            and not original_control
+            and instance.local_id in connection.instances
+            and declared
+            and action not in declared
+        ):
+            available = "、".join(
+                _TOOL_ACTION.get(item, item) for item in sorted(declared - {"list", "get"})
+            )
+            raise ExternalAgentArgumentError(
+                "unsupported_action",
+                f"该实例声明不支持 {action}；可用动作：{available}。本次未派发。",
+            )
         target = owned
         if target is None and execution is not None and action in {"cancel", "steer"}:
             matches = await self.repository.execution_operations(
@@ -552,6 +761,11 @@ class ExternalAgentService:
         )
         if execution is not None:
             native_execution = execution.native_id
+        if action in {"prompt", "queue"}:
+            # New input starts or joins whatever turn the native owner decides. A selected
+            # operation or execution only locates the session; its turn is never pre-bound
+            # to this new operation, which would claim another operation's (or Work's) turn.
+            native_execution = None
         if target is not None:
             arguments["operation_id"] = target.id
         if action == "steer":
@@ -566,12 +780,36 @@ class ExternalAgentService:
                 ) from error
             async with self.database.read_session() as session:
                 event = await session.get(AgentEventModel, permission_key)
-                if owned is None or event is None or event.operation_id != owned.id:
+                if unowned_answer:
+                    assert native_session is not None
+                    unowned = json.loads(event.payload_json) if event is not None else {}
+                    if (
+                        event is None
+                        or event.operation_id is not None
+                        or event.device_id != instance.device_id
+                        or unowned.get("instance_id") != instance.local_id
+                        or unowned.get("session_id") != native_session.native_id
+                        or unowned.get("payload", {}).get("unowned") is not True
+                    ):
+                        raise ExternalAgentArgumentError(
+                            "external_agent_question_not_found",
+                            "用该会话 pending_unowned_requests 中的 permission_id。",
+                        )
+                    if args.get("option_id") != "deny" or "response" in args:
+                        # Its content never left the computer; allowing it blind would
+                        # approve an unseen command.
+                        raise ExternalAgentArgumentError(
+                            "deny_only",
+                            "无归属的等待只上传了元信息，只能用 deny 解除；"
+                            "要允许，请在本机 Claude 中查看后处理。",
+                        )
+                elif owned is None or event is None or event.operation_id != owned.id:
                     raise ExternalAgentArgumentError(
                         "external_agent_question_not_found",
                         "先查看原 operation_id 的事件，"
                         "question 用其中权限请求或提问的 permission_id。",
                     )
+                assert event is not None
                 event_data = json.loads(event.payload_json)
                 if event.kind not in {"permission", "question"}:
                     raise ExternalAgentArgumentError(
@@ -649,13 +887,54 @@ class ExternalAgentService:
                     },
                 )
                 return await self._view(operation)
-            try:
-                result = await connection.request(command)
-            except (DeviceOffline, OSError):
-                return {**await self._view(operation), "uncertain": True}
-            operation = await self.repository.response(operation.id, result)
-            if target is not None:
-                await self._control_result(target, action, result)
+            # The activation never waits on the device: writing, the answer and what it
+            # settles belong to this service; the receipt and inputs carry the outcome.
+            self._background(
+                self._dispatches,
+                operation.id,
+                self._dispatch(operation.id, connection, command),
+            )
+        return await self._view(operation)
+
+    async def _release(
+        self,
+        target: AgentOperationModel,
+        instance: AgentInstanceModel,
+        args: dict[str, Any],
+        request_id: str,
+        actor: str,
+        source: dict[str, Any],
+    ) -> dict[str, Any]:
+        """End only the Work relationship while the device is offline.
+
+        Nothing native is stopped or claimed: the original receipt keeps its own
+        admitted/unknown facts, and later device events for it are stored but no
+        longer projected into the Work. (A device that reports no record of the
+        original operation is settled the same way in `_settle`.)
+        """
+        operation, _ = await self.repository.prepare(
+            identity=request_id,
+            instance_id=target.instance_id,
+            actor=actor,
+            action="detach",
+            arguments=args,
+            command={
+                "type": "command",
+                "id": request_id,
+                "action": "detach",
+                "instance_id": instance.local_id,
+                "arguments": {"operation_id": target.id},
+            },
+            source=source,
+            session_id=target.session_id,
+            native_execution_id=None,
+            lease=None,
+        )
+        # Target first, then this receipt: see `_settle` for the restart argument.
+        await self._detached(target)
+        operation = await self.repository.response(operation.id, dict(_RELEASED))
+        if operation.work_id is not None:
+            await self.repository.control_settled(operation.id)
         return await self._view(operation)
 
     async def _control_result(
@@ -707,8 +986,9 @@ class ExternalAgentService:
                     func.json(func.coalesce(original.op("->")("$.pending"), "true")),
                     "$.pending",
                     func.json("false"),
+                    # Ending the relationship never claims the original input was admitted.
                     "$.admitted",
-                    func.json("true"),
+                    func.json(func.coalesce(original.op("->")("$.admitted"), "false")),
                     "$.session_id",
                     func.json_extract(original, "$.session_id"),
                     "$.execution_id",
@@ -722,7 +1002,7 @@ class ExternalAgentService:
                     {
                         "status": "detached",
                         "native_status": native_status,
-                        "admitted": True,
+                        "admitted": json.loads(row.result_json or "{}").get("admitted") is True,
                         "session_id": func.json_extract(original, "$.session_id"),
                     },
                     result_json,

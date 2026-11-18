@@ -2,7 +2,7 @@
 
 Yuki 继续运行在服务器，Codex、Claude Code 或 ACP Agent 留在用户电脑。电脑主动连接原 Yuki HTTP 服务上的 `/agents/v1/connect`，不用开放电脑入站端口，不上传原生登录文件，也不用在服务器安装 Codex。
 
-连接器是同仓独立包 [yuki-agent-connector](../../packages/yuki-agent-connector/pyproject.toml)，当前版本 `0.7.0`，设备协议为 `4`。手动安装需要 Python 3.12，配套桌面安装包随附独立运行时。它不安装 Bot，不运行另一个 Main／Work，不替原生 Agent 重建历史，也不直接发聊天消息。进度与问题进入原 Work，汇报仍通过 Main 的 `send`。
+连接器是同仓独立包 [yuki-agent-connector](../../packages/yuki-agent-connector/pyproject.toml)，当前版本 `0.8.0`，设备协议为 `4`。手动安装需要 Python 3.12，配套桌面安装包随附独立运行时。它不安装 Bot，不运行另一个 Main／Work，不替原生 Agent 重建历史，也不直接发聊天消息。进度与问题进入原 Work，汇报仍通过 Main 的 `send`。
 
 ## 本机完整访问
 
@@ -254,7 +254,11 @@ stdout 新增三种行，不改变状态行的形状：
 
 `list/get` 只查询；`watch` 仅指定 session 时持续监督该会话，指定 execution 时只监督该轮；`prompt/queue` 委托新输入；`steer` 纠偏指定活跃执行；`respond` 回答原问题；`cancel` 定向取消；`detach` 结束监督。detach、Work 完成、聊天重置和断网都不能顺手关闭用户整个 daemon 或其他会话。
 
-确认丢失后按原 operation／run 查询。unknown 不代表未执行，不换 ID 重发。重要事件先进入服务器原回执和 Work 私有输入，再确认设备事件；同一事件重传不重复产生输入。高频 token 不作为持久进度洪流，原生完整上下文不灌入 Yuki 的公共历史。
+确认丢失后按原 operation／run 查询。unknown 不代表未执行，不换 ID 重发。所有改动类动作（prompt／queue／watch 与 steer／answer／cancel／detach）登记后立即返回，写出、设备回复及其结算由服务器承接，设备不读不答也不会占住 Yuki 的工作：prompt／queue／watch 的结果沿原 run 回报；控制动作先结算目标、再写自己的回执（中途重启时回执为空，重连后按原 ID 读回并重新结算，各步幂等），然后作为私有输入告知发起它的 Work，Work 正等待该目标 run 时立即唤醒。设备重连后服务器只按原 ID 查询回执为空的操作，设备答 not_found 只是查证事实，不授权重发。设备离线或确认没有原记录时，显式 detach 只解除 Work 所属关系（回执 `released_without_device`），原生状态保持未知。
+
+Claude（连接器 0.8.0 起）每条输入用自己的 UUID 写入并开启 `--replay-user-messages`；CLI 取用这条输入时回放同一 UUID，才算接纳，prompt 返回只表示已写入（`submitted`）。prompt 只接受空闲会话，会话正执行自己发起的回合（例如后台任务完成通知）或已有输入排队时直接返回冲突。`queue` 追加一条输入，落点由 CLI 决定：它在当前回合的下一个工具边界并入（回执 `disposition: merged_into_running_turn`，只告知这条追加的去向，不转交该回合的结果、问题或控制），或在回合结束后开启新回合（`started_new_turn`，归追加它的操作）；挂起的权限请求会让它一直排着。这不是 steer：Claude 不能把输入绑定到指定回合，也不能撤回排队中的单条输入（interrupt 只停止当前回合，排队输入随后仍会执行），对排队输入的 cancel 返回 `queued_input_not_withdrawable`。行为依据 2026-11-18 在隔离目录用 Claude Code 2.1.311 做的实测。
+
+没有任何操作或 watch 接收的原生等待（例如 CLI 为已完成后台任务自行开启的回合请求 Bash 权限）只上传元信息：工具名、请求 ID、SDK owner 连接 ID 与时间，不上传命令、路径或正文。会话查询的 `pending_unowned_requests` 列出仍待处理者，仅该电脑所属人物族可见；只能以 deny 回答（内容未上传，盲目允许等于批准看不见的命令），允许须在本机 Claude 中处理。回答绑定原 SDK owner 与仍挂起的原 callback，只消费一次。重要事件先进入服务器原回执和 Work 私有输入，再确认设备事件；同一事件重传不重复产生输入。高频 token 不作为持久进度洪流，原生完整上下文不灌入 Yuki 的公共历史。
 
 Work 恢复缺失的工具结果时，按原调用派生的请求键和原 Work、action、actor 读取本地
 operation 回执，包括没有 run 的 steer／respond／cancel／detach。它与公开查询共用原结果

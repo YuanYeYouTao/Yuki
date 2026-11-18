@@ -55,6 +55,22 @@ class NativeComputer:
         self.acknowledged = asyncio.Queue()
         self.drop_next = None
         self.reject_next = None
+        # Commands the native owner accepts but never answers until the test does.
+        self.hold = set()
+        self.held = {}
+        self.fail = {}
+        self.not_found = set()
+        self.capabilities = [
+            "list",
+            "get",
+            "watch",
+            "prompt",
+            "steer",
+            "queue",
+            "respond",
+            "cancel",
+            "detach",
+        ]
         self.socket = None
         self.reader = None
         self.ready = asyncio.Event()
@@ -79,17 +95,7 @@ class NativeComputer:
                             "id": self.local_id,
                             "label": "Local Codex",
                             "driver": "codex",
-                            "capabilities": [
-                                "list",
-                                "get",
-                                "watch",
-                                "prompt",
-                                "steer",
-                                "queue",
-                                "respond",
-                                "cancel",
-                                "detach",
-                            ],
+                            "capabilities": self.capabilities,
                         }
                     ],
                 }
@@ -118,6 +124,17 @@ class NativeComputer:
                     continue
                 self.commands.append(message)
                 action = message["action"]
+                if action in self.hold:
+                    self.held[message["id"]] = message
+                    continue
+                if action in self.fail:
+                    # The connector's protocol-level refusal of this command.
+                    await self.socket.send(
+                        json.dumps(
+                            {"type": "response", "id": message["id"], "error": self.fail[action]}
+                        )
+                    )
+                    continue
                 if self.drop_next == action:
                     self.drop_next = None
                     await self.socket.close()
@@ -143,6 +160,11 @@ class NativeComputer:
                         ],
                         "next_cursor": "opaque-next-page" if not cursor else None,
                     }
+                elif (
+                    action == "get"
+                    and message.get("arguments", {}).get("operation_id") in self.not_found
+                ):
+                    result = {"status": "not_found"}
                 elif action == "get":
                     result = self.results.get(
                         message.get("arguments", {}).get("operation_id"),
@@ -177,6 +199,9 @@ class NativeComputer:
                 )
         except ConnectionClosed:
             pass
+
+    async def answer(self, command_id, result):
+        await self.socket.send(json.dumps({"type": "response", "id": command_id, "result": result}))
 
     async def event(self, operation_id, kind, payload, *, event_id=None):
         self.sequence += 1
@@ -362,6 +387,8 @@ async def test_tls_directory_and_later_catalog_keep_internal_ids_and_original_co
             str(uuid4()),
             bridge.source,
         )
+        # Controls are written by the service after the tool returned.
+        await settled(bridge)
         assert computer.commands[-1]["action"] == "cancel"
         assert "operation_id" not in computer.commands[-1]["arguments"]
         connection = bridge.service.connections.get(bridge.device["device_id"])
@@ -382,7 +409,7 @@ async def test_tls_directory_and_later_catalog_keep_internal_ids_and_original_co
             )
             computer.native_execution = "second-original-native-turn"
             pending_id = str(uuid4())
-            pending_operation = await bridge.service.execute(
+            await bridge.service.execute(
                 {
                     "action": "prompt",
                     "instance_id": instance,
@@ -392,6 +419,12 @@ async def test_tls_directory_and_later_catalog_keep_internal_ids_and_original_co
                 pending_id,
                 bridge.source,
             )
+            # The native turn is known once the device answer is recorded, not at return.
+            await settled(bridge)
+            pending_operation = await bridge.service.execute(
+                {"action": "get", "operation_id": pending_id}, str(uuid4()), bridge.source
+            )
+            assert pending_operation["execution_id"]
             await bridge.service.execute(
                 {
                     "action": "watch",
@@ -403,7 +436,8 @@ async def test_tls_directory_and_later_catalog_keep_internal_ids_and_original_co
                 bridge.source,
             )
             computer.reject_next = "prompt"
-            rejected = await bridge.service.execute(
+            rejected_id = str(uuid4())
+            await bridge.service.execute(
                 {
                     "action": "prompt",
                     "instance_id": instance,
@@ -411,15 +445,20 @@ async def test_tls_directory_and_later_catalog_keep_internal_ids_and_original_co
                     "execution_id": pending_operation["execution_id"],
                     "prompt": "Rejected before dispatch",
                 },
-                str(uuid4()),
+                rejected_id,
                 bridge.source,
             )
-            assert rejected["executed"] is False
+            await settled(bridge)
+            rejected = await bridge.service.execute(
+                {"action": "get", "operation_id": rejected_id}, str(uuid4()), bridge.source
+            )
+            assert rejected["executed"] is False and rejected["pending"] is False
         execution_id = pending_operation["execution_id"]
         execution_control_id = str(uuid4())
         await bridge.service.execute(
             {"action": "cancel", "execution_id": execution_id}, execution_control_id, bridge.source
         )
+        await settled(bridge)
         assert computer.commands[-1]["arguments"]["operation_id"] == pending_id
         assert computer.commands[-1]["execution_id"] == computer.native_execution
 
@@ -435,6 +474,7 @@ async def test_tls_directory_and_later_catalog_keep_internal_ids_and_original_co
                 str(uuid4()),
                 bridge.source,
             )
+            await settled(bridge)
         before = len(computer.commands)
         with pytest.raises(ExternalAgentArgumentError, match="external_agent_execution_ambiguous"):
             await bridge.service.execute(
@@ -514,6 +554,7 @@ async def test_tls_directory_and_later_catalog_keep_internal_ids_and_original_co
         control = await bridge.service.execute(
             {"action": "cancel", "operation_id": pending_id}, control_id, bridge.source
         )
+        await settled(bridge)
         assert control["operation_id"] == control_id
         assert computer.commands[-1]["action"] == "cancel"
         assert computer.commands[-1]["arguments"]["operation_id"] == pending_id
@@ -712,6 +753,7 @@ async def test_progress_question_completion_commit_before_ack_into_original_work
                 str(uuid4()),
                 bridge.source,
             )
+            await settled(bridge)
             answered = computer.commands[-1]
             assert answered["arguments"]["permission_id"] == "native-question-one"
             await computer.event(operation_id, "completed", {"status": "completed", "text": "Done"})
@@ -769,6 +811,7 @@ async def test_watch_is_supervision_and_detach_does_not_cancel_native_session(br
             await bridge.service.execute(
                 {"action": "detach", "operation_id": operation_id}, str(uuid4()), bridge.source
             )
+            await settled(bridge)
             assert [item["action"] for item in computer.commands] == ["list", "watch", "detach"]
             assert not any(item["action"] in {"cancel", "close"} for item in computer.commands)
     finally:
@@ -819,8 +862,18 @@ async def test_lost_native_acceptance_is_unknown_and_same_operation_never_resubm
             computer.drop_next = "prompt"
             result = await bridge.service.execute(arguments, operation_id, bridge.source)
             assert result["uncertain"] is True
+            # The device received the command and dropped the socket before answering.
+            await settled(bridge)
             await computer.close()
+            # What a real connector journal holds after begin without a native answer.
+            computer.results[operation_id] = {
+                "status": "unknown",
+                "pending": True,
+                "reason": "original_dispatch_not_confirmed",
+                "state_sequence": 0,
+            }
             await computer.start()
+            await settled(bridge)
             recovered = await bridge.service.execute(arguments, operation_id, bridge.source)
             assert recovered["operation_id"] == operation_id and recovered["uncertain"] is True
             assert len([item for item in computer.commands if item["action"] == "prompt"]) == 1
@@ -1075,10 +1128,15 @@ async def test_refused_detach_does_not_publish_success_or_end_original_supervisi
                 bridge.source,
             )
             computer.reject_next = "detach"
-            result = await bridge.service.execute(
+            detach_id = str(uuid4())
+            await bridge.service.execute(
                 {"action": "detach", "operation_id": operation_id},
-                str(uuid4()),
+                detach_id,
                 bridge.source,
+            )
+            await settled(bridge)
+            result = await bridge.service.execute(
+                {"action": "get", "operation_id": detach_id}, str(uuid4()), bridge.source
             )
             assert result["admitted"] is False and result["error"] == "capability_unsupported"
             async with bridge.database.read_session() as reader:
@@ -1177,4 +1235,472 @@ async def test_event_waiting_for_real_sqlite_commit_does_not_block_rpc_responses
     finally:
         if sending is not None:
             await asyncio.gather(sending, return_exceptions=True)
+        await computer.close()
+
+
+async def settled(bridge):
+    """Wait for this process's background device work; tests only observe its facts."""
+    await bridge.service.drain()
+
+
+async def until(predicate):
+    # Polls durable/transport facts written by other tasks; there is no event to await.
+    async with asyncio.timeout(5):
+        while not await predicate():  # noqa: ASYNC110
+            await asyncio.sleep(0.02)
+
+
+async def receipt(bridge, operation_id):
+    async with bridge.database.read_session() as reader:
+        row = await reader.get(AgentOperationModel, operation_id)
+        return json.loads(row.result_json) if row.result_json else None
+
+
+async def test_unanswered_prompt_never_holds_the_activation_and_reconnect_queries_original_id(
+    bridge,
+):
+    """F1/F3/F4/F6/F7: a silent native owner cannot occupy the Work activation."""
+    computer = await NativeComputer(bridge).start()
+    try:
+        instance, session_id = await directory(bridge)
+        async with accepted_work(bridge) as control:
+            computer.hold = {"prompt", "get"}
+            operation_id = str(uuid4())
+            arguments = {
+                "action": "prompt",
+                "instance_id": instance,
+                "session_id": session_id,
+                "prompt": "Keep working while the owner is silent",
+            }
+            # The device never answers; returning at all proves the activation is free.
+            async with asyncio.timeout(5):
+                result = await bridge.service.execute(arguments, operation_id, bridge.source)
+            assert result["operation_id"] == operation_id and result["run_id"]
+            assert result["pending"] is True and result["status"] == "unknown"
+            assert await control.repository.has_owned_execution(
+                control.lease, control.current["id"]
+            )
+
+            async def written():
+                return any(item["id"] == operation_id for item in computer.commands)
+
+            await until(written)
+            async with asyncio.timeout(5):
+                queried = await bridge.service.execute(
+                    {"action": "get", "operation_id": operation_id}, str(uuid4()), bridge.source
+                )
+                again = await bridge.service.execute(arguments, operation_id, bridge.source)
+            assert queried["operation_id"] == operation_id and queried["pending"] is True
+            assert again["operation_id"] == operation_id
+            # The original command is still in flight; no query races it for the receipt.
+            assert [item["action"] for item in computer.commands].count("get") == 0
+
+            await computer.close()
+            await settled(bridge)
+            assert await receipt(bridge, operation_id) is None
+            computer.hold = set()
+            computer.results[operation_id] = {
+                "session_id": computer.native_session,
+                "execution_id": computer.native_execution,
+                "status": "running",
+                "pending": True,
+                "admitted": True,
+                "state_sequence": 1,
+            }
+            await computer.start()
+
+            async def confirmed():
+                return (await receipt(bridge, operation_id) or {}).get("admitted") is True
+
+            await until(confirmed)
+            await settled(bridge)
+            assert [item["action"] for item in computer.commands].count("prompt") == 1
+            queries = [item for item in computer.commands if item["action"] == "get"]
+            assert queries[-1]["arguments"] == {"operation_id": operation_id}
+    finally:
+        await computer.close()
+
+
+async def test_device_without_the_original_record_is_never_given_a_second_prompt(bridge):
+    """F5: not_found is a reconciliation fact, never success and never a resend licence."""
+    computer = await NativeComputer(bridge).start()
+    try:
+        instance, session_id = await directory(bridge)
+        async with accepted_work(bridge):
+            computer.drop_next = "prompt"
+            operation_id = str(uuid4())
+            arguments = {
+                "action": "prompt",
+                "instance_id": instance,
+                "session_id": session_id,
+                "prompt": "Delivered at most once",
+            }
+            await bridge.service.execute(arguments, operation_id, bridge.source)
+            await settled(bridge)
+            computer.not_found = {operation_id}
+            await computer.start()
+
+            async def reconciled():
+                return any(
+                    item["action"] == "get"
+                    and item["arguments"].get("operation_id") == operation_id
+                    for item in computer.commands
+                )
+
+            await until(reconciled)
+            await settled(bridge)
+            assert await receipt(bridge, operation_id) is None
+            view = await bridge.service.execute(
+                {"action": "get", "operation_id": operation_id}, str(uuid4()), bridge.source
+            )
+            assert view["uncertain"] is True and view["reconciliation_status"] == "not_found"
+            await bridge.service.execute(arguments, operation_id, bridge.source)
+            await settled(bridge)
+            assert [item["action"] for item in computer.commands].count("prompt") == 1
+    finally:
+        await computer.close()
+
+
+async def test_late_native_refusal_settles_the_original_run_without_the_activation(bridge):
+    """F2: the response arriving after the tool returned still settles the original run."""
+    computer = await NativeComputer(bridge).start()
+    try:
+        instance, session_id = await directory(bridge)
+        async with accepted_work(bridge):
+            computer.hold = {"prompt"}
+            operation_id = str(uuid4())
+            await bridge.service.execute(
+                {
+                    "action": "prompt",
+                    "instance_id": instance,
+                    "session_id": session_id,
+                    "prompt": "Native owner will refuse later",
+                },
+                operation_id,
+                bridge.source,
+            )
+
+            async def held():
+                return operation_id in computer.held
+
+            await until(held)
+            await computer.answer(
+                operation_id,
+                {"status": "failed", "pending": False, "admitted": False, "error": "conflict"},
+            )
+            await settled(bridge)
+            async with bridge.database.read_session() as reader:
+                task = await reader.get(SandboxTaskRunModel, operation_id)
+                continuation = await reader.get(SandboxTaskContinuationModel, operation_id)
+            assert task.status == "completed" and continuation.state == "ready"
+            assert json.loads(task.completion_json)["status"] == "failed"
+    finally:
+        await computer.close()
+
+
+async def test_declared_capabilities_reject_unsupported_new_input_before_registration(bridge):
+    """F8/F9: an explicit catalog refusal is immediate; an unclear catalog defers to the owner."""
+    computer = NativeComputer(bridge)
+    computer.capabilities = ["list", "get", "watch", "prompt", "respond", "cancel", "detach"]
+    await computer.start()
+    try:
+        instance, session_id = await directory(bridge)
+        async with accepted_work(bridge):
+            with pytest.raises(ExternalAgentArgumentError, match="unsupported_action"):
+                await bridge.service.execute(
+                    {
+                        "action": "queue",
+                        "instance_id": instance,
+                        "session_id": session_id,
+                        "prompt": "Not a declared native capability",
+                    },
+                    str(uuid4()),
+                    bridge.source,
+                )
+        assert [item["action"] for item in computer.commands] == ["list"]
+        async with bridge.database.read_session() as reader:
+            assert await reader.scalar(select(func.count()).select_from(AgentOperationModel)) == 0
+    finally:
+        await computer.close()
+    unclear = NativeComputer(bridge)
+    unclear.capabilities = []
+    await unclear.start()
+    try:
+        async with accepted_work(bridge):
+            operation_id = str(uuid4())
+            await bridge.service.execute(
+                {
+                    "action": "queue",
+                    "instance_id": instance,
+                    "session_id": session_id,
+                    "prompt": "The native owner decides",
+                },
+                operation_id,
+                bridge.source,
+            )
+            await settled(bridge)
+        assert any(item["id"] == operation_id for item in unclear.commands)
+    finally:
+        await unclear.close()
+
+
+async def test_capability_refusal_reads_the_live_connection_not_a_stale_stored_catalog(bridge):
+    """Q15 regression: stored catalogs never refuse; original-owner controls reach the device."""
+    from yuki.external_agents.db_models import AgentInstanceModel
+
+    computer = await NativeComputer(bridge).start()
+    try:
+        instance, session_id = await directory(bridge)
+        # The stored row says queue/steer are absent, but this live connection declared them.
+        async with bridge.database.immediate_session() as writer:
+            row = await writer.get(AgentInstanceModel, instance)
+            stale = json.loads(row.catalog_json)
+            row.catalog_json = json.dumps({**stale, "capabilities": ["list", "get", "prompt"]})
+        async with accepted_work(bridge):
+            queued = str(uuid4())
+            await bridge.service.execute(
+                {
+                    "action": "queue",
+                    "instance_id": instance,
+                    "session_id": session_id,
+                    "prompt": "Live declaration allows this",
+                },
+                queued,
+                bridge.source,
+            )
+            await settled(bridge)
+        assert any(item["id"] == queued for item in computer.commands)
+    finally:
+        await computer.close()
+
+    restricted = NativeComputer(bridge)
+    restricted.capabilities = ["list", "get", "watch", "prompt", "respond", "cancel", "detach"]
+    await restricted.start()
+    try:
+        async with accepted_work(bridge):
+            original = str(uuid4())
+            await bridge.service.execute(
+                {
+                    "action": "prompt",
+                    "instance_id": instance,
+                    "session_id": session_id,
+                    "prompt": "Original owner",
+                },
+                original,
+                bridge.source,
+            )
+            await settled(bridge)
+            # Controls of an original operation are not refused from today's declaration.
+            steer = str(uuid4())
+            await bridge.service.execute(
+                {"action": "steer", "operation_id": original, "prompt": "Adjust"},
+                steer,
+                bridge.source,
+            )
+        assert any(item["id"] == steer for item in restricted.commands)
+    finally:
+        await restricted.close()
+
+
+async def test_new_input_on_an_existing_operation_never_claims_its_native_turn(bridge):
+    """P0-3: a selected operation locates the session; its turn is not pre-bound."""
+    computer = await NativeComputer(bridge).start()
+    try:
+        instance, session_id = await directory(bridge)
+        async with accepted_work(bridge):
+            original = str(uuid4())
+            await bridge.service.execute(
+                {
+                    "action": "prompt",
+                    "instance_id": instance,
+                    "session_id": session_id,
+                    "prompt": "Work A owns this turn",
+                },
+                original,
+                bridge.source,
+            )
+            await settled(bridge)
+        async with accepted_work(bridge):
+            computer.native_execution = "turn-started-by-the-new-input"
+            queued = str(uuid4())
+            await bridge.service.execute(
+                {"action": "queue", "operation_id": original, "prompt": "Work B input"},
+                queued,
+                bridge.source,
+            )
+            await settled(bridge)
+        command = next(item for item in computer.commands if item["id"] == queued)
+        assert "execution_id" not in command
+        assert command["arguments"]["operation_id"] == original
+        async with bridge.database.read_session() as reader:
+            first = await reader.get(AgentOperationModel, original)
+            second = await reader.get(AgentOperationModel, queued)
+        # Each operation is bound only to the turn the device reported for it.
+        assert first.native_execution_id == "turn-from-native-owner"
+        assert second.native_execution_id == "turn-started-by-the-new-input"
+    finally:
+        await computer.close()
+
+
+@pytest.mark.parametrize("device_state", ["offline", "no_record"])
+async def test_explicit_detach_ends_the_work_relationship_without_the_device(bridge, device_state):
+    """Q11: unknown delivery leaves an explicit exit that never claims native facts."""
+    computer = await NativeComputer(bridge).start()
+    try:
+        instance, session_id = await directory(bridge)
+        async with accepted_work(bridge) as control:
+            computer.hold = {"prompt"}
+            operation_id = str(uuid4())
+            await bridge.service.execute(
+                {
+                    "action": "prompt",
+                    "instance_id": instance,
+                    "session_id": session_id,
+                    "prompt": "Delivery stays unknown",
+                },
+                operation_id,
+                bridge.source,
+            )
+
+            async def held():
+                return operation_id in computer.held
+
+            await until(held)
+            if device_state == "offline":
+                await computer.close()
+                await settled(bridge)
+            else:
+                computer.fail = {
+                    "detach": {
+                        "code": "original_operation_not_found",
+                        "message": "Original operation is unavailable",
+                        "admitted": False,
+                        "executed": False,
+                    }
+                }
+            assert await control.repository.has_owned_execution(
+                control.lease, control.current["id"]
+            )
+            detach_id = str(uuid4())
+            await bridge.service.execute(
+                {"action": "detach", "operation_id": operation_id}, detach_id, bridge.source
+            )
+
+            # The original prompt is deliberately never answered, so wait for this
+            # control's own receipt rather than for all device work to finish.
+            async def answered():
+                return await receipt(bridge, detach_id) is not None
+
+            await until(answered)
+            released = await bridge.service.execute(
+                {"action": "get", "operation_id": detach_id}, str(uuid4()), bridge.source
+            )
+            assert released["status"] == "released" and released["executed"] is False
+            # The Work that issued it is told what the control settled.
+            async with bridge.database.read_session() as reader:
+                told = (
+                    await reader.execute(
+                        select(inputs.c.payload_json).where(
+                            inputs.c.work_id == control.current["id"],
+                            inputs.c.source_key.like(f"external-agent:control:{detach_id}%"),
+                        )
+                    )
+                ).scalar_one()
+            assert json.loads(json.loads(told)["text"])["status"] == "released"
+            assert not await control.repository.has_owned_execution(
+                control.lease, control.current["id"]
+            )
+            async with bridge.database.read_session() as reader:
+                original = await reader.get(AgentOperationModel, operation_id)
+                task = await reader.get(SandboxTaskRunModel, operation_id)
+            stored = json.loads(original.result_json)
+            assert original.detached_at is not None and stored["status"] == "detached"
+            # The prompt was never confirmed; ending the relationship does not say otherwise.
+            assert stored["admitted"] is False and stored["native_status"] == "unknown"
+            assert json.loads(task.completion_json)["admitted"] is False
+        assert [item["action"] for item in computer.commands].count("prompt") == 1
+    finally:
+        await computer.close()
+
+
+async def test_unowned_native_wait_is_discoverable_metadata_answerable_only_with_deny(bridge):
+    """The incident's unseen Bash permission: discoverable, privacy-minimal, deny-only."""
+    from tests.support.canonical_identity import ensure_person
+
+    computer = await NativeComputer(bridge).start()
+    try:
+        _instance, session_id = await directory(bridge)
+        computer.sequence += 1
+        request = {
+            "type": "event",
+            "event_id": str(uuid4()),
+            "instance_id": computer.local_id,
+            "operation_id": None,
+            "session_id": computer.native_session,
+            "execution_id": "self-started:turn",
+            "kind": "permission",
+            "payload": {
+                "permission_id": "native-tool-use",
+                "native_request_id": "native-tool-use",
+                "connection_id": "sdk-owner-one",
+                "tool": "Bash",
+                "options": ["deny"],
+                "unowned": True,
+                "status": "requires_action",
+                "pending": True,
+            },
+        }
+        await computer.socket.send(json.dumps(request))
+        async with asyncio.timeout(5):
+            assert await computer.acknowledged.get() == request["event_id"]
+        view = await bridge.service.execute(
+            {"action": "get", "session_id": session_id}, str(uuid4()), bridge.source
+        )
+        [waiting] = view["pending_unowned_requests"]
+        assert waiting["tool"] == "Bash" and waiting["options"] == ["deny"]
+        assert set(waiting) == {"permission_id", "kind", "tool", "received_at", "options"}
+        # Another person cannot discover or answer this computer's waits.
+        async with bridge.database.immediate_session() as writer:
+            stranger = await ensure_person(writer, "20002")
+        with pytest.raises(ValueError, match="external_agent_not_found"):
+            await bridge.service.execute(
+                {"action": "get", "session_id": session_id},
+                str(uuid4()),
+                {"actor_person_id": stranger},
+            )
+        answer = {
+            "action": "respond",
+            "session_id": session_id,
+            "permission_id": waiting["permission_id"],
+        }
+        with pytest.raises(ExternalAgentArgumentError, match="deny_only"):
+            await bridge.service.execute(
+                {**answer, "option_id": "allow"}, str(uuid4()), bridge.source
+            )
+        with pytest.raises(ValueError, match="external_agent_not_found"):
+            await bridge.service.execute(
+                {**answer, "option_id": "deny"}, str(uuid4()), {"actor_person_id": stranger}
+            )
+        assert not any(item["action"] == "respond" for item in computer.commands)
+        await bridge.service.execute({**answer, "option_id": "deny"}, str(uuid4()), bridge.source)
+        await settled(bridge)
+        native = next(item for item in computer.commands if item["action"] == "respond")
+        assert native["arguments"]["option_id"] == "deny"
+        assert native["arguments"]["native_request_id"] == "native-tool-use"
+        assert native["arguments"]["connection_id"] == "sdk-owner-one"
+        assert native["session_id"] == computer.native_session
+        resolved = {
+            **request,
+            "event_id": str(uuid4()),
+            "kind": "progress",
+            "payload": {"permission_resolved": "native-tool-use", "outcome": "answered"},
+        }
+        await computer.socket.send(json.dumps(resolved))
+        async with asyncio.timeout(5):
+            assert await computer.acknowledged.get() == resolved["event_id"]
+        after = await bridge.service.execute(
+            {"action": "get", "session_id": session_id}, str(uuid4()), bridge.source
+        )
+        assert after["pending_unowned_requests"] == []
+    finally:
         await computer.close()

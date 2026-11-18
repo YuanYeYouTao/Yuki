@@ -139,8 +139,43 @@ class StepArtifact(BaseModel):
     version: str
 
 
+StepKind = Literal[
+    "terminal",
+    "computer",
+    "browser",
+    "message",
+    "chat",
+    "search",
+    "web",
+    "file",
+    "agent_read",
+    "agent_control",
+    "memory",
+    "schedule",
+    "task",
+    "wait",
+    "environment",
+    "device_legacy",
+    "tool",
+]
+
+
+class StepDetail(BaseModel):
+    """Structured public facts of one original call; never arguments or result text."""
+
+    record_seconds: float
+    exit_code: int | None = None
+    output_lost: bool | None = None
+    where: Literal["yuki", "device"] | None = None
+    text_delivered: bool | None = None
+    target_kind: Literal["group", "private", "channel"] | None = None
+    # Present only when the viewer may read that agent operation now.
+    operation_id: str | None = None
+
+
 class PublicStep(BaseModel):
     step_id: str
+    # Legacy display fields kept for older clients.
     category: str
     label: str
     record: str
@@ -148,6 +183,10 @@ class PublicStep(BaseModel):
     created_at: str
     updated_at: str
     artifacts: list[StepArtifact]
+    kind: StepKind
+    tool: str
+    action: str | None
+    detail: StepDetail
 
 
 class ChildWork(BaseModel):

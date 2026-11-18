@@ -166,6 +166,8 @@ async def test_detach_ends_work_relationship_without_claiming_native_success(
         f"original-{action}",
         source,
     )
+    # The native receipt (turn or queue item) is recorded after the tool returned.
+    await env.service.drain()
     owner = case.control.current["id"]
     repository, lease = case.control.repository, case.control.lease
     effect_key = f"original-{action}-effect"
@@ -206,6 +208,7 @@ async def test_detach_ends_work_relationship_without_claiming_native_success(
     await env.service.execute(
         {"action": "detach", "operation_id": original["operation_id"]}, f"detach-{action}", source
     )
+    await env.service.drain()
     assert not await case.control.repository.has_owned_execution(case.control.lease, owner)
     result = await env.service.execute(
         {"action": "get", "operation_id": original["operation_id"]},
@@ -308,13 +311,23 @@ async def test_unavailable_hello_keeps_failure_fact_and_routes_original_control(
         native.source,
     )
     assert result["error"] == "device_offline" and result["executed"] is False
-    assert commands == []
+    await native.service.drain()
+    # Reconnect may read the unconfirmed original back by its own ID; nothing else.
+    assert all(
+        command["action"] == "get" and command["arguments"] == {"operation_id": original.id}
+        for command in commands
+    )
+    commands.clear()
     with pytest.raises(ValueError, match="external_agent_not_found"):
         await native.repository.operation("not-dispatched-to-missing-driver", native.actor)
-    result = await native.service.execute(
+    await native.service.execute(
         {"action": "steer", "operation_id": original.id, "text": "continue"},
         "original-owner-control",
         native.source,
+    )
+    await native.service.drain()
+    result = await native.service.execute(
+        {"action": "get", "operation_id": "original-owner-control"}, "read-control", native.source
     )
     assert len(commands) == 1
     assert commands[0]["arguments"]["operation_id"] == original.id
@@ -377,11 +390,13 @@ async def test_exact_queue_cancel_settles_but_submitted_interrupt_waits_for_nati
         f"original-{action}",
         source,
     )
+    await env.service.drain()
     await env.service.execute(
         {"action": "cancel", "operation_id": original["operation_id"]},
         f"cancel-{action}",
         source,
     )
+    await env.service.drain()
     owner = case.control.current["id"]
     async with database.read_session() as session:
         task = await session.get(SandboxTaskRunModel, original["operation_id"])
