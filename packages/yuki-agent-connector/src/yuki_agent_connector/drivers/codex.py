@@ -1288,17 +1288,7 @@ class CodexDriver:
             # running thread merges into the user's turn and returns its ID.
             resumed: dict[str, Any] | None = None
             if action == "prompt" and session:
-                original = (
-                    await self.rpc.call(
-                        "thread/read",
-                        {
-                            "threadId": session,
-                            "includeTurns": False,
-                        },
-                    )
-                )["thread"]
-                if native_status(original) == "running":
-                    raise DriverError("conflict", "Native session is active; choose steer or queue")
+                # A running (user) turn is no conflict: the queue item waits behind it.
                 resumed = await self.rpc.call(
                     "thread/resume", {"threadId": session, "excludeTurns": True}
                 )

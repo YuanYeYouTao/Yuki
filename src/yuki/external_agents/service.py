@@ -75,18 +75,14 @@ class ExternalAgentService:
         self._queries: dict[str, asyncio.Task[None]] = {}
 
     async def close(self) -> None:
-        # Closing Yuki's transport never sends native cancel or closes a user daemon.
+        # Closing Yuki's transport never sends native cancel or closes a user daemon. The
+        # Bot stopping is not the device going offline: no offline fact is recorded and
+        # no Work is woken (each reconnect after the restart is ordinary progress).
         errors: list[BaseException] = []
-        connections = self.connections.active()
         try:
             await self.connections.close()
         except BaseException as close_error:
             errors.append(close_error)
-        for connection in connections:
-            try:
-                await self.repository.connection_event(connection.device_id, connection.id, False)
-            except BaseException as close_error:
-                errors.append(close_error)
         # Each owned task's outcome is reported once, even if close() runs again. Tasks
         # created while earlier ones finish are collected too, as drain() does.
         seen: set[asyncio.Task[None]] = set()
@@ -652,7 +648,14 @@ class ExternalAgentService:
                     .first()
                 )
             if record is None or (record["state"] in TERMINAL and action != "detach"):
-                # Ending a relationship (release of a finished delegation) is still allowed.
+                # Ending a relationship (release of a finished delegation) is still allowed;
+                # new input to a finished delegation continues it with resume.
+                if record is not None and action in {"queue", "steer", "respond"}:
+                    raise ExternalAgentArgumentError(
+                        "delegation_finished_use_resume",
+                        "这个委派已结束；在同一会话继续用 manage_task(action=resume, id, text)。"
+                        "本次未派发。",
+                    )
                 raise ValueError("external_agent_source_obsolete")
             trusted = {
                 **trusted,

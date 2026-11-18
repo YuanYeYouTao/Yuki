@@ -748,6 +748,7 @@ Bot 在自动化运行中途重启，该次运行丢失（协调者转述的运�
 - **E4／Q5**：只记录。
 - **前缀字节**：§5.2 的 P1–P4 进 E2E（`tests/integration/test_external_agent_prompt_prefix_e2e.py`，Claude Messages 与 Chat Completions）；P5（观察通知）、P6（两个委派交错完成）与 OpenAI Responses 没有覆盖。P6 中"同输入同字节"由单元级 F17 覆盖。
 - **Desktop**：DT5 的 `plugin`／`retired` 分类没有做（服务端 kind 列举里没有这两个值）。
+- **Codex 共享回合（已知限制，验收 P1）**：用户在 TUI 里 steer 进 Yuki 的回合、或排队项与 Yuki 的排队项被 Codex 合并成一轮时，这一轮整体归 Yuki，其中由用户输入引出的审批也会作为 Yuki 回合的请求出现（范围内由连接器按范围裁决，范围外交给 Yuki 或用户）。app-server 不按输入区分请求来源，连接器无法逐个请求归属；记录为风险，不另建机制。
 
 ### 16.3 测试
 
@@ -795,3 +796,19 @@ Bot 在自动化运行中途重启，该次运行丢失（协调者转述的运�
 | S1–S3（MCP 不在 ask 清单、ACP default 模式仍加载用户 allow、`thread/settings/update` 未经真实 Codex 验证） | 记录为风险与未验证，不在本阶段改变用户设置读取方式 |
 
 **Desktop**：见 Desktop PR 的复审处理记录（实时状态改随 `refresh` 刷新、查询键、旧服务端回退、`unknown` 提交不确定、同一请求两处回答共用一次尝试、失败提示、F19 测试强度、三语状态文案、读屏、只有 `answer_at = yuki_or_user` 可答）。
+
+### 16.5 真实 Agent 端到端验收（A1、A2、A4–A8）
+
+`tests/acceptance/`（标记 `real_agent`，只有 `YUKI_REAL_AGENT_E2E=1` 才运行，CI 不收集），脱敏产物与复现命令在 [`docs/operations/external-agent-phase2-acceptance/`](../operations/external-agent-phase2-acceptance/README.md)。真实部分：Bot 容器、SQLite、Main／Work、Client API、设备 WSS（协议 5）、进程内连接器 0.9.0；Claude Code 2.1.311（haiku）、自启 codex app-server 0.169（gpt-6-luna／low）、claude-agent-acp 0.108.0。替身：只有 Main 模型是脚本。两台设备是同一台 Mac 上的两个连接器配对；设备 2 断网用本机 TCP 中继切断。
+
+| 场景 | 结论 |
+|---|---|
+| A1 | 通过；"父 Work 激活次数 = 唤醒类 + 用户输入 + 到期"严格等式不成立：先后约 1 s 到达的两张卡被合并进同一次激活（激活 5，输入 6），每张卡恰好被消费一次 |
+| A2 | 通过：没有任何输入注入，权限由用户在终端处理，回答接口对观察请求返回 `observe_only` |
+| A4 | 部分通过：交替、只用 `queue/add`、只答自己回合已验证；`not_owner` 没能用真实 Agent 触发（用户输入总被并进 Yuki 的回合，见 §16.2 已知限制） |
+| A5 | 通过 |
+| A6 | 通过（Claude、Codex、ACP 各一次，无分叉、无重复执行） |
+| A7 | 通过；会话删除后恢复得到 `cwd_unknown`（不是 `session_not_found`） |
+| A8 | 通过（W1–W4） |
+
+验收发现 P2（委派结束后无法排在用户运行中的回合后面）与 P3（Bot 停机被记成设备离线并唤醒父 Work）已修，失败测试先写；P1 见 §16.2。

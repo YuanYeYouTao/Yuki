@@ -502,3 +502,20 @@ async def test_session_view_lists_queued_inputs(tmp_path: Path) -> None:
             ]
         finally:
             await driver.stop()
+
+
+@pytest.mark.asyncio
+async def test_yuki_prompt_queues_behind_a_running_user_turn(tmp_path: Path) -> None:
+    """Acceptance P2: Yuki's new input waits behind the user's running turn (§4.11)."""
+    owner = AppServer()
+    async with serve(owner.handler, "127.0.0.1", 0) as listener:
+        driver, _events = await connected(owner, listener, tmp_path)
+        try:
+            await owner.start_turn(None)
+            submitted = await driver.execute(command("prompt", "after-user", prompt="next"))
+            assert submitted["admitted"] is True
+            add = next(c for c in owner.calls if c.get("method") == "thread/queue/add")
+            assert add["params"]["clientUserMessageId"] == "after-user"
+            assert "turn/start" not in owner.methods()
+        finally:
+            await driver.stop()

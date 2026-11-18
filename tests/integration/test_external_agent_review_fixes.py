@@ -554,3 +554,36 @@ async def test_another_person_cannot_manage_a_record(bridge):
             assert not any(item["action"] == "queue" for item in computer.commands)
     finally:
         await computer.close()
+
+
+# Acceptance P3: stopping the Bot is not the device going offline; it wakes nobody.
+async def test_bot_shutdown_is_not_a_device_offline_fact(bridge):
+    computer = await NativeComputer(bridge).start()
+    try:
+        instance, session_id = await directory(bridge)
+        async with accepted_work(bridge) as control:
+            identity, _operation = await _delegate(bridge, control, instance, session_id)
+            await _set_state(bridge, control.current["id"], "waiting_external")
+            await bridge.service.close()
+            assert await _inputs(bridge, control.current["id"]) == []
+            assert (await _row(bridge, identity))["reason"] == "native_executor"
+            assert (await _row(bridge, control.current["id"]))["state"] == "waiting_external"
+    finally:
+        await computer.close()
+
+
+# Acceptance P2: a finished delegation is continued with resume, and the error says so.
+async def test_message_to_a_finished_delegation_points_to_resume(bridge):
+    computer = await NativeComputer(bridge).start()
+    try:
+        instance, session_id = await directory(bridge)
+        async with accepted_work(bridge) as control:
+            identity, operation = await _delegate(bridge, control, instance, session_id)
+            await computer.event(operation.id, "completed", {"status": "completed", "text": "ok"})
+            sent = await control.tool_outcome(
+                "message_task", {"id": identity, "text": "more"}, "after-finish"
+            )
+            assert not sent.ok and sent.error_code == "delegation_finished_use_resume"
+            assert "resume" in sent.public_message
+    finally:
+        await computer.close()

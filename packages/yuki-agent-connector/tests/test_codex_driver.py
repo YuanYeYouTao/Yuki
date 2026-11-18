@@ -352,8 +352,10 @@ async def test_original_turn_steer_queue_cancel_and_detach_have_distinct_effects
                 while driver.turn_operations != {"turn": "operation"}:  # noqa: ASYNC110
                     await asyncio.sleep(0.01)
             assert not any(c.get("method") == "turn/start" for c in owner.calls)
-            with pytest.raises(DriverError, match="active"):
-                await driver.execute(command("prompt", identity="another", prompt="duplicate"))
+            # Another prompt while the turn runs is a queue item behind it (§4.11), not a
+            # conflict and never a turn/start.
+            await driver.execute(command("prompt", identity="another", prompt="behind"))
+            assert not any(c.get("method") == "turn/start" for c in owner.calls)
             await driver.execute(command("steer", execution="turn", prompt="new requirement"))
             before = len(owner.calls)
             with pytest.raises(DriverError, match="mismatch"):
