@@ -812,3 +812,25 @@ Bot 在自动化运行中途重启，该次运行丢失（协调者转述的运�
 | A8 | 通过（W1–W4） |
 
 验收发现 P2（委派结束后无法排在用户运行中的回合后面）与 P3（Bot 停机被记成设备离线并唤醒父 Work）已修，失败测试先写；P1 见 §16.2。
+
+### 16.6 验证与 CI
+
+- 本机（macOS arm64）全量：单元 3750 通过，失败 10 条与干净基线逐条相同（manager_deployment×2、shared_media_cache_mount、sticker×2、terminal_environment、work_execution_receipt_regressions、workspace_copy×2、workspace_publish，macOS 环境问题）；集成通过，唯一失败 `test_plugin_frozen_binding` 同为基线（macOS `/var` 软链）；连接器包 315 通过，6 个 `test_claude_discovery` 失败同为基线（本机有 Homebrew claude）。ruff、`mypy --platform linux src`、连接器 ruff／mypy 通过。
+- PR #639 Quality 的 16 个 job 全部通过（`fc0be380` 一次全绿；`86ae135e` 上 Windows 连接器 job 的 `test_chrome_e2e` 真实 Chrome 一次未在时限内打开调试端口，本 PR 未改 `chrome.py`，重跑通过）。其中 `Connector across Bot and connector versions` 跑三种组合与 Codex 委派 E2E。
+- Desktop PR #87：结果见 PR；e2e 中出现过的偶发与本 PR 无关的项在 PR 里逐项记录。
+
+### 16.7 发布边界（只记录，没有上线）
+
+- **一次上线**：Bot 与 Desktop（随附连接器 0.9.0）同一窗口发布；合同 40 一次部署，system／tools 缓存失效一次。迁移 0159 在 `yuki init-db` 时执行（加列、回填、建索引，不重写已有行）。
+- **协议 5 硬切**：Bot 上线后、用户在 Desktop 点击「更新连接器」到 0.9.0 之前，所有本机连接器连不上（握手被拒，连接器停在 `protocol_unsupported`）。上线前提醒用户；更新需要用户点击。
+- **重启窗口**：部署前按运维约定核对即将到期或正在运行的定时任务（中途重启会丢失该次运行）。Bot 停机本身不再写设备离线事实。
+- **Desktop 合同固定点**在评审期间指向后端分支 head，后端合并后由协调者改为合并提交。
+- **生产对照**：上线前后各记录一次 chat_agent 的上游真实 usage 命中率与委派父 Work 的模型请求数分布，只作记录（§5.2、§10.3）。
+
+### 16.8 没有完成的部分
+
+- §5.2 P5、P6 与 OpenAI Responses 的前缀字节场景（§16.2）。
+- A4 的 `not_owner` 没有用真实 Agent 触发（§16.5）；Gemini CLI 无凭据，ACP 用 claude-agent-acp。
+- Q6（准入排序）按 E9 结论未实施，待用户决定；Q5 只有 E4 记录。
+- Codex 范围的 `thread/settings/update` 只在替身中验证；MCP 工具不在 Claude 的 ask 清单；ACP `default` 模式仍加载用户 allow 规则（§16.4 S1–S3）。
+- 写事务中按记录读取自身事件的做法保留（§16.4）。
