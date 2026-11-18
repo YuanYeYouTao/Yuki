@@ -45,6 +45,17 @@ async def test_codex_eof_reconnect_preserves_queue_and_rejects_old_connection_qu
             await driver.execute(
                 {**command("watch", identity="watch"), "observation_scope": "session"}
             )
+            # The queued input started Yuki's turn: only its requests are Yuki's to answer.
+            await driver._notification(
+                {
+                    "method": "item/started",
+                    "params": {
+                        "threadId": "thread",
+                        "turnId": "turn",
+                        "item": {"id": "input", "type": "userMessage", "clientId": "queue"},
+                    },
+                }
+            )
             await driver._notification(
                 {
                     "id": 7,

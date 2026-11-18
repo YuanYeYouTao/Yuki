@@ -127,6 +127,36 @@ class Owner:
                         "clientUserMessageId": params["clientUserMessageId"],
                     }
                 }
+                await socket.send(json.dumps({"id": value["id"], "result": result}))
+                if not self.active:
+                    # An idle thread starts the queued input's own turn at once (§15 E1).
+                    self.active = True
+                    for method, notification in [
+                        (
+                            "turn/started",
+                            {"turn": {"id": "turn", "status": "inProgress"}},
+                        ),
+                        (
+                            "item/started",
+                            {
+                                "turnId": "turn",
+                                "item": {
+                                    "id": "input",
+                                    "type": "userMessage",
+                                    "clientId": params["clientUserMessageId"],
+                                },
+                            },
+                        ),
+                    ]:
+                        await socket.send(
+                            json.dumps(
+                                {
+                                    "method": method,
+                                    "params": {"threadId": "thread", **notification},
+                                }
+                            )
+                        )
+                continue
             await socket.send(json.dumps({"id": value["id"], "result": result}))
 
 
@@ -317,9 +347,11 @@ async def test_original_turn_steer_queue_cancel_and_detach_have_distinct_effects
             assert not any(c.get("method") == "turn/start" for c in owner.calls)
             watching = await driver.execute(command("watch", identity="watch-one"))
             assert watching["pending"] is True and watching["status"] == "unknown"
-            assert (await driver.execute(command("prompt", prompt="original")))[
-                "execution_id"
-            ] == "turn"
+            await driver.execute(command("prompt", prompt="original"))
+            async with asyncio.timeout(2):
+                while driver.turn_operations != {"turn": "operation"}:  # noqa: ASYNC110
+                    await asyncio.sleep(0.01)
+            assert not any(c.get("method") == "turn/start" for c in owner.calls)
             with pytest.raises(DriverError, match="active"):
                 await driver.execute(command("prompt", identity="another", prompt="duplicate"))
             await driver.execute(command("steer", execution="turn", prompt="new requirement"))
@@ -385,7 +417,12 @@ async def test_native_request_exact_original_and_cannot_answer_twice(tmp_path: P
         )
         await driver.start()
         try:
-            await driver.execute(command("watch"))
+            # Only a turn Yuki itself started has requests Yuki may answer (§15 E1).
+            await driver.execute(command("prompt", identity="yuki-turn", prompt="work"))
+            async with asyncio.timeout(2):
+                while "turn" not in driver.turn_operations:  # noqa: ASYNC110
+                    await asyncio.sleep(0.01)
+            question.clear()
             await owner.socket.send(
                 json.dumps(
                     {
@@ -396,6 +433,8 @@ async def test_native_request_exact_original_and_cannot_answer_twice(tmp_path: P
                 )
             )
             await asyncio.wait_for(question.wait(), 2)
+            while events[-1]["kind"] != "question":
+                await asyncio.sleep(0.01)
             assert events[-1]["payload"]["native_request_id"] == 17
             await driver.execute(
                 command(
@@ -466,7 +505,7 @@ async def test_concurrent_local_turn_before_start_response_is_not_owned_by_remot
     async def call(method: str, params: dict[str, Any]) -> dict[str, Any]:
         if method in {"thread/read", "thread/resume"}:
             return {"thread": {"id": "thread", "status": {"type": "idle"}}}
-        assert method == "turn/start"
+        assert method == "thread/queue/add"
         for identity in ["local-race", "original-native"]:
             await driver._notification(
                 {
@@ -477,6 +516,22 @@ async def test_concurrent_local_turn_before_start_response_is_not_owned_by_remot
                     },
                 }
             )
+            if identity == "original-native":
+                # The queued input names its own turn by clientUserMessageId.
+                await driver._notification(
+                    {
+                        "method": "item/started",
+                        "params": {
+                            "threadId": "thread",
+                            "turnId": identity,
+                            "item": {
+                                "id": "input",
+                                "type": "userMessage",
+                                "clientId": params["clientUserMessageId"],
+                            },
+                        },
+                    }
+                )
             await driver._notification(
                 {
                     "method": "item/completed",
@@ -491,12 +546,12 @@ async def test_concurrent_local_turn_before_start_response_is_not_owned_by_remot
                     },
                 }
             )
-        return {"turn": {"id": "original-native", "status": "inProgress"}}
+        return {"queuedSubmission": {"id": "queued"}}
 
     driver.rpc = SimpleNamespace(call=call)  # type: ignore[assignment]
     started = await driver.execute(command("prompt", prompt="remote intent"))
     assert started["execution_id"] == "original-native"
-    assert len(events) == 2
+    assert len(events) == 3
     assert all(event["execution_id"] == "original-native" for event in events)
     assert "local-race" not in driver.turn_operations
     assert not driver.buffered
