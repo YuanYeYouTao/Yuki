@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import time
 from abc import abstractmethod
 from dataclasses import dataclass, replace
@@ -18,7 +20,7 @@ from tenacity import (
 
 from yuki.domain.messages import ChatRequest, ChatResponse
 from yuki.execution_trace.phases import current_model_phases, model_detail
-from yuki.execution_trace.recorder import record_http_response, trace_span
+from yuki.execution_trace.recorder import record_http_response, record_trace, trace_span
 from yuki.llm.base import (
     LLMConfigurationError,
     LLMError,
@@ -45,6 +47,34 @@ from yuki.runtime.work_activation import current_work_control
 class _PreparedHTTP:
     request: httpx.Request
     payload: dict[str, Any]
+    # The fixed tool list is linked by digest (and the turn's manifest revision),
+    # never copied into each attempt's diagnostics.
+    tools_sha256: str | None = None
+    tool_count: int = 0
+
+    def metadata(self, protocol: str) -> dict[str, Any]:
+        return {
+            "protocol": protocol,
+            "dispatch": "prepared",
+            "model": self.payload.get("model"),
+            "request_bytes": len(self.request.content),
+            "tools_sha256": self.tools_sha256,
+            "tool_count": self.tool_count,
+        }
+
+    def full(self, protocol: str) -> dict[str, Any]:
+        return {
+            "protocol": protocol,
+            "body": {key: value for key, value in self.payload.items() if key != "tools"},
+            "tools_sha256": self.tools_sha256,
+        }
+
+
+def _tools_digest(tools: Any) -> str | None:
+    if not tools:
+        return None
+    encoded = json.dumps(tools, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
 class JSONHTTPProvider(LLMProvider):
@@ -170,13 +200,26 @@ class JSONHTTPProvider(LLMProvider):
                 json=payload,
                 timeout=self._timeout,
             )
-            return _PreparedHTTP(prepared, payload)
+            tools = payload.get("tools")
+            return _PreparedHTTP(
+                prepared,
+                payload,
+                _tools_digest(tools),
+                len(tools) if isinstance(tools, list) else 0,
+            )
 
-    async def _post(self, prepared: _PreparedHTTP) -> tuple[httpx.Response, Any]:
-        async with trace_span(
-            "provider",
-            {"protocol": self.protocol, "body": prepared.payload, "dispatch": "prepared"},
-        ):
+    async def _record_full_attempt(
+        self, prepared: _PreparedHTTP, response: httpx.Response | None
+    ) -> None:
+        """Failed, rejected and retried attempts keep the complete actual exchange."""
+        await record_trace("provider_request", prepared.full(self.protocol))
+        if response is not None:
+            await record_http_response(response)
+
+    async def _post(
+        self, prepared: _PreparedHTTP, *, retry: bool = False
+    ) -> tuple[httpx.Response, Any]:
+        async with trace_span("provider", prepared.metadata(self.protocol)):
             # Keep the real permission/budget fence immediately before HTTP dispatch.
             with model_detail("attempt_dispatch_preparation"):
                 await check_model_dispatch()
@@ -190,10 +233,10 @@ class JSONHTTPProvider(LLMProvider):
             phases = current_model_phases.get()
             if phases is not None:
                 phases.attempts += 1
+            response: httpx.Response | None = None
             try:
                 with model_detail("transport"):
                     response = await self._client.send(prepared.request)
-                await record_http_response(response)
                 try:
                     check_provider_response(response)
                 except LLMError as exc:
@@ -212,21 +255,39 @@ class JSONHTTPProvider(LLMProvider):
                             attempts.reported_usage(usage.get("total_tokens"), usage=usage)
                         exc.diagnostics = {**exc.diagnostics, "usage": usage}
                     raise
-            except BaseException:
+            except BaseException as exc:
                 if finish is not None:
                     await finish("failed", None)
+                if isinstance(exc, Exception):
+                    await self._record_full_attempt(prepared, response)
                 raise
             try:
                 body = response.json()
             except ValueError as exc:
                 if finish is not None:
                     await finish("unknown", None)
+                await self._record_full_attempt(prepared, response)
                 raise LLMInvalidResponseError("provider returned invalid JSON") from exc
+            mapping = body if isinstance(body, dict) else {}
+            diagnostics = self._usage_diagnostics(mapping)
             if finish is not None:
-                mapping = body if isinstance(body, dict) else {}
-                usage = self._usage_diagnostics(mapping).get("usage", {})
+                usage = diagnostics.get("usage", {})
                 usage = usage if isinstance(usage, dict) else {}
                 await finish(str(mapping.get("status", "unknown")), usage.get("completion_tokens"))
+            if retry:
+                await self._record_full_attempt(prepared, response)
+            else:
+                # A successful attempt keeps route, size and usage; model_phases
+                # keeps the logical usage and phase timings.
+                await record_trace(
+                    "provider_response",
+                    {
+                        "http_status": response.status_code,
+                        "dispatch": "response_received",
+                        "response_bytes": len(response.content),
+                        **diagnostics,
+                    },
+                )
         return response, body
 
     async def complete(self, request: ChatRequest) -> ChatResponse:
@@ -242,6 +303,7 @@ class JSONHTTPProvider(LLMProvider):
             with model_detail("retry_backoff"):
                 await asyncio.sleep(seconds)
 
+        retried = False
         try:
             async for attempt in AsyncRetrying(
                 stop=stop_after_attempt(attempts),
@@ -255,7 +317,8 @@ class JSONHTTPProvider(LLMProvider):
                     if work is not None and attempt.retry_state.attempt_number > 1:
                         with model_detail("retry_budget_preparation"):
                             await work.reserve_request(auxiliary=True)
-                    response, raw_body = await self._post(prepared)
+                    retried = attempt.retry_state.attempt_number > 1
+                    response, raw_body = await self._post(prepared, retry=retried)
         except httpx.TimeoutException as exc:
             raise LLMTimeoutError("LLM request timed out") from exc
         except retry_errors as exc:
@@ -272,6 +335,8 @@ class JSONHTTPProvider(LLMProvider):
             with model_detail("provider_response_preparation"):
                 parsed = self._parse(response, request, raw_body)
         except LLMError as exc:
+            if not retried:
+                await self._record_full_attempt(prepared, response)
             if reported_usage:
                 exc.diagnostics = {**exc.diagnostics, "usage": reported_usage}
             usage = exc.diagnostics.get("usage")

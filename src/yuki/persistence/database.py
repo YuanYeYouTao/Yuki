@@ -29,7 +29,7 @@ from yuki.persistence.sqlite_diagnostics import install_sqlite_diagnostics
 from yuki.persistence.vec1 import load_vec1
 from yuki.runtime import work_schema_v1 as _work_schema
 from yuki.runtime.effect_schema import install_indexes
-from yuki.runtime.protocol_schema import install_quota as install_protocol_quota
+from yuki.runtime.protocol_schema import install_protocol_sql
 from yuki.runtime.work_budget_schema import create_current_budget_tables
 
 if TYPE_CHECKING:
@@ -299,7 +299,7 @@ class Database:
                 "ON runtime_work_media_refs(sha256)"
             )
 
-            await connection.run_sync(install_protocol_quota)
+            await connection.run_sync(install_protocol_sql)
             await self._create_fts_schema(connection)
 
     @staticmethod

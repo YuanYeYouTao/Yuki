@@ -130,7 +130,7 @@ class TraceRecorder:
         self,
         database: Database,
         *,
-        retention_days: int = 30,
+        retention_days: int = 14,
         max_payload_bytes: int = 16 * 1024 * 1024,
         writer: DiagnosticWriter | None = None,
     ) -> None:

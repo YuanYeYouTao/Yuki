@@ -21,6 +21,7 @@ from alembic.config import Config
 from sqlalchemy import select, update
 from tests.unit.test_work_protocol_continuity import _control
 
+from yuki.persistence.schema_guard import require_canonical_schema
 from yuki.runtime.protocol_schema import objects, refs
 from yuki.runtime.protocol_store import ProtocolStore
 from yuki.runtime.work_schema_v1 import journal, work
@@ -176,3 +177,5 @@ async def test_upgrade_releases_refs_of_already_closed_works(tmp_path, monkeypat
         works = {row[0] for row in connection.execute("SELECT id FROM runtime_work")}
     assert remaining == {"root-failed", "root-running", "worker-completed"}
     assert works == set(states)
+    # The migrated trigger is exactly the one the schema guard requires.
+    await require_canonical_schema(f"sqlite+aiosqlite:///{path.as_posix()}")

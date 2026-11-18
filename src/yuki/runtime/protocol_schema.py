@@ -35,15 +35,22 @@ usage = sa.Table(
     sa.CheckConstraint("id = 1 AND byte_size >= 0", name="ck_protocol_usage_singleton"),
 )
 
-QUOTA_SQL = (
+PROTOCOL_SQL = (
     "INSERT OR IGNORE INTO runtime_protocol_usage (id, byte_size) VALUES (1, 0)",
     """CREATE TRIGGER IF NOT EXISTS protocol_object_insert AFTER INSERT ON runtime_protocol_objects
     BEGIN UPDATE runtime_protocol_usage SET byte_size=byte_size+NEW.byte_size WHERE id=1; END""",
     """CREATE TRIGGER IF NOT EXISTS protocol_object_delete AFTER DELETE ON runtime_protocol_objects
     BEGIN UPDATE runtime_protocol_usage SET byte_size=byte_size-OLD.byte_size WHERE id=1; END""",
+    # A completed or cancelled Work can no longer resume, so its private journal
+    # objects have no reader; the existing GC reclaims them once unowned. Failed
+    # Work stays resumable, and a completed worker resumes until it is archived.
+    """CREATE TRIGGER IF NOT EXISTS protocol_refs_closed_work AFTER UPDATE OF state ON runtime_work
+    WHEN NEW.state IN ('completed', 'cancelled') AND OLD.state IS NOT NEW.state
+    BEGIN DELETE FROM runtime_protocol_refs WHERE work_id=NEW.id AND (NEW.state='cancelled'
+        OR NOT EXISTS (SELECT 1 FROM runtime_subagents WHERE work_id=NEW.id)); END""",
 )
 
 
-def install_quota(connection: sa.Connection) -> None:
-    for statement in QUOTA_SQL:
+def install_protocol_sql(connection: sa.Connection) -> None:
+    for statement in PROTOCOL_SQL:
         connection.exec_driver_sql(statement)
