@@ -463,7 +463,7 @@ SubagentScheduler 同样启动以恢复原子任务；新子任务接纳关闭�
 
 外部 Agent 由 ExternalAgent 服务管理授权和原操作关联，经用户电脑主动建立的设备通道连接原生 Codex、Claude 或通用 ACP 驱动。原生会话归用户／设备／实例，Work 只拥有自己提交的操作或监督关系。list／get 无需接纳 Work；prompt／queue／watch 保存原 Work 关联；steer／respond／cancel／detach 按当前人物授权操作原资源，不要求另接纳 Work。
 
-prompt／queue／watch 沿稳定调用键登记原 SandboxTaskRun 与 ExternalAgent 操作后即返回原操作视图（设备回执尚未记录时为 unknown／pending），激活不等待设备写入或回复：写出与回复由 ExternalAgent 服务在 writer 外承接，写前再核当前连接、设备授权与原 Work 来源，回复写入原回执并沿原 run 结算。投递不明不重发，设备重连后只按原 ID 查证；原操作查询先返回已持久事实。新的 prompt／queue 只以所选操作或执行定位会话，不预先认领其原生回合。显式 detach 在设备离线或设备确认无原记录时只解除 Work 所属关系，原生状态保持未知，不改写原接纳事实。实例能力只按当前连接的实时声明提前拒绝新输入，原操作控制交设备裁决。run_id 是原 Work 等待引用，execution_id 是原生执行映射的内部 ID，二者不混用；native thread／turn／permission ID 留在适配器映射中。watch 使用 ownership=observe，只接收事实，不作为所属执行阻止 Work 完成。结束监督只 detach，不关闭用户 session、daemon 或兄弟执行。真正属于 Work 的未完成操作在来源撤销／终态时精确取消；取消接纳与原生终态回执分开。
+prompt／queue／watch 沿稳定调用键登记原 SandboxTaskRun 与 ExternalAgent 操作后即返回原操作视图（设备回执尚未记录时为 unknown／pending），激活不等待设备写入或回复：写出与回复由 ExternalAgent 服务在 writer 外承接，写前再核当前连接、设备授权与原 Work 来源，回复写入原回执并沿原 run 结算。投递不明不重发，设备重连后只按原 ID 查证；原操作查询先返回已持久事实。新的 prompt／queue 只以所选操作或执行定位会话，不预先认领其原生回合。显式 detach 在设备离线或设备确认无原记录时只解除 Work 所属关系，原生状态保持未知，不改写原接纳事实。实例能力只按当前连接的实时声明提前拒绝新输入，原操作控制交设备裁决。list 与会话级 get 是在线只读查询，仍等设备回复（连接断开即失败），不在上述承诺内。run_id 是原 Work 等待引用，execution_id 是原生执行映射的内部 ID，二者不混用；native thread／turn／permission ID 留在适配器映射中。watch 使用 ownership=observe，只接收事实，不作为所属执行阻止 Work 完成。结束监督只 detach，不关闭用户 session、daemon 或兄弟执行。真正属于 Work 的未完成操作在来源撤销／终态时精确取消；取消接纳与原生终态回执分开。
 
 重要进度、权限和用户问题先进入原 Work 私有输入与原回执，再确认设备事件。沿原等待／恢复链接入，不逐 token 激活 Main，不复活终态或已撤权 Work。回答绑定原问题和原执行，普通已授权操作不一律升级为人工批准。跨入口查询认原 Person 授权，不拼接 Conversation 历史。外部输出是待核对材料，交付继续通过 send／Social。
 

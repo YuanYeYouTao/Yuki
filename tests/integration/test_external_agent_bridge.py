@@ -1361,6 +1361,118 @@ async def test_device_without_the_original_record_is_never_given_a_second_prompt
         await computer.close()
 
 
+async def test_reconciliation_answer_belongs_to_the_connection_that_gave_it(bridge):
+    """F8: a not_found from one connection is not reported once that connection is gone."""
+    computer = await NativeComputer(bridge).start()
+    try:
+        instance, session_id = await directory(bridge)
+        async with accepted_work(bridge):
+            computer.drop_next = "prompt"
+            operation_id = str(uuid4())
+            await bridge.service.execute(
+                {
+                    "action": "prompt",
+                    "instance_id": instance,
+                    "session_id": session_id,
+                    "prompt": "Answered by a connection that later ends",
+                },
+                operation_id,
+                bridge.source,
+            )
+            await settled(bridge)
+            computer.not_found = {operation_id}
+            await computer.start()
+
+            async def reconciled():
+                return any(
+                    item["action"] == "get"
+                    and item["arguments"].get("operation_id") == operation_id
+                    for item in computer.commands
+                )
+
+            await until(reconciled)
+            await settled(bridge)
+            query = {"action": "get", "operation_id": operation_id}
+            view = await bridge.service.execute(query, str(uuid4()), bridge.source)
+            assert view["reconciliation_status"] == "not_found"
+            await computer.close()
+
+            async def offline():
+                return not bridge.service.connections.online(bridge.device["device_id"])
+
+            await until(offline)
+            gone = await bridge.service.execute(query, str(uuid4()), bridge.source)
+            assert "reconciliation_status" not in gone
+            assert gone["device_online"] is False and gone["uncertain"] is True
+            assert await receipt(bridge, operation_id) is None
+    finally:
+        await computer.close()
+
+
+async def test_reconnect_reads_back_only_controls_whose_answer_still_matters(bridge):
+    """F9: a control is read back while its target is unsettled, not forever."""
+    computer = await NativeComputer(bridge).start()
+    try:
+        instance, session_id = await directory(bridge)
+        targets = []
+        async with accepted_work(bridge):
+            for prompt in ("Finishes before the cancel answer", "Still running"):
+                operation_id = str(uuid4())
+                await bridge.service.execute(
+                    {
+                        "action": "prompt",
+                        "instance_id": instance,
+                        "session_id": session_id,
+                        "prompt": prompt,
+                    },
+                    operation_id,
+                    bridge.source,
+                )
+                targets.append(operation_id)
+            await settled(bridge)
+        finished, running = targets
+        computer.hold = {"cancel"}
+        controls = {}
+        for target in targets:
+            # Outside any Work: no initiating Work waits for these answers.
+            controls[target] = str(uuid4())
+            await bridge.service.execute(
+                {"action": "cancel", "operation_id": target}, controls[target], bridge.source
+            )
+
+        async def held():
+            return set(controls.values()) <= set(computer.held)
+
+        await until(held)
+        await computer.event(finished, "completed", {"status": "completed"})
+        assert (await receipt(bridge, finished))["pending"] is False
+        await computer.close()
+        await settled(bridge)
+        computer.hold = set()
+        computer.commands.clear()
+        await computer.start()
+
+        async def read_back():
+            return any(
+                item["action"] == "get"
+                and item["arguments"].get("operation_id") == controls[running]
+                for item in computer.commands
+            )
+
+        await until(read_back)
+        await settled(bridge)
+        queried = {
+            item["arguments"].get("operation_id")
+            for item in computer.commands
+            if item["action"] == "get"
+        }
+        assert controls[finished] not in queried
+        # Nothing was resent: no second cancel reached the device.
+        assert [item["action"] for item in computer.commands].count("cancel") == 0
+    finally:
+        await computer.close()
+
+
 async def test_late_native_refusal_settles_the_original_run_without_the_activation(bridge):
     """F2: the response arriving after the tool returned still settles the original run."""
     computer = await NativeComputer(bridge).start()
@@ -1653,6 +1765,18 @@ async def test_unowned_native_wait_is_discoverable_metadata_answerable_only_with
         await computer.socket.send(json.dumps(request))
         async with asyncio.timeout(5):
             assert await computer.acknowledged.get() == request["event_id"]
+        # The same computer's wait in another session belongs to that session only.
+        computer.sequence += 1
+        elsewhere = {
+            **request,
+            "event_id": str(uuid4()),
+            "session_id": "another-native-thread",
+            "payload": {**request["payload"], "native_request_id": "other-tool-use"},
+            "sequence": computer.sequence,
+        }
+        await computer.socket.send(json.dumps(elsewhere))
+        async with asyncio.timeout(5):
+            assert await computer.acknowledged.get() == elsewhere["event_id"]
         view = await bridge.service.execute(
             {"action": "get", "session_id": session_id}, str(uuid4()), bridge.source
         )

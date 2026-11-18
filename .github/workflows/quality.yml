@@ -162,6 +162,53 @@ jobs:
           path: test-results/
           retention-days: 7
 
+  # Real Bot + real connector + Claude driver (real SDK, controlled CLI wire) across the
+  # released units: this Bot with this and the released 0.7.0 connector (Desktop's pin
+  # df133fbc), and the production Bot (8e6594cf) with this connector.
+  claude-cross-version:
+    name: Claude connector across Bot and connector versions
+    runs-on: ubuntu-24.04
+    env:
+      RELEASED_CONNECTOR: df133fbcb638c508041554a083c42c9aaee390b1
+      PRODUCTION_BOT: 8e6594cf10c7cb97688ce0e9bac9e80e8733539a
+      TEST: tests/integration/test_claude_connector_cross_version_e2e.py
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.11.31"
+          enable-cache: true
+      - run: uv sync --frozen --all-extras --python 3.12
+      - name: Extract the released connector and the production Bot sources
+        run: |
+          mkdir -p "$RUNNER_TEMP/released" "$RUNNER_TEMP/production"
+          git archive "$RELEASED_CONNECTOR" packages/yuki-agent-connector/src \
+            | tar -x -C "$RUNNER_TEMP/released"
+          git archive "$PRODUCTION_BOT" src | tar -x -C "$RUNNER_TEMP/production"
+          # The native SQLite extension is built, not tracked; it is the same library.
+          mkdir -p "$RUNNER_TEMP/production/src/yuki/_native"
+          cp -R src/yuki/_native/. "$RUNNER_TEMP/production/src/yuki/_native/"
+      - name: Each pairing (the SDK belongs to the connector's environment)
+        run: |
+          set -e
+          run() {
+            uv run --no-sync --with claude-agent-sdk==0.2.172 pytest "$TEST" -q \
+              --strict-markers -o pythonpath="$1"
+          }
+          run "src packages/yuki-agent-connector/src"
+          run "src $RUNNER_TEMP/released/packages/yuki-agent-connector/src"
+          run "$RUNNER_TEMP/production/src packages/yuki-agent-connector/src"
+          ls test-results/claude-connector-cross-version/
+          test "$(ls test-results/claude-connector-cross-version/ | wc -l)" -eq 3
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: claude-cross-version
+          path: test-results/claude-connector-cross-version/
+          retention-days: 7
+
   desktop-headed:
     name: Real headed desktop environment
     needs: changes

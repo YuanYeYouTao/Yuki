@@ -72,9 +72,6 @@ class ExternalAgentService:
         self._retiring: dict[str, asyncio.Task[None]] = {}
         self._dispatches: dict[str, asyncio.Task[None]] = {}
         self._queries: dict[str, asyncio.Task[None]] = {}
-        # Last device answer that recorded nothing (for example not_found). Diagnostic only:
-        # it is never a receipt, never success and never permission to dispatch again.
-        self._reconciliation: dict[str, str] = {}
 
     async def close(self) -> None:
         # Closing Yuki's transport never sends native cancel or closes a user daemon.
@@ -303,11 +300,11 @@ class ExternalAgentService:
             return
         status = result.get("status")
         if isinstance(status, str) and status != "not_found":
-            self._reconciliation.pop(identity, None)
+            connection.reconciliation.pop(identity, None)
             await self._settle(identity, result)
         else:
             # Absence of a journal result never authorizes another dispatch.
-            self._reconciliation[identity] = status or "query_failed"
+            connection.reconciliation[identity] = status or "query_failed"
 
     async def _connection(
         self, instance: AgentInstanceModel, *, original: bool = False
@@ -462,11 +459,10 @@ class ExternalAgentService:
                 else:
                     # Return persisted facts now; the device answer lands in the receipt.
                     self._query_original(operation.id, connection, instance.local_id)
-                if (status := self._reconciliation.get(operation.id)) is not None:
-                    view = self._unavailable_view(
-                        view, status, device_online=self.connections.online(instance.device_id)
-                    )
-                    view["reconciliation_status"] = status
+                    # What this live connection last answered for it, if it held no record.
+                    if (status := connection.reconciliation.get(operation.id)) is not None:
+                        view = self._unavailable_view(view, status, device_online=True)
+                        view["reconciliation_status"] = status
             events = await self.repository.event_page(operation.id, args.get("cursor", 0))
             return {
                 **view,

@@ -634,9 +634,7 @@ async def test_a_still_queued_input_is_never_withdrawn_by_interrupting_another_t
                     "arguments": {"operation_id": "appender"},
                 }
             )
-        assert not any(
-            w.get("request", {}).get("subtype") == "interrupt" for w in transport.writes
-        )
+        assert not any(w.get("request", {}).get("subtype") == "interrupt" for w in transport.writes)
         with pytest.raises(DriverError, match="busy"):
             await driver.execute(
                 {

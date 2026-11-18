@@ -256,6 +256,8 @@ stdout 新增三种行，不改变状态行的形状：
 
 确认丢失后按原 operation／run 查询。unknown 不代表未执行，不换 ID 重发。所有改动类动作（prompt／queue／watch 与 steer／answer／cancel／detach）登记后立即返回，写出、设备回复及其结算由服务器承接，设备不读不答也不会占住 Yuki 的工作：prompt／queue／watch 的结果沿原 run 回报；控制动作先结算目标、再写自己的回执（中途重启时回执为空，重连后按原 ID 读回并重新结算，各步幂等），然后作为私有输入告知发起它的 Work，Work 正等待该目标 run 时立即唤醒。设备重连后服务器只按原 ID 查询回执为空的操作，设备答 not_found 只是查证事实，不授权重发。设备离线或确认没有原记录时，显式 detach 只解除 Work 所属关系（回执 `released_without_device`），原生状态保持未知。
 
+`list` 与会话级 `get`（不带 operation_id）是在线只读查询：连接器从本机记录读取会话目录和历史，不经过原生 SDK 会话或权限回调，但这次调用会等设备回复，设备连接断开时随之失败。所以“不占住工作”的承诺覆盖所有改动类动作和按原 operation 的查询，不覆盖这两种在线读。查证设备重连后的回执丢失只按原 ID 进行：控制动作只在目标仍未结算或发起它的 Work 仍未结束时读回，之后保持未知回执；设备对原 ID 答 not_found 只作为这条连接上的诊断显示，连接结束即失效。
+
 Claude（连接器 0.8.0 起）每条输入用自己的 UUID 写入并开启 `--replay-user-messages`；CLI 取用这条输入时回放同一 UUID，才算接纳，prompt 返回只表示已写入（`submitted`）。prompt 只接受空闲会话，会话正执行自己发起的回合（例如后台任务完成通知）或已有输入排队时直接返回冲突。`queue` 追加一条输入，落点由 CLI 决定：它在当前回合的下一个工具边界并入（回执 `disposition: merged_into_running_turn`，只告知这条追加的去向，不转交该回合的结果、问题或控制），或在回合结束后开启新回合（`started_new_turn`，归追加它的操作）；挂起的权限请求会让它一直排着。这不是 steer：Claude 不能把输入绑定到指定回合，也不能撤回排队中的单条输入（interrupt 只停止当前回合，排队输入随后仍会执行），对排队输入的 cancel 返回 `queued_input_not_withdrawable`。行为依据 2026-11-18 在隔离目录用 Claude Code 2.1.311 做的实测。
 
 没有任何操作或 watch 接收的原生等待（例如 CLI 为已完成后台任务自行开启的回合请求 Bash 权限）只上传元信息：工具名、请求 ID、SDK owner 连接 ID 与时间，不上传命令、路径或正文。会话查询的 `pending_unowned_requests` 列出仍待处理者，仅该电脑所属人物族可见；只能以 deny 回答（内容未上传，盲目允许等于批准看不见的命令），允许须在本机 Claude 中处理。回答绑定原 SDK owner 与仍挂起的原 callback，只消费一次。重要事件先进入服务器原回执和 Work 私有输入，再确认设备事件；同一事件重传不重复产生输入。高频 token 不作为持久进度洪流，原生完整上下文不灌入 Yuki 的公共历史。

@@ -1,12 +1,15 @@
 # ruff: noqa: E402
-"""Real Bot + real Connector + Claude driver (real SDK, controlled CLI wire), any version.
+"""Real Bot + real Connector + Claude driver (real SDK, controlled CLI wire), across versions.
 
-Run against the connector in this tree (0.8.0) and, for cross-version evidence, against
-the deployed 0.7.0 package by overriding pytest's ``pythonpath`` with its ``src``.
+Three pairings, selected by pytest's ``pythonpath`` (CI job ``claude-cross-version``):
+- this Bot with this connector (0.8.0);
+- this Bot with the released 0.7.0 connector ``src``;
+- the production Bot ``src`` (before non-blocking dispatch) with this connector.
+The production Bot with 0.7.0 is today's deployment and the stall itself; it is skipped.
 No model, no paid call: the CLI side is a deterministic stream-json peer.
 The Claude SDK belongs to the connector's environment, not the Bot's, so run it with
 ``uv run --with claude-agent-sdk==<connector pin> pytest <this file>``.
-Artifact: ``test-results/claude-connector-cross-version/<connector version>.json``.
+Artifact: ``test-results/claude-connector-cross-version/bot-<kind>-connector-<version>.json``.
 """
 
 import asyncio
@@ -33,17 +36,35 @@ from yuki_agent_connector.connector import Connector
 from yuki_agent_connector.drivers import claude as claude_module
 from yuki_agent_connector.journal import Journal
 
-from yuki.external_agents.db_models import AgentOperationModel
+from yuki.external_agents import service as service_module
+from yuki.external_agents.db_models import AgentEventModel, AgentOperationModel
 from yuki.external_agents.errors import ExternalAgentArgumentError
 
-REPLAYS_INPUT = connector_version >= "0.8.0"
+# Feature facts of the code actually loaded, not version strings.
+# A connector that admits by replayed input UUID also declares Claude `queue`.
+REPLAYS_INPUT = "queue" in claude_module.ClaudeDriver.capabilities
+# A Bot whose device RPCs belong to the service (not the activation) can drain them.
+NON_BLOCKING_BOT = hasattr(service_module.ExternalAgentService, "drain")
+BOT = "non-blocking" if NON_BLOCKING_BOT else "production"
 ARTIFACT = Path(__file__).resolve().parents[2] / "test-results" / "claude-connector-cross-version"
+
+pytestmark = pytest.mark.skipif(
+    not NON_BLOCKING_BOT and not REPLAYS_INPUT,
+    reason="production Bot with the 0.7.0 connector is the deployment that stalls",
+)
 
 
 def record(**facts: Any) -> None:
     ARTIFACT.mkdir(parents=True, exist_ok=True)
-    facts = {"connector_version": connector_version, "connector": claude_module.__file__, **facts}
-    (ARTIFACT / f"{connector_version}.json").write_text(json.dumps(facts, indent=2) + "\n")
+    facts = {
+        "bot": BOT,
+        "bot_service": service_module.__file__,
+        "connector_version": connector_version,
+        "connector": claude_module.__file__,
+        **facts,
+    }
+    path = ARTIFACT / f"bot-{BOT}-connector-{connector_version}.json"
+    path.write_text(json.dumps(facts, indent=2) + "\n")
 
 
 class CliWire(Transport):
@@ -201,6 +222,14 @@ async def test_silent_claude_cli_never_holds_the_work_on_any_connector_version(
                 "result": "done",
             }
         )
+
+        async def finished():
+            async with bridge.database.read_session() as reader:
+                row = await reader.get(AgentOperationModel, operation)
+                return json.loads(row.result_json or "{}").get("pending") is False
+
+        # Every pairing settles the original prompt from the turn's own result.
+        await until(finished)
         # The CLI wakes itself for a finished background task and asks for Bash.
         await wire.incoming.put(
             {
@@ -232,6 +261,43 @@ async def test_silent_claude_cli_never_holds_the_work_on_any_connector_version(
             )
             return view if view["pending_unowned_requests"] else None
 
+        if not NON_BLOCKING_BOT:
+            # The production Bot stores the metadata-only wait without projecting it and
+            # keeps the connection; it has no deny path, so the CLI keeps waiting.
+            async def stored():
+                async with bridge.database.read_session() as reader:
+                    return list(
+                        await reader.scalars(
+                            select(AgentEventModel).where(
+                                AgentEventModel.operation_id.is_(None),
+                                AgentEventModel.kind == "permission",
+                            )
+                        )
+                    )
+
+            await until(stored)
+            [event] = await stored()
+            payload = json.loads(event.payload_json)["payload"]
+            assert payload["unowned"] is True and payload["tool"] == "Bash"
+            assert "private.txt" not in event.payload_json
+            assert bridge.service.connections.online(bridge.device["device_id"])
+            view = await bridge.service.execute(
+                {"action": "get", "session_id": session_id}, str(uuid4()), bridge.source
+            )
+            assert "pending_unowned_requests" not in view
+            assert not any(
+                item["type"] == "control_response"
+                and item["response"].get("request_id") == "self-started"
+                for item in wire.writes
+            )
+            record(
+                capabilities=instance["capabilities"],
+                prompt_returned_pending=True,
+                queue="written_to_cli",
+                unowned_wait="stored_metadata_only_not_projected_no_deny_path",
+                connection_online=True,
+            )
+            return
         if not REPLAYS_INPUT:
             # 0.7.0 never surfaces a wait nobody owns; nothing new reaches the server.
             await asyncio.sleep(0.5)

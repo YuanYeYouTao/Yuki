@@ -593,6 +593,10 @@ async def test_automation_transitions_keep_current_definition_and_original_recei
 def test_management_openapi_comes_from_real_response_models():
     document = client_openapi()
     assert document["info"]["x-yuki-api-revision"] >= 9
+    # Revision 13 adds the step kind, tool, agent action and public detail.
+    step = document["components"]["schemas"]["PublicStep"]
+    assert {"kind", "tool", "action", "detail"} <= set(step["required"])
+    assert document["info"]["x-yuki-api-revision"] >= 13
     paths = document["paths"]
     for path in (
         "/client/v1/memory/facts",

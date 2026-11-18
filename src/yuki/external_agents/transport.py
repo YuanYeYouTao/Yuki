@@ -27,6 +27,9 @@ class DeviceConnection:
         self.instances: set[str] = set()
         # Native actions each available instance declared on this very connection.
         self.declared: dict[str, frozenset[str]] = {}
+        # Original operations this connection answered without a record (for example
+        # not_found). Diagnostic only, never a receipt, and gone with the connection.
+        self.reconciliation: dict[str, str] = {}
         self.device_capabilities: dict[str, Any] = {}
         self._send_lock = asyncio.Lock()
 

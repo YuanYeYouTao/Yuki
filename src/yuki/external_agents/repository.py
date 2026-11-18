@@ -13,6 +13,7 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 from sqlalchemy import and_, func, or_, select, text, update
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from yuki.client_api.db_models import ClientDeviceModel
 from yuki.client_api.errors import ClientError
@@ -190,8 +191,10 @@ class AgentRepository:
         """Native waits in this session that no operation received, still unresolved.
 
         Only metadata was uploaded for them (tool name, time); never their content.
-        Callers have already authorized the actor for this instance's device.
+        Callers have already authorized the actor for this instance's device. Only
+        this session's unowned waits and their resolutions are read.
         """
+        stored = AgentEventModel.payload_json
         async with self.database.read_session() as reader:
             rows = (
                 await reader.execute(
@@ -202,21 +205,24 @@ class AgentRepository:
                         AgentEventModel.created_at,
                     )
                     .where(
-                        AgentEventModel.device_id == instance.device_id,
                         AgentEventModel.operation_id.is_(None),
+                        AgentEventModel.device_id == instance.device_id,
+                        func.json_extract(stored, "$.instance_id") == instance.local_id,
+                        func.json_extract(stored, "$.session_id") == native_session,
+                        or_(
+                            and_(
+                                AgentEventModel.kind.in_(("permission", "question")),
+                                func.json_extract(stored, "$.payload.unowned") == 1,
+                            ),
+                            func.json_extract(stored, "$.payload.permission_resolved").is_not(None),
+                        ),
                     )
                     .order_by(AgentEventModel.id)
                 )
             ).all()
         pending: dict[str, dict[str, Any]] = {}
         for identity, kind, payload_json, created in rows:
-            event = json.loads(payload_json)
-            if (
-                event.get("instance_id") != instance.local_id
-                or event.get("session_id") != native_session
-            ):
-                continue
-            payload = event.get("payload")
+            payload = json.loads(payload_json).get("payload")
             if not isinstance(payload, dict):
                 continue
             if kind in {"permission", "question"} and payload.get("unowned") is True:
@@ -910,24 +916,50 @@ class AgentRepository:
     async def unconfirmed(self, device_id: str) -> list[tuple[str, str]]:
         """Operations whose device answer was never recorded and still matters.
 
-        Run-bearing operations of live Work, and every control (its target may still
-        be unsettled). Each is only read back by its original ID, never resent.
+        Run-bearing operations of live Work; controls while their target is still
+        unsettled or their initiating Work is live. Once neither holds, the answer
+        changes nothing and the control keeps its unknown receipt. Each is only read
+        back by its original ID, never resent.
         """
+        target = aliased(AgentOperationModel)
+        live_work = work.c.state.not_in(TERMINAL)
         async with self.database.read_session() as reader:
             rows = await reader.execute(
                 select(AgentOperationModel.id, AgentInstanceModel.local_id)
                 .join(AgentInstanceModel, AgentInstanceModel.id == AgentOperationModel.instance_id)
                 .outerjoin(work, work.c.id == AgentOperationModel.work_id)
+                .outerjoin(
+                    target,
+                    target.id
+                    == func.json_extract(
+                        AgentOperationModel.command_json, "$.arguments.operation_id"
+                    ),
+                )
                 .where(
                     AgentInstanceModel.device_id == device_id,
                     AgentOperationModel.result_json.is_(None),
                     AgentOperationModel.detached_at.is_(None),
                     or_(
+                        and_(AgentOperationModel.run_id.is_not(None), live_work),
                         and_(
-                            AgentOperationModel.run_id.is_not(None),
-                            work.c.state.not_in(TERMINAL),
+                            AgentOperationModel.action.in_(
+                                ("steer", "respond", "cancel", "detach")
+                            ),
+                            or_(
+                                live_work,
+                                and_(
+                                    target.id.is_not(None),
+                                    target.detached_at.is_(None),
+                                    or_(
+                                        target.result_json.is_(None),
+                                        func.coalesce(
+                                            func.json_extract(target.result_json, "$.pending"), 1
+                                        )
+                                        != 0,
+                                    ),
+                                ),
+                            ),
                         ),
-                        AgentOperationModel.action.in_(("steer", "respond", "cancel", "detach")),
                     ),
                 )
                 .order_by(AgentOperationModel.created_at)
