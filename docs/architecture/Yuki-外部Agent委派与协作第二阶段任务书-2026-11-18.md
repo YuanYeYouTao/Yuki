@@ -248,7 +248,7 @@ D7 的实验事实（【协调者实验】，Claude Code 2.1.311、Codex CLI 0.1
 **observe 的实现**
 1. **服务端**：观察记录下的操作只允许 `get` 与 observe 型 watch。`respond`／`prompt`／`queue`／`steer`／`cancel` 以观察记录或其操作为目标时，在执行处拒绝（`observe_only`），不登记、不派发。观察记录的事件输入**不带 `permission_id`**，卡片只写"在本机等你处理"。
 2. **连接器**（0.9.0）：watch 增加 `observation: "observe"` 标记。observe watch 收到的权限与提问只上传元信息（工具名、时间、原生请求 ID），**不登记为可由 Yuki 回答的请求**；Codex 驱动收到的 server request 不放进 `self.requests` 给这个 watch 用。respond 指向 observe watch 的请求时返回 `observe_only`。
-3. **Claude 终端会话**：连接器没有它的回调（G2、G3）。observe 的事实来源只能是只读的：`claude agents --json` 的会话状态，或其 transcript 文件的变化【待验证 E3】。不靠 hooks 修改用户配置，除非用户另行同意。没有可靠来源时，Claude 终端会话的 observe 如实缩小为"能看历史与是否活着，不承诺及时通知等待批准"。
+3. **Claude 终端会话**：连接器没有它的回调（G2、G3）。observe 的事实来源是只读的会话注册表（`$CLAUDE_CONFIG_DIR/sessions/<pid>.json`，即 `claude agents --json` 的来源）：`status` 为 idle／busy／waiting，等批准时带 `waitingFor:"permission prompt"`，约 1.6 秒内出现（§15 E3）。连接器只能得知"在等"，看不到也答不了终端里的批准框，正合 observe 的要求。transcript 只作活动与回合结束的弱补充，不能区分"等批准"与"长工具"。不靠 hooks 修改用户配置。
 4. **通知谁**：观察记录没有父 Work（它不能依附某个会结束的 Work，否则 Work 结束通知就丢了）。唤醒类事实作为一条输入交给原会话的路由者，以现有的无用户事件入口（与定时任务同类的可信执行身份，`development-contract.md` §1）启动一次普通 Main，由她用 `send` 告诉用户【推断，具体入口实施时核对】。观察记录独立存在，直到用户显式停止或原生会话消失（Q3 已定）。
 5. **Desktop**：观察记录在 Works 列表中显示为"Yuki 正在看"，取消即停止观察；它的请求在「等你回答」里显示为"在终端处理"，没有回答按钮。
 
@@ -268,9 +268,9 @@ D7 的实验事实（【协调者实验】，Claude Code 2.1.311、Codex CLI 0.1
 
 | 执行者 | 映射 | 范围外怎么来 |
 |---|---|---|
-| Claude | `cwd` + `add_dirs=write_paths`；`permission_mode="acceptEdits"`；`allowed_tools` 写入 `Bash(<前缀>:*)` 等；必要时 `disallowed_tools` | CLI 规则判为 ask 时走 `can_use_tool`（`claude.py:316-331`），连接器核范围后上报。用户自己的 allow 规则是否先生效、会不会绕过委派范围【待验证 E6】；若会，需要连接器用 `settings` 或调整 `setting_sources`，这一点会改变对用户本地设置的尊重方式，实施前报告 |
-| Codex | `turn/start` 与 `thread/start`／`thread/resume` 传 `sandboxPolicy: workspaceWrite{writableRoots, networkAccess}` 与 `approvalPolicy: "on-request"`（0.169 schema【代码事实】）；范围按回合传，所以同一线程上用户自己的回合不受影响 | 越出沙箱时原生发 approval request（`codex.py:714-724`），连接器上报 |
-| ACP | 没有标准范围。连接器在自己实现的客户端回调处核对：`write_text_file` 只写 `write_paths` 内，`create_terminal` 只跑 `commands` 内（`acp.py:603-640`）；`session/request_permission` 按 toolCall 的 kind 与 locations 判断，范围内选原生给出的 allow 选项，范围外上报 | 回调处拒绝时返回 ACP 错误；权限请求上报 |
+| Claude | `cwd` + `add_dirs=write_paths`；保留用户的 `setting_sources`；用 `settings` 覆盖 `permissions.ask`（Bash、Edit、Write、NotebookEdit、WebFetch、SendMessage 等有副作用的工具），让每次调用都进 `can_use_tool`，由连接器按范围自动批准或上报；范围外绝对禁止的可加 `disallowed_tools`（路径规则写成 `Edit(//绝对路径/**)`）。E6 证实：只用 acceptEdits＋`allowed_tools` 时，用户已 allow 的范围外写入会绕过委派范围；`ask` 覆盖压过用户 allow（§15） | 每次副作用调用都到连接器：范围内自动批准，范围外上报。不清空 `setting_sources`（用户的 CLAUDE.md、hooks、MCP 照常加载），只是委派会话里用户的 allow 规则不再越过委派范围 |
+| Codex | Yuki 的回合传 `sandboxPolicy: workspaceWrite{writableRoots, networkAccess}` 与 `approvalPolicy: "on-request"`（0.169 schema）。**E6 推翻了"按回合传、不影响用户回合"**：策略会写进线程设置，留给之后不带策略的回合（包括用户 TUI 的回合，额外可写根会外泄给用户回合）。所以连接器在 Yuki 回合结束或释放时，把线程设置恢复为 Yuki 第一次接触该线程前的值；恢复不了时只接受不超出线程现有策略的范围（不加额外可写根），并在回执中说明（§15） | 越出沙箱时原生发 approval request，连接器只对 Yuki 自己开启的回合按范围自动批准或上报；用户回合的请求永不回答（app-server 不区分回合归属，§15 E1(c)） |
+| ACP | 没有标准范围。**E5 推翻了"在回调处核对"**：两个真实 Agent（claude-agent-acp、codex-acp）从不调用 `fs/write_text_file`／`terminal/create`，文件与命令由原生直接执行；而且会话默认继承用户的 auto／guardian 模式，范围外写入不发 `request_permission`。所以带范围的委派在 `session/new`／`load` 后显式 `session/set_mode` 到会询问的模式（claude-agent-acp 的 `default`，codex-acp 的 `read-only`／`workspace-write`），再按 `session/request_permission` 判断：toolCall 的 kind、locations，以及 locations 缺失时的 `rawInput.command`／`rawInput.file_path`／`rawInput.cwd`；范围内选原生给出的 allow 选项。回调仍按范围核对（防御的不是这两个 Agent，而是会调用回调的 Agent）。没有会询问的模式时如实拒绝带范围的委派（§15） | 权限请求上报；codex-acp 的拒绝选项 `cancel` 会结束整轮，上报时如实标出 |
 
 **范围外请求的路径**
 1. 委派记录进入 `waiting_user`，父 Work 被唤醒，卡片带请求摘要（工具、目标路径或命令的必要元信息）。
@@ -338,7 +338,7 @@ D7 的实验事实（【协调者实验】，Claude Code 2.1.311、Codex CLI 0.1
 
 ### 4.8 自发回合的因果归属（第一阶段 §7.3，D8）
 
-**改用"进程归属"而不是"任务链"**【推断，待 E7 验证】
+**改用"进程归属"而不是"任务链"**（E7 证实：后台任务通知与 ScheduleWakeup 开启的回合都发生在创建该会话的 SDK owner 进程里，没有 user 帧也没有回放帧；识别依据为"没有本方未取用输入时出现 `session_state_changed=running`"，后台任务回合还带原 `tool_use_id`）
 - Claude 的自发回合（ScheduleWakeup、后台任务通知）只会发生在某个 CLI 进程里；Yuki 侧的 CLI 进程是连接器为某个委派打开的 SDK owner（`claude.py:310-359`）。**这个进程存在，就是因为那个委派**。所以 SDK owner 在委派拥有期间开启的回合，归该委派。这与第一阶段撤销的"同一 session／最后一个 Work"不同：依据是进程的创建来源，而不是会话 ID 或时间先后。
 - 委派释放后（§4.11），连接器在回合边界关闭这个进程，之后不再有它的自发回合；关闭之前出现的回合是无主事件，交给路由者，其等待沿第一阶段规则只能 deny。
 - 第一阶段撤销 C1 的三条理由（单执行绑定冲突、同一 task 多次通知、`scheduled-trigger` 子类型）都不再适用：不改写原 prompt 的执行绑定；归属在 owner 层，不依赖 task-id；定时触发的回合本来就属于这个 owner。自发回合在服务端登记为该委派下的一条"后续执行"操作（确定性 ID，由 owner 的 connection_id 与原生回合 ID 派生），有自己的 execution 与回执，不塞进原 prompt 的执行槽。
@@ -372,17 +372,17 @@ D7 的实验事实（【协调者实验】，Claude Code 2.1.311、Codex CLI 0.1
 
 | 执行者 | "终端继续跑，Yuki 也帮忙" | 做法 |
 |---|---|---|
-| Codex（用户 TUI 跑在 managed daemon 上） | **支持** | delegate 或 takeover 指向该线程：连接器经 proxy `thread/resume`（已有）。原生空闲时 `turn/start`；用户的回合在跑时用 `thread/queue/add` 或 `turn/steer expectedTurnId`（已有，`codex.py:1053-1100`）。双方实时看到对方的回合【协调者实验】。Yuki 只回答自己开启的回合的请求（`turn_operations`），**绝不回答用户回合的请求**；用户回合的请求在 delegate 关系下也只作为"用户在终端处理"的事实 |
+| Codex（用户 TUI 跑在 managed daemon 上） | **支持** | delegate 或 takeover 指向该线程：连接器经 proxy `thread/resume`（已有）。Yuki 的新输入一律用 `thread/queue/add`（空闲时立即开回合，忙时排在后面），按 `clientUserMessageId` 归属；**不用 `turn/start`**：E2 证实对运行中的线程 `turn/start` 不被拒，而是并入用户的回合并返回用户的回合 ID，会把用户回合误登记为 Yuki 的。steer 仍用 `turn/steer expectedTurnId`。双方实时看到对方的回合【协调者实验】。Yuki 只回答自己开启的回合的请求（`turn_operations`），**绝不回答用户回合的请求**；用户回合的请求在 delegate 关系下也只作为"用户在终端处理"的事实 |
 | Codex（`--no-daemon` TUI） | 不支持 | thread-store 冲突即报 `session_live_elsewhere`，只能交接 |
 | Claude | **不支持** | 恢复前查活会话：用官方只读 `claude agents --json` 核对 sessionId（在该实例的 `CLAUDE_CONFIG_DIR` 下）。活着就拒绝，返回 `session_live_elsewhere` 和可选做法：显式分叉（`fork_session=True`，得到新会话 ID，原会话不动）、等用户交接、或跨会话消息（Q5）。检测与打开之间的竞态写进风险（§11），不对用户文件加锁 |
-| ACP | 不支持 | 只交接 |
+| ACP | 不支持 | 只交接；E5 发现第二个进程对正在使用的会话 `session/load` 也被接受，是与 G8 同类的静默分叉，连接器只对自己持有的进程做交接，用户自己编辑器里的 ACP 会话无法检测，写进风险 |
 
 **交接流程**（三种执行者都验收）
 1. 用户在终端停下会话（退出 TUI 或 CLI）。
 2. 用户让 Yuki 接手：`start_subtask(relationship="takeover", session=…)`。连接器按原生方式带完整历史恢复（Claude `resume`、Codex `thread/resume`、ACP `session/resume` 或 `session/load`），先过上面的实时性检查。
 3. Yuki 在范围内工作。
 4. 用户要接回：`manage_task(release, id)`。连接器在当前回合结束后关闭 Yuki 持有的原生进程（Claude SDK 进程退出；ACP 进程退出或会话关闭；Codex 只放开 Yuki 的客户端，不动 daemon，`codex.py:236-253`）。这一步修正 G9。
-5. 用户在终端 `claude --resume <id>`／`codex resume <id>` 接回，看到包括 Yuki 回合在内的完整历史，没有分叉【待验证 E8】。
+5. 用户在终端 `claude --resume <id>`／`codex resume <id>` 接回，看到包括 Yuki 回合在内的完整历史，没有分叉（E8 已证实：Claude 在回合边界关闭 SDK owner 后单链无分叉；Codex 用户经同一 daemon `resume --remote` 接回，线程 ID 不变；ACP 两个进程都退出后 `session/load` 回放并继续，`session/resume` 不回放）。
 
 **不做**：自建共享会话、中继、合并两个 JSONL 分支（D7）。
 
@@ -669,3 +669,48 @@ Bot 在自动化运行中途重启，该次运行丢失（协调者转述的运�
 - **事实**：#636 的滚雪球数据；第一阶段 §17.3 的步骤统计；Codex 0.169 schema 字段（本机生成）；SDK 0.2.172 的 `ClaudeAgentOptions` 字段（本机安装文件）；DeepSeek 文档引文。
 - **推断**：子 Work 复用的收益（§4.1）；owner 归属的充分性（§4.8）；观察通知经路由者的入口（§4.3 第 4 点）；新 Bot + 0.8.0 下 observe 的单边保证（§7.2）；事故 Work 步骤与 G4 的逐步对应。
 - **待验证**：E1–E9。
+
+---
+
+## 15. 实验结果与设计修订（§8 第 1 段，2026-11-18 实施前）
+
+**做法**：全部在会话临时目录的隔离项目里进行，私有 tmux 服务器（`-L p2claude`、`-L p2codex`），新开的一次性会话；Claude 用 `--model haiku`，Codex 用自启的 `codex app-server --listen unix://…`（不连用户的 managed daemon），模型 gpt-6-luna、effort low。没有接触、恢复、发消息给或结束用户正在运行的 Claude／Codex 会话与进程。结束后 `claude purge`、`thread/delete` 清理了实验会话，`~/.claude.json` 与 `~/.codex/config.toml` 与实验前一致。
+
+**产物**：[`docs/operations/external-agent-phase2-experiments/`](../operations/external-agent-phase2-experiments/)，`claude/` 与 `codex-acp/` 下每项一个目录，含 `frames*.jsonl`（帧类型、各类 ID、相对时间，不含正文、命令文本与密钥；临时路径已替换为 `<scratch>`）、`commands.sh` 与驱动脚本，以及逐项记录事实、版本与未验证项的 `summary.json`。E9 的产物由 `tests/unit/test_model_admission_order.py` 生成（`test-results/model-admission/e9.json`）。
+
+**版本**：Claude Code 2.1.311，claude-agent-sdk 0.2.172；codex-cli 0.169.0；ACP：claude-agent-acp 0.108.0（@agentclientprotocol，内置 claude-agent-sdk 0.3.326，用现有 Claude 登录与 haiku）、codex-acp 2.7.0（@agentclientprotocol，用现有 Codex 登录）、Gemini CLI 0.68.0（无凭据，只到能力层：`session/new` 返回 "Gemini API key is missing"）。
+
+### 15.1 事实
+
+| 编号 | 观察到的事实 | 用真实 Agent 验证了什么 |
+|---|---|---|
+| E1 Codex 无主 | (a) 审批挂起时客户端断开：回合保持 inProgress，app-server 不自动拒绝；之后任一客户端 `thread/resume` 立即收到**同一个** requestId 并可回答。(a2) 没有任何客户端时回合照常运行，审批照常挂起等待下一个 resume 的客户端。(b) 空闲线程 `queue/add` 立即开回合；发起方断开后排队项照样在前一回合后开回合，`userMessage.clientId` 即 `clientUserMessageId`。(c) **app-server 不区分回合归属**：每个订阅者都收到对方回合的 server request，脚本拒绝了 TUI 回合的请求且被接受，两边都收到 `serverRequest/resolved`，先答者生效。(d) 150 秒内没有超时或改派 | codex-cli 0.169 自启 app-server＋TUI `--remote`；更长等待未观察 |
+| E2 Codex 共享 | 空闲时第二个客户端 `turn/start`、运行中 `turn/steer`（错的 expectedTurnId 得 -32600 "expected active turn id"）、`queue/add` 都可用，双方实时看到对方回合。**对运行中的线程 `turn/start` 不被拒，返回活动回合 ID、并入用户回合**（相当于 steer）。`--no-daemon` TUI 显示 "This conversation is open in another app… r retry / f fork"；第二个 app-server `thread/resume` 得 -32600 "thread … already has an active writer" | 同上；用户真实的 managed daemon 按规定未使用，以第二个自启 app-server 代替 |
+| E3 Claude 活会话 | `claude agents --json` 每行有 pid、cwd、kind、startedAt、sessionId、name、status：空闲 `idle`，回合中 `busy`（回车后 0.14 s），弹批准框 `waiting` 且 `waitingFor:"permission prompt"`（约 1.6 s），回答后 0.13 s 回到 busy。数据来自 `$CLAUDE_CONFIG_DIR/sessions/<pid>.json`（另有 `entrypoint` cli／sdk-py）。SDK 会话也列出，`can_use_tool` 挂起时同样 `waiting`。信任对话框确认后 0.7 s 出现；`--resume` 后带被恢复的 sessionId。换 `CLAUDE_CONFIG_DIR` 列表为空。等批准期间 transcript 末行只是没有 tool_result 的 tool_use，与长工具分不开 | Claude Code 2.1.311；已登录的第二个 profile 与 Windows 未验证 |
+| E4 跨会话消息 | 默认设置下 SDK 进程 SendMessage 送达终端会话：接收方开一个 `promptSource=system`、`turnOrigin=peer` 的回合并在自己那边作答，发送方 85 s 内收不到回复（接收方没有回发）。`crossSessionInbound` refuse：接收方不变、发送方多一个系统通知回合；hold：接收方向用户显示暂存、不开回合。CLI 没有发消息子命令，每条消息至少花发送方一个 Claude 回合。**默认权限模式下 SDK 会话的 SendMessage 不经过 `can_use_tool`** | 同上；未使用未公开的 UDS 原始协议 |
+| E5 ACP | 能力：claude-agent-acp 有 loadSession、list／resume／fork／close／delete、模式 default／acceptEdits／plan／auto／bypassPermissions；codex-acp 有 loadSession、list／resume／fork／close、模式 read-only／workspace-write／agent／agent-full-access；Gemini 只有 loadSession。**会话模式继承用户设置**：claude-agent-acp 默认 `auto`，cwd 外写入不发 `request_permission`；codex-acp 默认 `agent` 由自身 guardian 自动批准。显式 `session/set_mode` 到 default／workspace-write 后才发 `request_permission`。**两个 Agent 都不调用 `fs/write_text_file`／`terminal/create`**。权限无人回答时一直等（120 s）；`session/cancel` 使 Agent 发 `$/cancel_request`、工具调用标 failed、prompt 以 cancelled 返回。prompt 结束后后台 Bash 完成会自开回合，含 tool_call 与一次 `request_permission`。codex-acp 的 execute 权限没有 locations，只有 `rawInput.command`／`cwd`，拒绝选项 `cancel` 会结束整轮。第二个进程对正在用的会话 `session/load` 被接受且能 prompt，是静默分叉；两进程都退出后 `session/load` 回放并继续，`session/resume` 不回放 | claude-agent-acp 0.108.0、codex-acp 2.7.0；Gemini 的回合、权限、回调未验证（无 API key）；codex-acp 的无 prompt 回合与活会话 load 未验证 |
+| E6 范围 | Claude：0.8.0 现状（模式 default）下用户已 allow 的命令与范围外写入都不经回调就执行；acceptEdits＋`add_dirs`＋`allowed_tools` 仍放过用户已 allow 的范围外写入；`setting_sources=[]` 能挡住但丢掉用户的 CLAUDE.md、hooks、MCP；`disallowed_tools` 压过用户 allow（路径规则须写 `Edit(//…)`）；**保留全部 setting_sources、只加 `settings` 的 `permissions.ask:["Bash","Edit","Write"]` 时，每次 Bash／Write（含用户已 allow 的与只读 ls）都进 `can_use_tool`**。Codex：在模拟的宽松配置上按回合传 on-request＋workspaceWrite，越界写发审批、不写出；额外 `writableRoots` 生效；**策略粘在线程上**，下一个不带策略的回合（含用户 TUI 回合）仍按它执行，额外可写根外泄给用户回合。ACP 见 E5 | Claude 用项目级 local 规则代替用户真实 `~/.claude/settings.json`（未改用户配置，优先级链相同）；用户 PreToolUse hook、MCP 工具、Codex `networkAccess` 未验证 |
+| E7 自发回合 | 后台任务通知：回合 idle 约 7 s 后出现 `task_notification(completed, task_id, 原 tool_use_id)`、`session_state_changed=running`、新的 init、assistant（`parent_tool_use_id` 为空）、result、idle，没有 user 帧与回放帧。回合内 TaskStop 只产生一条 stopped 通知，之后没有 completed 也没有自发回合（"先 stopped 后 completed"未复现）。ScheduleWakeup 在 headless 下约 62 s 后 `session_state_changed=running`、`command_lifecycle started`（前面没有本方 queued 与回放）。X2（只有一个前台长工具 sleep 20）：只有一条 `task_started`，之后 16 s 静默无心跳；6.3 s 写入的输入立即 `queued`，22.5 s tool_result 之后才回放（同 UUID）并入同一回合，只有一个 result | Claude Code 2.1.311、SDK 0.2.172 |
+| E8 交还 | Claude：SDK owner 在回合边界关闭后终端 `--resume` 看到 SDK 回合，transcript 单链、分叉点 0；负对照（终端活着时 SDK 恢复同一 ID）不报错、产生 1 个分叉点（子节点 `[sdk-py, cli]`），恢复前注册表那一行正带着该 sessionId；`fork_session=True` 得新 ID，原 transcript 的 sha256 与行数不变。Codex：脚本放开后 TUI `resume --remote` 看到全部历史、线程 ID 不变；最后一个客户端 unsubscribe 约 60 s 后 daemon 发 `thread/closed`。ACP：见 E5 | 同上 |
+| E9 模型准入 | 生产 `TaskModelExecutor`＋门控替身（容量 1）：等待中的后台请求（子任务 worker、定时任务、SELF）让给后到的人的请求（现有前台优先规则）。被卡片唤醒的根 Work 沿原入口的前台优先级运行，与人的消息同属前台；两者之间的先后取决于条件变量先唤醒谁，**不是先到先得**（本次复现中后到的人先被接纳） | 替身复现，不涉及真实模型 |
+
+### 15.2 设计修订（已改入正文）
+
+1. **§4.3 第 3 点**：Claude 终端会话的 observe 有可靠只读来源（会话注册表的 `status`／`waitingFor`），不必缩小承诺；transcript 只作补充。
+2. **§4.4 Claude 行（G10、§11 第 3 条风险）**：不需要清空 `setting_sources`，也就不改变对用户本地设置的读取；连接器只在委派会话里用 `settings` 的 `ask` 覆盖，让副作用调用都经过连接器按范围裁决。这确实意味着委派会话里用户自己的 allow 规则不再越过委派范围，这正是 D2 的含义，记在这里而不是另立一项决定。
+3. **新风险（E4）**：委派出去的 Claude 默认可以不经批准给用户的其他 Claude 会话发跨会话消息。委派会话的 `ask` 覆盖包含 SendMessage，范围内也不自动批准，一律上报。
+4. **§4.4 Codex 行（E6）**：范围粘在线程上。连接器在 Yuki 回合结束或释放时恢复线程原设置；恢复不了时只接受不超出线程现有策略的范围。
+5. **§4.4 ACP 行（E5）**：控制点是 `session/set_mode` 与 `session/request_permission`（含 rawInput），不是回调；带范围的委派必须显式切到会询问的模式，否则就是 F9 的默默放宽。
+6. **§4.11 Codex（E2）**：Yuki 的新输入一律 `thread/queue/add`（按 clientId 归属），不用 `turn/start`；F12 完全由连接器按 `turn_operations`／clientId 保证。
+7. **§4.11 ACP（E5）**：并发 `session/load` 静默分叉，写进风险；连接器只交接自己持有的进程。
+8. **§4.8（E7）**：owner 归属成立，识别依据改为"没有本方未取用输入时出现 `session_state_changed=running`"。
+9. **Codex 与 ACP 的无主等待（G11）**：Codex 的审批一直挂起并广播给之后的每个客户端，终端用户随时能答，**不需要** deny-only，也不得替用户回答；ACP 的进程归连接器，无主的 `request_permission` 没有别人能答，按 Claude 的做法只传元信息、只能 deny（或 `session/cancel`）。
+10. **E9 与 Q6**：Q6 以"E9 证实先到先得"为前提；E9 显示后台请求已经让给人，而被唤醒的根 Work 与人的消息之间既不是先到先得、也没有保证的先后。前提不成立，本阶段**不改准入排序**，把事实交用户决定是否仍要"人优先"（实现只需给被唤醒的 Work 一个只调排序的优先级，不预留名额）。
+11. **E4 与 Q5**：跨会话消息每条至少花发送方一个 Claude 回合，回复不会自动回到发送方，接收方把它当同伴消息；按 Q5，本阶段只记录，不做成产品路径。
+
+### 15.3 未验证（如实）
+
+- Gemini CLI 的回合、权限与回调（没有 API key）；本阶段"真实 ACP Agent"的验收改用 claude-agent-acp 0.108.0 与 codex-acp 2.7.0，二者都是 ACP 协议的真实 Agent，但底层仍是 Claude／Codex。
+- 用户真实的 managed daemon（按规定不碰）；已登录的第二个 Claude profile；Windows。
+- 用户 PreToolUse hook 返回 allow、MCP 工具与 WebFetch 在 `ask` 覆盖下的表现；Codex `networkAccess=false` 是否被执行；超过 150 s 的挂起。
+- "同一 task 先 stopped 后 completed"未复现。
