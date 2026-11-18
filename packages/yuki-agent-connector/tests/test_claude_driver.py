@@ -1034,6 +1034,7 @@ async def test_input_written_while_the_session_is_still_opening_waits_for_it(
 
 
 @pytest.mark.asyncio
+@pytest.mark.skipif(sys.platform == "win32", reason="the stand-in CLI is a POSIX shell script")
 @pytest.mark.parametrize(
     ("reported", "inputs"),
     [("2.0.5 (Claude Code)", False), ("2.1.311 (Claude Code)", True), ("garbled", True)],
