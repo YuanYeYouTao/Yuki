@@ -25,6 +25,12 @@ APPROVAL_METHODS = {
     "item/commandExecution/requestApproval",
     "item/fileChange/requestApproval",
 }
+# An owner's answer applies to this one request (Q1); session caches and policy
+# amendments would also answer later requests.
+ONE_TIME_DECISIONS = ("accept", "decline", "cancel")
+# Narrowed thread settings apply to the thread's next turns; a turn that starts
+# before Yuki's queued input (for example the user's) also runs with them.
+SCOPE_RACE = "turn_starting_before_yuki_input_uses_narrowed_settings"
 
 
 def thread_settings(resumed: dict[str, Any]) -> dict[str, Any]:
@@ -35,6 +41,7 @@ def thread_settings(resumed: dict[str, Any]) -> dict[str, Any]:
         "approvalsReviewer": resumed.get("approvalsReviewer"),
         "sandboxPolicy": resumed.get("sandbox"),
         "permissions": profile.get("id"),
+        "cwd": resumed.get("cwd"),
     }
 
 
@@ -408,7 +415,8 @@ class CodexDriver:
         self.original_settings: dict[str, dict[str, Any]] = {}
         self.narrowed: dict[str, set[str]] = {}
         self.thread_cwd: dict[str, str] = {}
-        self.item_paths: dict[str, list[str]] = {}
+        # Turn -> fileChange item -> paths, for approvals that name only the item.
+        self.item_paths: dict[str, dict[str, list[str]]] = {}
         # Thread -> Yuki turn after which Yuki's subscription is released.
         self.releasing: dict[str, str] = {}
         self.background: set[asyncio.Task[None]] = set()
@@ -555,6 +563,9 @@ class CodexDriver:
         session_scope = (
             command["action"] == "watch" and command.get("observation_scope") == "session"
         )
+        scope = command.get("arguments", {}).get("scope")
+        if scope is not None and result.get("thread_settings_before") is not None:
+            self._rescope(session, operation, scope, result["thread_settings_before"])
         try:
             if command["action"] == "watch":
                 if not session_scope and not execution:
@@ -599,8 +610,10 @@ class CodexDriver:
                         self.turn_sessions.pop(execution, None)
                         self.watches.pop(operation, None)
                         self.watch_turns.pop(operation, None)
+                        self._unscope(operation)
                         return
-            elif command["action"] == "queue":
+            elif command["action"] in {"prompt", "queue"}:
+                # Yuki's prompts are queue items too; either may still be queued.
                 cursor = None
                 while True:
                     page = await self.rpc.call(
@@ -679,10 +692,27 @@ class CodexDriver:
         self.background.add(task)
         task.add_done_callback(self.background.discard)
 
-    async def _restore(self, thread: str) -> None:
+    async def _restore(self, thread: str, operation: str) -> None:
         original = self.original_settings.pop(thread, None)
-        if original is not None:
+        if original is None:
+            return
+        try:
             await self.rpc.call("thread/settings/update", restored_settings(thread, original))
+        except DriverError as exc:
+            # Kept for the next scoped end or release on this thread to retry.
+            self.original_settings.setdefault(thread, original)
+            await self.emit(
+                "progress",
+                {
+                    "session_id": thread,
+                    "operation_id": operation,
+                    "payload": {
+                        "scope_restore_failed": True,
+                        "error_code": exc.code,
+                        "thread_settings": original,
+                    },
+                },
+            )
 
     def _unscope(self, operation: str) -> None:
         """A scoped operation ended: restore its thread once no scoped operation remains."""
@@ -692,14 +722,35 @@ class CodexDriver:
             operations.discard(operation)
             if not operations:
                 del self.narrowed[thread]
-                self._spawn(self._restore(thread))
+                self._spawn(self._restore(thread, operation))
+
+    def _rescope(
+        self, thread: str, operation: str, value: dict[str, Any], before: dict[str, Any]
+    ) -> None:
+        """After a restart: the scope and the settings to restore, from the receipt."""
+        self.original_settings.setdefault(thread, before)
+        cwd = str(before.get("cwd") or self.spec.cwd)
+        scope = Scope.parse(value, cwd)
+        assert scope is not None
+        self.scopes[operation] = scope
+        self.narrowed.setdefault(thread, set()).add(operation)
+        self.thread_cwd[thread] = cwd
 
     async def _narrow(
         self, thread: str, operation: str, value: dict[str, Any], resumed: dict[str, Any]
     ) -> None:
         """Set the scope as thread settings for Yuki's turn; never wider than asked."""
-        scope = Scope.parse(value, resumed.get("cwd") or self.spec.cwd)
+        cwd = str(resumed.get("cwd") or self.spec.cwd)
+        scope = Scope.parse(value, cwd)
         assert scope is not None
+        if not scope.covers(cwd):
+            # workspaceWrite always makes the thread's cwd writable; it cannot be
+            # excluded, so a scope narrower than the cwd cannot be enforced.
+            raise DriverError(
+                "scope_unsupported",
+                "Codex workspace writes always include the thread's working directory",
+                {"cwd": cwd},
+            )
         first = thread not in self.original_settings
         if first:
             self.original_settings[thread] = thread_settings(resumed)
@@ -715,6 +766,9 @@ class CodexDriver:
                         "type": "workspaceWrite",
                         "writableRoots": [str(path) for path in scope.write_paths],
                         "networkAccess": scope.network,
+                        # Otherwise /tmp and $TMPDIR are writable as well.
+                        "excludeSlashTmp": True,
+                        "excludeTmpdirEnvVar": True,
                     },
                 },
             )
@@ -732,7 +786,7 @@ class CodexDriver:
             ) from exc
         self.scopes[operation] = scope
         self.narrowed.setdefault(thread, set()).add(operation)
-        self.thread_cwd[thread] = str(resumed.get("cwd") or self.spec.cwd)
+        self.thread_cwd[thread] = cwd
 
     def _inside(self, method: str, params: dict[str, Any], scope: Scope, thread: str) -> bool:
         cwd = str(params.get("cwd") or self.thread_cwd.get(thread) or self.spec.cwd)
@@ -745,7 +799,9 @@ class CodexDriver:
                 and scope.runs(command)
             )
         if method == "item/fileChange/requestApproval":
-            paths = self.item_paths.get(str(params.get("itemId")))
+            paths = self.item_paths.get(str(params.get("turnId")), {}).get(
+                str(params.get("itemId"))
+            )
             grant = params.get("grantRoot")
             return (
                 bool(paths)
@@ -774,9 +830,11 @@ class CodexDriver:
         turn = params.get("turnId") or params.get("turn", {}).get("id")
         started_item = params.get("item", {})
         if method == "item/started" and started_item.get("type") == "fileChange":
-            self.item_paths[started_item["id"]] = [
+            self.item_paths.setdefault(str(turn), {})[started_item["id"]] = [
                 change["path"] for change in started_item.get("changes", []) if "path" in change
             ]
+        if method == "turn/completed":
+            self.item_paths.pop(str(turn), None)
         if method == "turn/completed" and turn and self.releasing.get(session) == turn:
             del self.releasing[session]
             if not self._held(session):
@@ -1284,6 +1342,16 @@ class CodexDriver:
                 else ("queued" if operation in self.queue_operations else "unknown"),
                 "pending": True,
                 "admitted": True,
+                # Persisted with this receipt so a restarted connector still restores.
+                **(
+                    {
+                        "scope_settings": "thread",
+                        "scope_race": SCOPE_RACE,
+                        "thread_settings_before": self.original_settings[session],
+                    }
+                    if operation in self.scopes
+                    else {}
+                ),
             }
         if action == "steer":
             expected = execution or arguments.get("expected_execution_id")
@@ -1328,6 +1396,7 @@ class CodexDriver:
                 if original_operation:
                     self.queue_operations.pop(original_operation, None)
                     self.queue_sessions.pop(original_operation, None)
+                    self._unscope(original_operation)
                     await self.emit(
                         "completed",
                         {
@@ -1385,6 +1454,13 @@ class CodexDriver:
             if response is None:
                 raise DriverError(
                     "response_required", "Provide the original native response object"
+                )
+            if "decision" in response and response["decision"] not in ONE_TIME_DECISIONS:
+                offered = params.get("availableDecisions") or ONE_TIME_DECISIONS
+                raise DriverError(
+                    "one_time_only",
+                    "Choose a decision for this one request",
+                    {"options": [item for item in offered if item in ONE_TIME_DECISIONS]},
                 )
             self.requests.pop(key, None)
             await self.rpc.send({"id": request["id"], "result": response})

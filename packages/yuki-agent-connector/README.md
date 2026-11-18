@@ -215,7 +215,14 @@ not resumed (`session_live_elsewhere`) unless explicitly forked. A scope
 (`write_paths`, `network`, command prefixes) only narrows: Claude routes side
 effects through the connector with a `permissions.ask` override, Codex narrows
 and later restores the thread settings, ACP switches to an asking mode; anything
-outside the scope is reported. Codex requests of turns Yuki did not start reach
+outside the scope is reported. Codex thread settings apply to the thread's next
+turns: a turn that starts before Yuki's queued input (for example the user's own)
+also runs with the narrowed settings until Yuki's turn ends or the item is
+cancelled; the receipt says so (`scope_race`) and carries the settings to restore
+(`thread_settings_before`), so a restarted connector still restores them. Codex
+always lets a workspace-write turn write the thread's cwd, so a scope that does
+not cover it is refused (`scope_unsupported`). Owner answers are one-time only
+(`one_time_only` for session/policy-wide options). Codex requests of turns Yuki did not start reach
 Yuki as metadata only. Turns a native agent starts by itself inside an owner
 Yuki holds carry `owner_operation_id` and `followup_execution`.
 
