@@ -304,7 +304,11 @@ class AgentRunner:
         ):
             async with trace_span(
                 "turn",
-                {"message_count": len(initial_messages)},
+                {
+                    "message_count": len(initial_messages),
+                    # Provider attempts link their fixed tool list through this revision.
+                    "manifest_revision": runtime.manifest_revision,
+                },
                 recorder=self._models.traces,
                 conversation_id=runtime.canonical_conversation_id,
                 execution_id=runtime.execution_id,

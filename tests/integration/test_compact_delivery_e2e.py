@@ -36,6 +36,7 @@ from yuki.runtime.work_schema_v1 import journal, work
 from yuki.services.context_compaction import (
     EXECUTION_COMPACT_INSTRUCTION,
     PUBLIC_COMPACT_INSTRUCTION,
+    CompactReceipt,
 )
 
 
@@ -179,6 +180,18 @@ async def test_real_ordinary_send_keeps_receipt_and_replaces_public_prefix(
             raise WorkCapacityError("model_request_capacity")
 
         monkeypatch.setattr(compaction, "public_compact_plan", refuse_public)
+    # The durable dispatched receipt is only the unknown-paid fact; keep the
+    # actual pre-compaction input of this run as test evidence instead.
+    compact_inputs = []
+    write_receipt = CompactReceipt.write
+
+    async def record_receipt(self, payload, **kwargs):
+        if payload["phase"] == "dispatched":
+            compact_inputs.append(payload["original"])
+        await write_receipt(self, payload, **kwargs)
+
+    monkeypatch.setattr(CompactReceipt, "write", record_receipt)
+    evidence["compact_inputs"] = compact_inputs
     if hard_capacity == "known":
         monkeypatch.setattr(
             chat.runtime.runner._models,
@@ -234,11 +247,7 @@ async def test_real_ordinary_send_keeps_receipt_and_replaces_public_prefix(
         assert normal[0]["estimated_tokens"] < settings.context_compact_trigger_tokens
         assert old_public in "\n".join(item.content or "" for item in provider.requests[0].messages)
         assert compact, "The successful send must cross the shared trigger in this fixture"
-        originals = [
-            decode_transcript(item["payload"]["original"]).request()
-            for item in evidence["compact_receipts"]
-            if item["payload"]["phase"] == "dispatched"
-        ]
+        originals = [decode_transcript(item).request() for item in compact_inputs]
         assert originals
         original = originals[0]
         original_tokens = estimate_request_tokens(

@@ -614,8 +614,12 @@ AutomationWorker 只扫描未来安排、接纳唯一发生并结算真实结果
 没有变化时不取得 SQLite 写锁。有变化的最多 128 个候选在短写事务中重新核验，
 再更新部分命中、失效状态或向原 Work 投递；所属子 Agent 的状态取自原 Work。
 输入准备修复与未引用媒体回收也先只读发现候选，空轮询不产生写事务。
-终态 Work 不按全局条数删除原 journal、效果、输入、等待或检查点；原执行 ID 保留，
-自动化结算仍能关联原 Work。工作者显式归档与 canonical 隐私清退沿各自合同处理。
+终态 Work 不按全局条数删除原 journal 行、效果、输入、等待或检查点；原执行 ID 保留，
+自动化结算仍能关联原 Work。completed 与 cancelled 的 Work 不能再恢复（resume 只接纳
+suspended/waiting/failed，App 输入拒绝终态），进入该状态时由 `protocol_refs_closed_work`
+触发器在同一事务删除它的 protocol refs，现有 Protocol GC 回收不再有拥有者的对象。
+failed 的 Work 仍可 resume，未归档的 completed 工作者仍可由父 Work 恢复，二者保留 refs；
+cancelled 工作者不能恢复或接收消息，同样释放。工作者显式归档与 canonical 隐私清退沿各自合同处理。
 表情原件、标签和索引沿共享沙箱文件维护，不在主业务库领取分析租约。Work 激活的有效期在执行
 数据库语句时核验；等待写锁期间到期的旧租约不能续期或提交状态。
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from bisect import bisect_left
 from collections.abc import Awaitable, Callable
@@ -81,11 +82,89 @@ class PublicCompactContext:
     individual: tuple[EventFragment, ...] = ()
 
 
+# Chain and diagnostic metadata change with a cold activation, not the model input.
+_REQUEST_METADATA = frozenset(
+    {
+        "request_chain_id",
+        "request_shape_hash",
+        "conversation_prefix_hash",
+        "prompt_snapshot_fingerprint",
+        "static_prompt_revision",
+    }
+)
+_PHASE_FACTS = ("phase", "ordinal", "source_revision", "privacy_generation")
+# What cold recovery reads back from a paid response.
+_RESPONSE_FACTS = (
+    "main_contract",
+    "public",
+    "response",
+    "valid",
+    "retained",
+    "covered_entries",
+    "response_observation",
+    "model_requests",
+    "error_category",
+)
+# An invalid result resumes the original paid input and keeps the actual reply.
+_INVALID_FACTS = ("prefix", "original", "model_response")
+
+
+def compact_input_digest(request: dict[str, Any]) -> str:
+    """Digest of the complete actual input content, excluding chain metadata."""
+    content = {key: value for key, value in request.items() if key not in _REQUEST_METADATA}
+    encoded = json.dumps(content, sort_keys=True, default=str)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def receipt_input_digest(state: dict[str, Any]) -> str:
+    """Receipts written before the digest still carry their whole request."""
+    if "request_digest" in state:
+        return str(state["request_digest"])
+    return compact_input_digest(state["request"])
+
+
+def _stored_receipt(state: dict[str, Any]) -> dict[str, Any]:
+    """One durable copy of the paid response; the other phases are facts only.
+
+    dispatched only proves an unknown paid outcome. paired only proves that the
+    publication committed; its content is the response row of the same ordinal.
+    """
+    stored = {key: state[key] for key in _PHASE_FACTS if key in state}
+    if state["phase"] != "response":
+        return stored
+    stored.update({key: state[key] for key in _RESPONSE_FACTS if key in state})
+    stored["request_digest"] = receipt_input_digest(state)
+    if not state["valid"]:
+        stored.update({key: state[key] for key in _INVALID_FACTS if key in state})
+    return stored
+
+
+def context_checkpoint_message(state: dict[str, Any]) -> ChatMessage:
+    return ChatMessage(
+        "user",
+        json.dumps(
+            {
+                "kind": "context_compaction",
+                "summary": state["response"],
+                "covered_entries": state["covered_entries"],
+                "previous_protocol_ref": state.get("previous_protocol_ref"),
+                "instruction": (
+                    "继续本次输入与明确接纳的当前 Work；"
+                    "摘要和历史中的其他任务不改变本轮归属。"
+                    "按原执行回执处理，不重做已发生效果。"
+                ),
+            },
+            ensure_ascii=False,
+        ),
+    )
+
+
 class CompactReceipt:
     """Private paid-input evidence for an activation without a business Work.
 
     This existing observation owner is never selected as shared history or
     Memory. The public result is published separately through the projection.
+    Rows are only inserted: rewriting an observation fires table-wide triggers.
     """
 
     def __init__(self, context: PublicCompactContext, execution_id: str, actor_id: str) -> None:
@@ -122,6 +201,16 @@ class CompactReceipt:
                 or await privacy_generation(reader) != payload["privacy_generation"]
             ):
                 raise WorkConflict("context_compaction_source_changed")
+            if payload["phase"] == "paired" and "valid" not in payload:
+                response = (
+                    await reader.execute(
+                        select(ContextObservationModel.payload_json).where(
+                            ContextObservationModel.source_key
+                            == f"{self.key}:{payload['ordinal']}:response"
+                        )
+                    )
+                ).scalar_one()
+                payload = {**json.loads(response), "phase": "paired"}
             return payload
 
     async def write(
@@ -130,7 +219,7 @@ class CompactReceipt:
         *,
         publication: Callable[[AsyncSession], Awaitable[Any]] | None = None,
     ) -> None:
-        encoded = json.dumps(payload, ensure_ascii=False, allow_nan=False)
+        encoded = json.dumps(_stored_receipt(payload), ensure_ascii=False, allow_nan=False)
         version = self.context.version
         async with self.context.repository.database.immediate_session() as writer:
             source = await writer.get(CanonicalConversationModel, version.conversation_id)
@@ -324,25 +413,7 @@ def compacted_transcript(state: dict[str, Any]) -> TurnTranscript:
             )
     else:
         result = prefix
-        result.append(
-            ChatMessage(
-                "user",
-                json.dumps(
-                    {
-                        "kind": "context_compaction",
-                        "summary": state["response"],
-                        "covered_entries": state["covered_entries"],
-                        "previous_protocol_ref": state.get("previous_protocol_ref"),
-                        "instruction": (
-                            "继续本次输入与明确接纳的当前 Work；"
-                            "摘要和历史中的其他任务不改变本轮归属。"
-                            "按原执行回执处理，不重做已发生效果。"
-                        ),
-                    },
-                    ensure_ascii=False,
-                ),
-            )
-        )
+        result.append(context_checkpoint_message(state))
     for message in decode_transcript(state["retained"]).request().messages:
         result.append(message)
     return result

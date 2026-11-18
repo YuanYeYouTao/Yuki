@@ -18,7 +18,7 @@ from yuki.persistence.artifact_refs import ARTIFACT_REFERENCE_TRIGGERS
 from yuki.persistence.database import _complete
 from yuki.persistence.history_search_index import DELETE_HISTORY_TRIGGER
 from yuki.persistence.vec1 import delete_trigger, load_vec1, vector_table
-from yuki.runtime.protocol_schema import QUOTA_SQL
+from yuki.runtime.protocol_schema import PROTOCOL_SQL
 
 
 def canonical_schema_revision(root: Path | None = None) -> str:
@@ -376,7 +376,7 @@ async def _check_canonical_schema(database_url: str) -> None:
 
             protocol_triggers = {
                 statement.split()[5]: statement
-                for statement in QUOTA_SQL
+                for statement in PROTOCOL_SQL
                 if statement.startswith("CREATE TRIGGER")
             }
 

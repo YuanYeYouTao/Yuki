@@ -386,14 +386,10 @@ class TurnExecution:
     async def restore_compact_receipt(self) -> AgentRunResult | None:
         """Reuse ordinary maintenance by its internal execution owner."""
         from yuki.conversation.frozen_fragments import FrozenFragments
-        from yuki.runtime.work_journal import (
-            JournalUnavailable,
-            decode_transcript,
-            encode_transcript,
-        )
+        from yuki.runtime.work_journal import JournalUnavailable, decode_transcript
         from yuki.services.context_compaction import (
             CompactReceipt,
-            compacted_transcript,
+            context_checkpoint_message,
             current_public_compact,
             public_compact_publication,
         )
@@ -428,22 +424,21 @@ class TurnExecution:
         if saved["valid"] and public is not None:
             public, summary = await current_public_compact(context, public, summary)
         if saved["phase"] == "response":
-            candidate = (
-                compacted_transcript(saved)
-                if saved["valid"]
-                else decode_transcript(saved["original"])
-            )
             publication = (
                 await public_compact_publication(context.repository, public, summary)
                 if saved["valid"] and public is not None
                 else None
             )
-            saved.update(phase="paired", candidate=encode_transcript(candidate))
+            saved.update(phase="paired")
             await receipt.write(saved, publication=publication)
-        candidate = decode_transcript(saved["candidate"])
-        if saved["valid"] or candidate.continuation is None:
+        # A valid result continues from its checkpoint and retained tail; an
+        # invalid one from the original paid input. Both are derived from the
+        # receipt instead of a stored candidate copy.
+        original = None if saved["valid"] else decode_transcript(saved["original"])
+        if original is None or original.continuation is None:
             fresh = self.state.transcript.request().messages
-            if saved["valid"] and public is not None:
+            retained = decode_transcript(saved["retained"]).request().messages
+            if original is None and public is not None:
                 adopted = await context.adopt(
                     summary, public["coverage"], FrozenFragments.load(public["items"])
                 )
@@ -451,19 +446,20 @@ class TurnExecution:
                     (*adopted, *fresh[len(self.initial_messages) :])
                 )
                 self.initial_messages = adopted
-                tail = decode_transcript(saved["retained"]).request().messages
+                tail = retained
+            elif original is None:
+                tail = (context_checkpoint_message(saved), *retained)
+                self._execution_checkpoint_summary = saved["response"]
             else:
                 # The saved initial block is paid-request evidence. Current
                 # history and activation material belong to this fresh run.
                 old_count = len(decode_transcript(saved["prefix"]).request().messages)
-                tail = candidate.request().messages[old_count:]
-                if saved["valid"]:
-                    self._execution_checkpoint_summary = saved["response"]
+                tail = original.request().messages[old_count:]
             await self._finalize_initial_layout()
             for message in tail:
                 self.state.transcript.append(message)
         else:
-            self.state.transcript = candidate
+            self.state.transcript = original
             self.initial_messages = decode_transcript(saved["prefix"]).request().messages
         self.state.response_observation = saved.get("response_observation", {})
         if self.runtime.auxiliary_requests is not None:
@@ -1015,10 +1011,12 @@ class TurnExecution:
         from yuki.runtime.work_journal import encode_transcript
         from yuki.services.context_compaction import (
             CompactReceipt,
+            compact_input_digest,
             compacted_transcript,
             execution_compact_plan,
             public_compact_plan,
             public_compact_publication,
+            receipt_input_digest,
         )
 
         public_context = self.runtime.public_compaction
@@ -1140,22 +1138,7 @@ class TurnExecution:
                 # Reuse the original paid failure for this exact candidate.
                 # A cold activation changes chain/diagnostic metadata, not the
                 # model input. New source content or settings are a new input.
-                metadata = {
-                    "request_chain_id",
-                    "request_shape_hash",
-                    "conversation_prefix_hash",
-                    "prompt_snapshot_fingerprint",
-                    "static_prompt_revision",
-                }
-                current_input = {
-                    key: value for key, value in asdict(plan.request).items() if key not in metadata
-                }
-                previous_input = {
-                    key: value for key, value in previous["request"].items() if key not in metadata
-                }
-                if json.dumps(current_input, sort_keys=True, default=str) == json.dumps(
-                    previous_input, sort_keys=True, default=str
-                ):
+                if compact_input_digest(asdict(plan.request)) == receipt_input_digest(previous):
                     if (
                         input_budget is not None
                         and estimate_request_tokens(self.runner._capacity_request(request))
@@ -1287,7 +1270,7 @@ class TurnExecution:
             else:
                 publication = None
             if receipt is not None:
-                state.update(phase="paired", candidate=encode_transcript(self.state.transcript))
+                state.update(phase="paired")
                 await receipt.write(state, publication=publication)
             elif publication is not None:
                 assert public_context is not None
