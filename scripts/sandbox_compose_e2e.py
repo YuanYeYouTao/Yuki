@@ -139,6 +139,23 @@ class Deployment:
         print(self.compose("logs", "--tail", "60", "manager", check=False))
         raise Failure("the Manager did not become ready")
 
+    def wait_mode(self, mode: str, seconds: float = 1800) -> dict[str, Any]:
+        """The mode a profile change reaches once its packages are installed.
+
+        The install runs in the background of a ready Manager, after the environment's own
+        services started (U10); the mode is read from the installed manifest afterwards.
+        """
+        deadline = time.monotonic() + seconds
+        status = self.wait_ready(seconds)
+        while time.monotonic() < deadline:
+            status = self.status()
+            if status["browser_mode"] == mode:
+                return status
+            if status["programs"].get("installed") is False:
+                raise Failure(f"installing {mode} failed: {status['programs']}")
+            time.sleep(3)
+        raise Failure(f"the environment did not reach {mode}: {status}")
+
     def wait_snapshot(self, seconds: float = 600) -> dict[str, Any]:
         deadline = time.monotonic() + seconds
         while time.monotonic() < deadline:
@@ -431,9 +448,10 @@ def main() -> int:
         environment.replace("YUKI_SANDBOX_PROFILE=lite", "YUKI_SANDBOX_PROFILE=headless")
     )
     deployment.compose("up", "-d")
-    status = deployment.wait_ready(1800)
+    status = deployment.wait_mode("headless")
     expect(status["profile"] == "headless", "the profile did not change")
-    expect(status["browser_mode"] == "headless" and not status["desktop"], f"headless: {status}")
+    expect(not status["desktop"], f"headless: {status}")
+    expect(status["programs"].get("installed") is True, f"headless install: {status}")
     opened = deployment.manager(
         "browser_action", {"action": "open", "url": "data:text/html,<h1>yuki-e2e</h1>"}
     )
@@ -459,7 +477,7 @@ def main() -> int:
             environment.replace("YUKI_SANDBOX_PROFILE=headless", "YUKI_SANDBOX_PROFILE=desktop")
         )
         deployment.compose("up", "-d")
-        status = deployment.wait_ready(1800)
+        status = deployment.wait_mode("headed")
         expect(status["desktop"] and status["profile"] == "desktop", f"desktop: {status}")
         sandbox_snapshot_e2e.desktop(deployment)
         deployment.record("desktop_computer", limits=status["limits"])
