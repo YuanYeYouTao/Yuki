@@ -1,0 +1,51 @@
+{"t": 0.0, "side": "harness", "dir": "note", "note": "scenario bg2 start; agent claude-agent-acp 0.108.0, ANTHROPIC_MODEL=haiku"}
+{"t": 0.002, "side": "acp1", "dir": "local", "method": "spawn", "pid": 24942}
+{"t": 0.002, "side": "acp1", "dir": "out", "method": "initialize", "id": 1, "protocolVersion": 1}
+{"t": 0.164, "side": "acp1", "dir": "in", "method": "initialize:result", "id": 1, "protocolVersion": 1}
+{"t": 0.164, "side": "acp1", "dir": "out", "method": "session/new", "id": 2}
+{"t": 0.268, "side": "acp1", "dir": "in", "kind": "notification", "method": "_auth/status_update", "id": null}
+{"t": 0.269, "side": "acp1", "dir": "in", "kind": "notification", "method": "auth/status_update", "id": null}
+{"t": 0.361, "side": "acp1", "dir": "in", "kind": "notification", "method": "_auth/status_update", "id": null}
+{"t": 0.361, "side": "acp1", "dir": "in", "kind": "notification", "method": "auth/status_update", "id": null}
+{"t": 0.364, "side": "acp1", "dir": "in", "method": "session/new:result", "id": 2, "sessionId": "4b2e6a53-8c7a-40f9-a47b-7328213a5b57"}
+{"t": 0.364, "side": "harness", "dir": "note", "note": "session/new currentModeId=auto"}
+{"t": 0.364, "side": "acp1", "dir": "out", "method": "session/set_mode", "id": 3, "sessionId": "4b2e6a53-8c7a-40f9-a47b-7328213a5b57"}
+{"t": 0.367, "side": "acp1", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "4b2e6a53-8c7a-40f9-a47b-7328213a5b57", "update": "available_commands_update"}
+{"t": 0.369, "side": "acp1", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "4b2e6a53-8c7a-40f9-a47b-7328213a5b57", "update": "config_option_update"}
+{"t": 0.369, "side": "acp1", "dir": "in", "method": "session/set_mode:result", "id": 3}
+{"t": 0.369, "side": "acp1", "dir": "out", "method": "session/prompt", "id": 4, "sessionId": "4b2e6a53-8c7a-40f9-a47b-7328213a5b57"}
+{"t": 0.395, "side": "acp1", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "4b2e6a53-8c7a-40f9-a47b-7328213a5b57", "update": "available_commands_update"}
+{"t": 0.467, "side": "acp1", "dir": "in", "kind": "notification", "method": "_auth/status_update", "id": null}
+{"t": 0.467, "side": "acp1", "dir": "in", "kind": "notification", "method": "auth/status_update", "id": null}
+{"t": 2.046, "side": "acp1", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "4b2e6a53-8c7a-40f9-a47b-7328213a5b57", "update": "usage_update"}
+{"t": 2.048, "side": "acp1", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "4b2e6a53-8c7a-40f9-a47b-7328213a5b57", "update": "tool_call", "update.toolCallId": "toolu_01QHB3NGZjQ8cLekpguUsFtw", "update.kind": "execute", "update.status": "pending", "update.rawInput.keys": []}
+{"t": 2.063, "side": "acp1", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "4b2e6a53-8c7a-40f9-a47b-7328213a5b57", "update": "usage_update"}
+{"t": 2.067, "side": "acp1", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "4b2e6a53-8c7a-40f9-a47b-7328213a5b57", "update": "session_info_update"}
+{"t": 2.068, "side": "acp1", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "4b2e6a53-8c7a-40f9-a47b-7328213a5b57", "update": "tool_call_update", "update.toolCallId": "toolu_01QHB3NGZjQ8cLekpguUsFtw", "update.rawInput.keys": ["command"]}
+{"t": 2.068, "side": "acp1", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "4b2e6a53-8c7a-40f9-a47b-7328213a5b57", "update": "tool_call_update", "update.toolCallId": "toolu_01QHB3NGZjQ8cLekpguUsFtw", "update.rawInput.keys": ["command", "run_in_background"]}
+{"t": 2.45, "side": "acp1", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "4b2e6a53-8c7a-40f9-a47b-7328213a5b57", "update": "tool_call_update", "update.toolCallId": "toolu_01QHB3NGZjQ8cLekpguUsFtw", "update.rawInput.keys": ["command", "description", "run_in_background"]}
+{"t": 2.466, "side": "acp1", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "4b2e6a53-8c7a-40f9-a47b-7328213a5b57", "update": "usage_update"}
+{"t": 2.497, "side": "acp1", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "4b2e6a53-8c7a-40f9-a47b-7328213a5b57", "update": "tool_call_update", "update.toolCallId": "toolu_01QHB3NGZjQ8cLekpguUsFtw"}
+{"t": 2.5, "side": "acp1", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "4b2e6a53-8c7a-40f9-a47b-7328213a5b57", "update": "tool_call_update", "update.toolCallId": "toolu_01QHB3NGZjQ8cLekpguUsFtw", "update.status": "completed"}
+{"t": 3.221, "side": "acp1", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "4b2e6a53-8c7a-40f9-a47b-7328213a5b57", "update": "usage_update"}
+{"t": 3.709, "side": "acp1", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "4b2e6a53-8c7a-40f9-a47b-7328213a5b57", "update": "usage_update"}
+{"t": 3.721, "side": "acp1", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "4b2e6a53-8c7a-40f9-a47b-7328213a5b57", "update": "usage_update"}
+{"t": 3.722, "side": "acp1", "dir": "in", "method": "session/prompt:result", "id": 4, "stopReason": "end_turn"}
+{"t": 3.722, "side": "harness", "dir": "note", "note": "prompt returned: end_turn; idle 60 s"}
+{"t": 11.147, "side": "acp1", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "4b2e6a53-8c7a-40f9-a47b-7328213a5b57", "update": "usage_update"}
+{"t": 11.147, "side": "acp1", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "4b2e6a53-8c7a-40f9-a47b-7328213a5b57", "update": "tool_call", "update.toolCallId": "toolu_01PuaT6kk33a7Gdqdkd35dSS", "update.kind": "execute", "update.status": "pending", "update.rawInput.keys": []}
+{"t": 11.337, "side": "acp1", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "4b2e6a53-8c7a-40f9-a47b-7328213a5b57", "update": "tool_call_update", "update.toolCallId": "toolu_01PuaT6kk33a7Gdqdkd35dSS", "update.rawInput.keys": ["command"]}
+{"t": 11.559, "side": "acp1", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "4b2e6a53-8c7a-40f9-a47b-7328213a5b57", "update": "tool_call_update", "update.toolCallId": "toolu_01PuaT6kk33a7Gdqdkd35dSS", "update.rawInput.keys": ["command", "description"]}
+{"t": 11.582, "side": "acp1", "dir": "in", "kind": "request", "method": "session/request_permission", "id": 0, "sessionId": "4b2e6a53-8c7a-40f9-a47b-7328213a5b57", "toolCall.toolCallId": "toolu_01PuaT6kk33a7Gdqdkd35dSS", "toolCall.kind": "execute", "toolCall.status": "pending", "toolCall.locations.count": 1, "toolCall.locations.in_scope": [false], "toolCall.rawInput.keys": ["command", "description"], "options": [{"optionId": "allow-once", "kind": "allow_once"}, {"optionId": "reject", "kind": "reject_once"}]}
+{"t": 11.583, "side": "harness", "dir": "note", "note": "permission request arrived; prompt in flight: False; rejecting"}
+{"t": 11.583, "side": "acp1", "dir": "out", "method": "response", "id": 0, "error": false, "decision": "reject_once"}
+{"t": 11.583, "side": "acp1", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "4b2e6a53-8c7a-40f9-a47b-7328213a5b57", "update": "usage_update"}
+{"t": 11.589, "side": "acp1", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "4b2e6a53-8c7a-40f9-a47b-7328213a5b57", "update": "tool_call_update", "update.toolCallId": "toolu_01PuaT6kk33a7Gdqdkd35dSS", "update.status": "failed"}
+{"t": 12.221, "side": "acp1", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "4b2e6a53-8c7a-40f9-a47b-7328213a5b57", "update": "usage_update"}
+{"t": 12.856, "side": "acp1", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "4b2e6a53-8c7a-40f9-a47b-7328213a5b57", "update": "usage_update"}
+{"t": 12.863, "side": "acp1", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "4b2e6a53-8c7a-40f9-a47b-7328213a5b57", "update": "usage_update"}
+{"t": 63.724, "side": "harness", "dir": "local", "method": "idle_window_summary", "requests": 1, "request_methods": ["session/request_permission"], "session_updates": 27}
+{"t": 63.724, "side": "harness", "dir": "note", "note": "outside file created: False"}
+{"t": 63.729, "side": "acp1", "dir": "in", "method": "eof"}
+{"t": 63.729, "side": "acp1", "dir": "local", "method": "process_exit", "returncode": 0}
+{"t": 63.729, "side": "harness", "dir": "note", "note": "scenario bg2 end"}

@@ -24,7 +24,7 @@ from .config import Config, Instance
 from .desk import Desk
 from .drivers import Driver, DriverError, make_driver
 from .files import FileTransfers
-from .journal import Journal
+from .journal import Journal, followup_id, receipted
 from .screen import Backend
 from .terminal import LocalTerminal
 
@@ -45,6 +45,8 @@ READ_ACTIONS = {
     "elements",
 }
 ORIGINAL_CONTROLS = {"get", "detach", "cancel", "steer", "respond", "queue", "watch"}
+# An observe watch is never answered, controlled or written through (task book §4.3).
+OBSERVE_REFUSED = {"respond", "steer", "cancel", "queue", "prompt"}
 
 
 def instance_source(spec: Instance) -> str:
@@ -347,6 +349,14 @@ class Connector:
                 }
                 self.journal.append(event)
                 self.pending_events.set()
+                if value.get("operation_id") is None and value.get("followup_execution"):
+                    # A turn the native agent started inside a held owner (§4.8):
+                    # its requests are answered through this owner until it ends.
+                    followup = followup_id(value["owner_operation_id"], value["followup_execution"])
+                    assert driver is not None
+                    self.operations[followup] = driver
+                    if kind == "completed":
+                        self._release_operation(followup)
                 if value.get("operation_id"):
                     if kind == "completed":
                         self.detached_work.discard(value["operation_id"])
@@ -458,10 +468,26 @@ class Connector:
             ],
         }
 
-    async def dispatch(self, command: dict[str, Any]) -> dict[str, Any]:
+    def _refuse_observed(self, command: dict[str, Any]) -> None:
+        original_id = command.get("arguments", {}).get("operation_id")
+        if command["action"] not in OBSERVE_REFUSED or not original_id:
+            return
+        original = self.journal.original(original_id)
+        if (
+            original is not None
+            and original[0]["action"] == "watch"
+            and original[0].get("arguments", {}).get("observation") == "observe"
+        ):
+            raise DriverError(
+                "observe_only", "An observed session is never answered, controlled or written"
+            )
+
+    async def dispatch(self, command: dict[str, Any]) -> dict[str, Any] | None:
+        """RPC response for reads and device resources; None when a receipt event answers."""
         key = command["id"]
         arguments = command.get("arguments", {})
         mutation = command["action"] not in READ_ACTIONS
+        receipt = receipted(command)
         recorded = False
         detached_observation = None
         try:
@@ -485,8 +511,18 @@ class Connector:
                         source = stored_origin[1]
                 previous = self.journal.begin(command, owner_source=source)
                 if previous is not None:
-                    return previous
+                    if not receipt:
+                        return previous
+                    # Never executed again. While the original still runs, its own
+                    # receipt follows; otherwise its recorded outcome is sent again.
+                    if key not in self.dispatching:
+                        self.journal.resend_receipt(key)
+                        self.pending_events.set()
+                    return None
                 recorded = True
+                # From here a duplicate waits for this original's own receipt.
+                self.dispatching.add(key)
+                self._refuse_observed(command)
                 if (
                     original_id
                     and command["action"] in {"queue", "watch"}
@@ -507,12 +543,16 @@ class Connector:
                         command["instance_id"], arguments["operation_id"]
                     )
                     if observation and driver:
-                        original, receipt = observation
-                        await driver.recover(original, receipt)
+                        await driver.recover(*observation)
                         result = self.journal.operation(arguments["operation_id"])
             elif command["action"] == "detach":
                 detached_observation = self.journal.observation(arguments["operation_id"])
-                driver = self._original_driver(command["instance_id"], arguments["operation_id"])
+                driver = self.operations.get(arguments["operation_id"])
+                if driver is None and command["instance_id"] not in self.errors:
+                    # A finished original holds no owner here, but its driver still
+                    # keeps facts about it (owner of later turns, scope) and Yuki's
+                    # native hold on the session that a release closes (§4.11).
+                    driver = self.drivers.get(command["instance_id"])
                 result = (
                     await driver.execute(command)
                     if driver is not None
@@ -526,6 +566,10 @@ class Connector:
             else:
                 original_id = arguments.get("operation_id")
                 targeting_original = bool(original_id and command["action"] in ORIGINAL_CONTROLS)
+                if targeting_original and command["action"] in {"queue", "watch"}:
+                    # Input or a watch for the original's session: a finished original
+                    # no longer holds an owner, the instance locates the session (§4.16).
+                    targeting_original = original_id in self.operations
                 driver = (
                     self._original_driver(command["instance_id"], original_id)
                     if targeting_original
@@ -599,6 +643,14 @@ class Connector:
         if recorded:
             self.journal.complete(key, response)
             response = {"type": "response", "id": key, "result": self.journal.operation(key)}
+        elif receipt:
+            self.journal.refuse(
+                command,
+                response.get("result")
+                or {"status": "failed", "admitted": False, "error": response["error"]},
+            )
+        if receipt:
+            self.pending_events.set()
         self.dispatching.discard(key)
         self._release_operation(key)
         if command["action"] == "detach" and arguments.get("operation_id"):
@@ -625,12 +677,13 @@ class Connector:
             }:
                 self.detached_work.discard(original_id)
                 self._release_operation(original_id)
-        return response
+        return None if receipt else response
 
     async def _command(self, command: dict[str, Any], websocket: ClientConnection) -> None:
         try:
             response = await self.dispatch(command)
-            await websocket.send(json.dumps(response, ensure_ascii=False))
+            if response is not None:
+                await websocket.send(json.dumps(response, ensure_ascii=False))
         except ConnectionClosed:
             # The original dispatch remains independent of its transport.
             pass

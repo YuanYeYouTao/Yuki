@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import os
 import re
 import shutil
 import sys
@@ -21,6 +22,7 @@ from claude_agent_sdk import (
     PermissionResultAllow,
     PermissionResultDeny,
     ResultMessage,
+    SystemMessage,
     TextBlock,
     ToolPermissionContext,
     ToolUseBlock,
@@ -29,7 +31,70 @@ from claude_agent_sdk import (
 
 from ..config import Instance
 from ..discovery import profile_environment, refresh
+from ..journal import followup_id
+from ..scope import Scope
 from . import DriverError, Emit
+
+# Side-effect tools a scoped delegation sends through can_use_tool. `ask` wins over
+# the user's own allow rules while setting sources stay loaded (§15 E6).
+SCOPE_ASK = ("Bash", "Edit", "Write", "MultiEdit", "NotebookEdit", "WebFetch", "WebSearch")
+# Cross-session messages reach the user's other sessions: always reported (§15 E4).
+SCOPE_REPORTED = ("SendMessage",)
+_WRITE_TOOLS = {"Edit": "file_path", "Write": "file_path", "MultiEdit": "file_path"}
+_REGISTRY_STATUS = {"idle": "idle", "busy": "running", "waiting": "requires_action"}
+
+
+def pid_alive(pid: int) -> bool:
+    if sys.platform == "win32":
+        import ctypes
+
+        kernel = ctypes.windll.kernel32
+        handle = kernel.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            # ERROR_ACCESS_DENIED: it exists, we may not query it (POSIX EPERM).
+            return bool(kernel.GetLastError() == 5)
+        code = ctypes.c_ulong()
+        try:
+            return bool(kernel.GetExitCodeProcess(handle, ctypes.byref(code))) and (
+                code.value == 259  # STILL_ACTIVE
+            )
+        finally:
+            kernel.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def registry_rows(directory: Path) -> list[dict[str, Any]]:
+    """Live rows of Claude Code's session registry (the source of `claude agents`)."""
+    rows = []
+    for path in directory.glob("*.json"):
+        try:
+            row = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue  # The CLI removed or is rewriting this row right now.
+        if isinstance(row, dict) and isinstance(row.get("pid"), int) and pid_alive(row["pid"]):
+            rows.append(row)
+    return rows
+
+
+def observed(payload: dict[str, Any]) -> dict[str, Any]:
+    """What an observe watch learns of a request: never its content or a way to answer."""
+    return {
+        "native_request_id": payload["native_request_id"],
+        "tool": payload["tool"],
+        "observed": True,
+    }
+
+
+def _waiting(row: dict[str, Any]) -> str | None:
+    if row.get("status") != "waiting":
+        return None
+    return f"{row.get('sessionId')}:{row.get('statusUpdatedAt')}"
 
 
 @dataclass
@@ -50,6 +115,17 @@ class ManagedSession:
     # takes it up (replay-user-messages).
     inputs: dict[str, str | None] = field(default_factory=dict)
     connection_id: str = field(default_factory=lambda: str(uuid4()))
+    cwd: str = ""
+    # Opened with the scope's `ask` override; only such an owner can serve a scope.
+    scoped: bool = False
+    # The latest Yuki operation whose input this owner took up. The process exists
+    # for it, so turns the CLI starts by itself belong to it until it is detached.
+    owner_operation: str | None = None
+    # The native ID of a self-started turn and the operation it belongs to, fixed
+    # for the whole native turn even if another input is merged into it.
+    followup: str | None = None
+    followup_owner: str | None = None
+    release_after_turn: bool = False
 
 
 @dataclass
@@ -70,7 +146,7 @@ class PendingRequest:
 
 # Admission is the CLI replaying an input's own UUID; verified on this Claude Code.
 REPLAYED_INPUTS_VERSION = (2, 1, 311)
-_INPUTS = frozenset({"prompt", "queue"})
+_INPUTS = frozenset({"prompt", "queue", "scope"})
 CAPABILITIES = (
     "list",
     "get",
@@ -80,6 +156,9 @@ CAPABILITIES = (
     "respond",
     "cancel",
     "detach",
+    "scope",
+    "observe",
+    "release",
 )
 
 
@@ -96,6 +175,15 @@ class ClaudeDriver:
         self._opening: dict[str, asyncio.Lock] = {}
         # Why prompt/queue are not offered by this CLI, if they are not.
         self._inputs_refused: str | None = None
+        self.scopes: dict[str, Scope] = {}
+        # Operations detached through this driver: never an owner again.
+        self.detached: set[str] = set()
+        # Observe watches: metadata only, never an answerer (§4.3).
+        self.observers: set[str] = set()
+        # Observe watches of sessions no SDK owner of ours holds (terminal sessions).
+        self.terminal_watches: dict[str, asyncio.Task[None]] = {}
+        # How often the session registry is read; a local mechanism, not a gate.
+        self.registry_interval = 0.5
 
     async def start(self) -> None:
         if self.spec.installation:
@@ -138,10 +226,14 @@ class ClaudeDriver:
         return tuple(int(part) for part in match.groups()) if match else None
 
     async def stop(self) -> None:
+        for watcher in self.terminal_watches.values():
+            watcher.cancel()
         for item in self.sessions.values():
             item.stopped.set()
         await asyncio.gather(
-            *(item.task for item in self.sessions.values() if item.task), return_exceptions=True
+            *self.terminal_watches.values(),
+            *(item.task for item in self.sessions.values() if item.task),
+            return_exceptions=True,
         )
 
     async def recover(self, command: dict[str, Any], result: dict[str, Any]) -> None:
@@ -164,7 +256,7 @@ class ClaudeDriver:
     async def _publish(
         self, session: ManagedSession, kind: str, payload: dict[str, Any]
     ) -> set[str]:
-        """Send to the turn's owner and matching watches; return the operations reached."""
+        """Send to the turn's owner and matching watches; return who may answer it."""
         if payload.get("status") != "unknown":
             payload.setdefault("admitted", True)
         operations = {
@@ -172,6 +264,22 @@ class ClaudeDriver:
             for operation, execution in session.watches.items()
             if execution in {None, "", session.execution}
         } | ({session.operation} if session.operation else set())
+        request = kind in {"permission", "question"}
+        answerers = set()
+        if session.followup is not None and session.followup_owner is not None:
+            # A turn the CLI started by itself inside this held owner (§4.8).
+            await self.emit(
+                kind,
+                {
+                    "session_id": session.id,
+                    "execution_id": session.followup,
+                    "operation_id": None,
+                    "owner_operation_id": session.followup_owner,
+                    "followup_execution": session.followup,
+                    "payload": payload,
+                },
+            )
+            answerers.add(followup_id(session.followup_owner, session.followup))
         for operation in operations:
             if operation in session.watches and session.watches[operation] == "":
                 session.watches[operation] = session.execution
@@ -185,6 +293,10 @@ class ClaudeDriver:
                     "status": "idle",
                     "pending": True,
                 }
+            if request and operation in self.observers:
+                event_payload = observed(payload)
+            elif request:
+                answerers.add(operation)
             await self.emit(
                 event_kind,
                 {
@@ -194,7 +306,7 @@ class ClaudeDriver:
                     "payload": event_payload,
                 },
             )
-        return operations
+        return answerers
 
     async def _session_event(
         self, session: ManagedSession, kind: str, payload: dict[str, Any]
@@ -228,6 +340,21 @@ class ClaudeDriver:
             },
         )
 
+    def _inside_scope(self, session: ManagedSession, tool: str, arguments: dict[str, Any]) -> bool:
+        owner = session.operation or session.followup_owner
+        scope = self.scopes.get(owner) if owner else None
+        if scope is None:
+            return False
+        if tool in _WRITE_TOOLS or tool == "NotebookEdit":
+            path = arguments.get(_WRITE_TOOLS.get(tool, "notebook_path"))
+            return isinstance(path, str) and scope.writes(path, session.cwd)
+        if tool == "Bash":
+            command = arguments.get("command")
+            return isinstance(command, str) and scope.runs(command)
+        if tool in {"WebFetch", "WebSearch"}:
+            return scope.network
+        return False
+
     async def _permission(
         self,
         session: ManagedSession,
@@ -236,6 +363,12 @@ class ClaudeDriver:
         context: ToolPermissionContext,
     ) -> PermissionResultAllow | PermissionResultDeny:
         key = context.tool_use_id or str(uuid4())
+        if self._inside_scope(session, tool, arguments):
+            # Inside the delegation's fixed scope (D2): no confirmation.
+            await self._publish(
+                session, "progress", {"permission_auto_approved": key, "tool": tool}
+            )
+            return PermissionResultAllow(updated_input=arguments)
         future: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
         consumed: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
         question = tool == "AskUserQuestion"
@@ -291,27 +424,64 @@ class ClaudeDriver:
                 )
 
     async def _open_once(
-        self, session_id: str, *, resume: bool, cwd: str | None = None
+        self,
+        session_id: str,
+        *,
+        resume: bool,
+        cwd: str | None = None,
+        scope: dict[str, Any] | None = None,
+        fork: bool = False,
     ) -> ManagedSession:
         """Concurrent resumes of one session share a single SDK owner."""
         lock = self._opening.setdefault(session_id, asyncio.Lock())
         try:
             async with lock:
                 current = self.sessions.get(session_id)
-                if current is not None and not current.stopped.is_set():
+                if current is not None and not current.stopped.is_set() and not fork:
                     return current
-                return await self._open(session_id, resume=resume, cwd=cwd)
+                return await self._open(session_id, resume=resume, cwd=cwd, scope=scope, fork=fork)
         finally:
             # A caller still waiting holds this lock object; a later one finds the
             # session already registered under its own lock.
             if not lock.locked() and self._opening.get(session_id) is lock:
                 del self._opening[session_id]
 
+    def _registry(self) -> Path:
+        profile = profile_environment(self.spec, "CLAUDE_CONFIG_DIR").get("CLAUDE_CONFIG_DIR")
+        if profile:
+            return Path(profile) / "sessions"
+        environment = self.spec.environment()
+        home = environment.get("USERPROFILE" if sys.platform == "win32" else "HOME")
+        return Path(home or Path.home()) / ".claude" / "sessions"
+
+    async def _live_row(self, session_id: str) -> dict[str, Any] | None:
+        """A live Claude process (not an SDK owner of ours) holding this session."""
+        rows = await asyncio.to_thread(registry_rows, self._registry())
+        owned = self.sessions.get(session_id)
+        if owned is not None and not owned.stopped.is_set():
+            return None
+        return next((row for row in rows if row.get("sessionId") == session_id), None)
+
     async def _open(
-        self, session_id: str, *, resume: bool, cwd: str | None = None
+        self,
+        session_id: str,
+        *,
+        resume: bool,
+        cwd: str | None = None,
+        scope: dict[str, Any] | None = None,
+        fork: bool = False,
     ) -> ManagedSession:
         cwd = cwd or self.spec.cwd
         if resume:
+            # Two processes on one session silently fork its JSONL (§4.11, §15 E8).
+            # Checked here and opened right after: a process starting in between is
+            # a race no file lock of ours could close without touching user files.
+            if not fork and await self._live_row(session_id) is not None:
+                raise DriverError(
+                    "session_live_elsewhere",
+                    "This Claude session is running in another process; fork it or hand it off",
+                    {"options": ["fork", "handoff"]},
+                )
             metadata = await self._inspect("get", {"session_id": session_id})
             original = metadata.get("native")
             if not original or not original.get("cwd"):
@@ -334,26 +504,37 @@ class ClaudeDriver:
         profile = profile_environment(self.spec, "CLAUDE_CONFIG_DIR").get("CLAUDE_CONFIG_DIR")
         if profile is not None:
             environment["CLAUDE_CONFIG_DIR"] = profile
+        bounds = Scope.parse(scope, cwd)
+        identity = str(uuid4()) if fork else session_id
         options = ClaudeAgentOptions(
             cli_path=self.spec.command,
             cwd=cwd,
             env=environment,
             system_prompt={"type": "preset", "preset": "claude_code"},
             tools={"type": "preset", "preset": "claude_code"},
+            # The user's settings, CLAUDE.md, hooks and MCP stay loaded.
             setting_sources=["user", "project", "local"],
             resume=session_id if resume else None,
-            session_id=None if resume else session_id,
+            # A fork names its new session; the original transcript is untouched.
+            session_id=identity if fork or not resume else None,
+            fork_session=fork,
+            add_dirs=list(bounds.write_paths) if bounds else [],
+            settings=json.dumps({"permissions": {"ask": [*SCOPE_ASK, *SCOPE_REPORTED]}})
+            if bounds
+            else None,
             can_use_tool=permission,
             # The CLI echoes each input's own UUID when it takes the input up.
             extra_args={"replay-user-messages": None},
         )
         native = ManagedSession(
-            session_id,
+            identity,
             ClaudeSDKClient(options=options),
             asyncio.get_running_loop().create_future(),
+            cwd=cwd,
+            scoped=bounds is not None,
         )
         owner.append(native)
-        self.sessions[session_id] = native
+        self.sessions[identity] = native
         native.task = asyncio.create_task(self._serve(native))
         await native.ready
         return native
@@ -440,6 +621,10 @@ class ClaudeDriver:
     async def _taken_up(self, session: ManagedSession, identity: str) -> None:
         """The CLI took up a written input (its UUID was replayed)."""
         operation = session.inputs.pop(identity)
+        if operation is not None and operation not in self.detached:
+            previous, session.owner_operation = session.owner_operation, operation
+            if previous is not None and previous != operation:
+                self._forget_scope(previous)
         if session.active and operation is not None and session.operation is None:
             # Absorbed into a turn no operation owns (the CLI started it by itself just
             # before taking this input up): the turn now also answers this input, so
@@ -485,22 +670,42 @@ class ClaudeDriver:
             {"status": "running", "pending": True, "disposition": "started_new_turn"},
         )
 
+    async def _self_started(self, session: ManagedSession, native: str) -> None:
+        """A turn the CLI started by itself (background-task notification, wakeup).
+
+        The session is busy: a new prompt must conflict now instead of queueing
+        behind it. With no input of ours outstanding it belongs to the operation
+        this SDK owner is held for (§4.8, §15 E7); with none it has no owner.
+        """
+        session.active, session.status = True, "running"
+        session.execution = native
+        session.operation = session.active_operation = None
+        if session.owner_operation is not None and not session.inputs:
+            session.followup, session.followup_owner = native, session.owner_operation
+            await self._publish(
+                session, "progress", {"status": "running", "pending": True, "self_started": True}
+            )
+
     async def _receive(self, session: ManagedSession) -> None:
         async for message in session.client.receive_messages():
             if isinstance(message, UserMessage) and message.uuid in session.inputs:
                 await self._taken_up(session, message.uuid)
                 continue
             if (
+                isinstance(message, SystemMessage)
+                and message.subtype == "session_state_changed"
+                and message.data.get("state") == "running"
+                and not session.active
+                and not session.inputs
+            ):
+                await self._self_started(session, message.data.get("uuid") or str(uuid4()))
+                continue
+            if (
                 isinstance(message, (UserMessage, AssistantMessage))
                 and message.parent_tool_use_id is None
                 and not session.active
             ):
-                # A turn the CLI started by itself (for example a background-task
-                # notification). No Yuki operation owns it, but the session is busy:
-                # a new prompt must conflict now instead of queueing behind it.
-                session.active, session.status = True, "running"
-                session.execution = f"self-started:{uuid4()}"
-                session.operation = session.active_operation = None
+                await self._self_started(session, message.uuid or str(uuid4()))
             if isinstance(message, ResultMessage):
                 completed_operation = session.active_operation
                 session.active_operation = None
@@ -511,6 +716,7 @@ class ClaudeDriver:
                     "completed",
                     {
                         "status": session.status,
+                        "pending": False,
                         "text": message.result,
                         "usage": message.usage,
                         "subtype": message.subtype,
@@ -519,13 +725,22 @@ class ClaudeDriver:
                         "total_cost_usd": message.total_cost_usd,
                     },
                 )
+                ended_owner = session.followup_owner
+                session.followup = session.followup_owner = None
                 if session.operation == completed_operation:
                     session.operation = None
+                for finished in (completed_operation, ended_owner):
+                    if finished is not None:
+                        self._forget_scope(finished)
                 session.watches = {
                     key: value for key, value in session.watches.items() if value is None
                 }
                 if completed_operation is not None:
                     await self.emit("work_finished", {"operation_id": completed_operation})
+                if session.release_after_turn and not self._held(session):
+                    # Released at the turn boundary: the session is free for the
+                    # user's `claude --resume` without a fork (§4.11, §15 E8).
+                    session.stopped.set()
             elif isinstance(message, AssistantMessage):
                 for block in message.content:
                     # Only completed assistant/tool blocks, never thinking/deltas.
@@ -564,6 +779,99 @@ class ClaudeDriver:
             raise DriverError("discovery_failed", "Native readonly discovery failed")
         return cast(dict[str, Any], json.loads(output))
 
+    def _held(self, session: ManagedSession) -> bool:
+        """Whether any non-detached Yuki operation of this connector holds this owner."""
+        return bool(
+            session.operation
+            or (session.owner_operation and session.owner_operation not in self.detached)
+            or session.watches
+            or any(writer is not None for writer in session.inputs.values())
+        )
+
+    def _forget_scope(self, operation: str) -> None:
+        """Drop a scope no turn, input or later self-started turn can still use."""
+        for session in self.sessions.values():
+            if operation in {session.operation, session.owner_operation, session.followup_owner}:
+                return
+            if operation in session.inputs.values():
+                return
+        self.scopes.pop(operation, None)
+
+    async def _release(self, sessions: list[ManagedSession]) -> str | None:
+        """Close Yuki's SDK owner at the turn boundary once no operation holds it."""
+        closed: str | None = "now"
+        for session in sessions:
+            if session.stopped.is_set():
+                continue
+            if self._held(session):
+                closed = None
+            elif session.active:
+                session.release_after_turn = True
+                closed = "after_turn" if closed == "now" else closed
+            else:
+                session.stopped.set()
+                if session.task is not None:
+                    await session.task
+        return closed
+
+    async def _observe_terminal(self, operation: str, session_id: str, row: dict[str, Any]) -> None:
+        """Follow a session no SDK owner of ours holds through the session registry.
+
+        Only facts the registry states leave this computer: the session is busy,
+        idle or waiting for an approval. Nothing is written, answered or denied.
+        """
+
+        async def emit(kind: str, payload: dict[str, Any]) -> None:
+            await self.emit(
+                kind,
+                {
+                    "session_id": session_id,
+                    "execution_id": None,
+                    "operation_id": operation,
+                    "payload": payload,
+                },
+            )
+
+        async def waiting(current: dict[str, Any], key: str) -> None:
+            await emit(
+                "permission",
+                {
+                    "native_request_id": key,
+                    "waiting_for": current.get("waitingFor"),
+                    "observed": True,
+                    "status": "requires_action",
+                    "pending": True,
+                },
+            )
+
+        previous = row
+        if key := _waiting(row):
+            await waiting(row, key)
+        directory = self._registry()
+        while True:
+            await asyncio.sleep(self.registry_interval)
+            rows = await asyncio.to_thread(registry_rows, directory)
+            current = next((item for item in rows if item.get("sessionId") == session_id), None)
+            if current is None:
+                await emit("progress", {"status": "unknown", "reason": "not_live", "pending": True})
+                return
+            before, now = previous.get("status"), current.get("status")
+            status = _REGISTRY_STATUS.get(str(now), "unknown")
+            was, key = _waiting(previous), _waiting(current)
+            if was and was != key:
+                await emit(
+                    "progress", {"permission_resolved": was, "status": status, "pending": True}
+                )
+            if key and key != was:
+                await waiting(current, key)
+            elif now == "idle" and before != "idle":
+                await emit(
+                    "progress", {"status": "idle", "execution_status": "completed", "pending": True}
+                )
+            elif now == "busy" and before == "idle":
+                await emit("progress", {"status": "running", "pending": True})
+            previous = current
+
     async def execute(self, command: dict[str, Any]) -> dict[str, Any]:
         action, arguments = command["action"], command.get("arguments", {})
         identity = command.get("session_id")
@@ -583,6 +891,11 @@ class ClaudeDriver:
                     pending=session.active or session.status == "unknown",
                     status_scope="execution" if expected else "session",
                 )
+            if session:
+                result["queued_inputs"] = [
+                    {"execution_id": written, "operation_id": writer}
+                    for written, writer in session.inputs.items()
+                ]
             if expected and (session is None or session.execution != expected):
                 result.update(
                     execution_id=expected,
@@ -597,19 +910,31 @@ class ClaudeDriver:
                 raise DriverError("cli_outdated", self._inputs_refused)
             if session and session.stopped.is_set() and arguments.get("resume"):
                 session = None
-            if session is None:
+            if session is None or arguments.get("fork"):
                 if identity and not arguments.get("resume"):
                     raise DriverError(
                         "explicit_resume_required",
                         "Stored sessions are not live attachments; explicitly authorize resume",
                     )
                 session = await self._open_once(
-                    identity or str(uuid4()), resume=bool(identity), cwd=arguments.get("cwd")
+                    identity or str(uuid4()),
+                    resume=bool(identity),
+                    cwd=arguments.get("cwd"),
+                    scope=arguments.get("scope"),
+                    fork=bool(identity and arguments.get("fork")),
                 )
             # A session another command is still opening is written only once connected.
             await asyncio.shield(session.ready)
             if session.stopped.is_set():
                 raise DriverError("owner_disconnected", "Original SDK session owner has exited")
+            scope = Scope.parse(arguments.get("scope"), session.cwd)
+            if scope is not None and not session.scoped:
+                # Its process was opened without the `ask` override: the user's allow
+                # rules would bypass this scope. Release it, then delegate again.
+                raise DriverError(
+                    "scope_conflict",
+                    "This Claude session is held without a scope; release it first",
+                )
             if action == "prompt" and (session.active or session.inputs):
                 raise DriverError(
                     "conflict",
@@ -619,6 +944,8 @@ class ClaudeDriver:
             # admission is the CLI replaying this UUID, reported as a later event.
             written = str(uuid4())
             session.inputs[written] = command["id"]
+            if scope is not None:
+                self.scopes[command["id"]] = scope
 
             async def user_input() -> AsyncIterator[dict[str, Any]]:
                 yield {
@@ -641,6 +968,7 @@ class ClaudeDriver:
                 "pending": True,
                 "admitted": False,
                 "landing": "native_decides",
+                **({"forked_from": identity} if session.id != identity and identity else {}),
             }
         if action == "steer":
             raise DriverError(
@@ -649,10 +977,30 @@ class ClaudeDriver:
             )
         if action == "detach":
             detached = arguments["operation_id"]
+            self.detached.add(detached)
+            self.scopes.pop(detached, None)
+            self.observers.discard(detached)
+            watcher = self.terminal_watches.pop(detached, None)
+            if watcher is not None:
+                watcher.cancel()
+                await asyncio.gather(watcher, return_exceptions=True)
+            held = [
+                attached
+                for attached in self.sessions.values()
+                if detached in attached.watches
+                or detached in {attached.operation, attached.owner_operation}
+                or detached in attached.inputs.values()
+                or attached is session
+            ]
             for attached in self.sessions.values():
                 attached.watches.pop(detached, None)
                 if attached.operation == detached:
                     attached.operation = None
+                if attached.owner_operation == detached:
+                    # Its self-started turns from now on are nobody's (deny-only).
+                    attached.owner_operation = None
+                if attached.followup_owner == detached:
+                    attached.followup = attached.followup_owner = None
                 # An input it wrote that the CLI has not taken up yet starts or joins
                 # a turn nobody owns, so its waits stay discoverable.
                 for written, writer in attached.inputs.items():
@@ -661,21 +1009,54 @@ class ClaudeDriver:
             for key, request in list(self.requests.items()):
                 if request.unowned or request.answer.done():
                     continue
-                request.recipients.discard(detached)
+                request.recipients = {
+                    recipient
+                    for recipient in request.recipients
+                    if recipient != detached and not recipient.startswith(f"followup:{detached}:")
+                }
                 if not request.recipients:
                     # Its receivers' events are no longer delivered: metadata only.
                     await self._unowned(key, request)
+            if arguments.get("release"):
+                return {
+                    "session_id": identity,
+                    "status": "detached",
+                    "detached": True,
+                    "pending": False,
+                    "admitted": True,
+                    "closed": await self._release(held),
+                }
             return {
                 "session_id": identity,
                 "status": "completed",
                 "detached": True,
                 "admitted": True,
             }
+        observe = action == "watch" and arguments.get("observation") == "observe"
+        if observe and (session is None or session.stopped.is_set()):
+            assert identity is not None
+            row = await self._live_row(identity)
+            if row is None:
+                raise DriverError("not_live", "No live Claude process holds this session")
+            self.observers.add(command["id"])
+            self.terminal_watches[command["id"]] = asyncio.create_task(
+                self._observe_terminal(command["id"], identity, row)
+            )
+            return {
+                "session_id": identity,
+                "execution_id": None,
+                "status": _REGISTRY_STATUS.get(str(row.get("status")), "unknown"),
+                "pending": True,
+                "admitted": True,
+                "observed_via": "session_registry",
+            }
         if session is None:
             raise DriverError(
                 "not_live", "Independent Claude terminals are readonly, not SDK-owned"
             )
         if action == "watch":
+            if observe:
+                self.observers.add(command["id"])
             if session.stopped.is_set():
                 raise DriverError("owner_disconnected", "Original SDK session owner has exited")
             expected = command.get("execution_id")

@@ -1,0 +1,302 @@
+{
+  "scenario": "A6-claude",
+  "status": "completed",
+  "native_session_id": "da313570-7432-4e2b-996a-33312eb207c6",
+  "record": {
+    "work_id": "adafc683-4f41-4df4-aee6-4165321b3d78",
+    "final": {
+      "state": "completed",
+      "reason": null
+    },
+    "operations": [
+      {
+        "operation_id": "delegation:adafc683-4f41-4df4-aee6-4165321b3d78:start:7d970104e24856dc9bc17225d1721fb5",
+        "action": "prompt",
+        "run_id": "328d99a1-aca6-5cba-bdfd-48db3a9f18ce",
+        "session_id": "4b4717c3-cdc9-5ebd-9914-d54201cca91f",
+        "execution_id": "f7d61d4a-230a-4f7f-870b-c36a6e8e0dd6",
+        "actor_person_id": "98834ac8-64aa-452e-9812-e6c7a24eeaef",
+        "detached": true,
+        "status": "completed",
+        "pending": false,
+        "error": null,
+        "state_sequence": null
+      },
+      {
+        "operation_id": "delegation:adafc683-4f41-4df4-aee6-4165321b3d78:release:ad7e4678939dad84b63fa18425040969:delegation:adafc683-4f41-4df4-aee6-4165321b3d78:start:7d970104e24856dc9bc17225d1721fb5",
+        "action": "detach",
+        "run_id": null,
+        "session_id": "4b4717c3-cdc9-5ebd-9914-d54201cca91f",
+        "execution_id": "f7d61d4a-230a-4f7f-870b-c36a6e8e0dd6",
+        "actor_person_id": "98834ac8-64aa-452e-9812-e6c7a24eeaef",
+        "detached": false,
+        "status": "detached",
+        "pending": false,
+        "error": null,
+        "state_sequence": null
+      }
+    ],
+    "events": [
+      {
+        "cursor": 1,
+        "event_id": "60bb5438-1b43-488e-960d-ead3df5e3b38",
+        "operation_id": "delegation:adafc683-4f41-4df4-aee6-4165321b3d78:start:7d970104e24856dc9bc17225d1721fb5",
+        "kind": "progress",
+        "status": "running",
+        "reason": null,
+        "tool": null,
+        "observed": null,
+        "answer_at": null,
+        "permission_resolved": false,
+        "native_method": null,
+        "execution_status": null,
+        "received_at": "2026-11-18T16:02:22.098998"
+      },
+      {
+        "cursor": 2,
+        "event_id": "522c9934-3d7f-400b-893d-8ceba59f761c",
+        "operation_id": "delegation:adafc683-4f41-4df4-aee6-4165321b3d78:start:7d970104e24856dc9bc17225d1721fb5",
+        "kind": "progress",
+        "status": null,
+        "reason": null,
+        "tool": "Write",
+        "observed": null,
+        "answer_at": null,
+        "permission_resolved": false,
+        "native_method": null,
+        "execution_status": null,
+        "received_at": "2026-11-18T16:02:22.106835"
+      },
+      {
+        "cursor": 3,
+        "event_id": "20a7c303-bd4e-426a-8e1e-98d2dbca8d9e",
+        "operation_id": "delegation:adafc683-4f41-4df4-aee6-4165321b3d78:start:7d970104e24856dc9bc17225d1721fb5",
+        "kind": "progress",
+        "status": null,
+        "reason": null,
+        "tool": "Write",
+        "observed": null,
+        "answer_at": null,
+        "permission_resolved": false,
+        "native_method": null,
+        "execution_status": null,
+        "received_at": "2026-11-18T16:02:22.111172"
+      },
+      {
+        "cursor": 4,
+        "event_id": "b51d050e-5e77-440c-8406-e7a0877b0c0a",
+        "operation_id": "delegation:adafc683-4f41-4df4-aee6-4165321b3d78:start:7d970104e24856dc9bc17225d1721fb5",
+        "kind": "progress",
+        "status": null,
+        "reason": null,
+        "tool": null,
+        "observed": null,
+        "answer_at": null,
+        "permission_resolved": false,
+        "native_method": null,
+        "execution_status": null,
+        "received_at": "2026-11-18T16:02:24.012249"
+      },
+      {
+        "cursor": 5,
+        "event_id": "02849af2-6c49-43a4-b6b6-c7e32f7cd7ea",
+        "operation_id": "delegation:adafc683-4f41-4df4-aee6-4165321b3d78:start:7d970104e24856dc9bc17225d1721fb5",
+        "kind": "completed",
+        "status": "completed",
+        "reason": null,
+        "tool": null,
+        "observed": null,
+        "answer_at": null,
+        "permission_resolved": false,
+        "native_method": null,
+        "execution_status": null,
+        "received_at": "2026-11-18T16:02:24.017713"
+      }
+    ],
+    "state_sequence": [
+      {
+        "t": 5.705,
+        "work_id": "adafc683-4f41-4df4-aee6-4165321b3d78",
+        "state": "waiting_external",
+        "reason": "native_executor"
+      },
+      {
+        "t": 10.582,
+        "work_id": "adafc683-4f41-4df4-aee6-4165321b3d78",
+        "state": "completed",
+        "reason": null
+      }
+    ]
+  },
+  "takeover_session_same": true,
+  "chain_after_yuki": {
+    "entries": 26,
+    "fork_points": 0,
+    "roots": 1,
+    "takeover_write_tool_uses": 1,
+    "entrypoint_runs": [
+      [
+        "cli",
+        2
+      ],
+      [
+        "sdk-py",
+        4
+      ]
+    ]
+  },
+  "chain_after_person_resumed": {
+    "entries": 34,
+    "fork_points": 0,
+    "roots": 1,
+    "takeover_write_tool_uses": 1,
+    "entrypoint_runs": [
+      [
+        "cli",
+        2
+      ],
+      [
+        "sdk-py",
+        4
+      ],
+      [
+        "cli",
+        2
+      ]
+    ]
+  },
+  "takeover_file": true,
+  "journal": [
+    {
+      "operation_id": "delegation:adafc683-4f41-4df4-aee6-4165321b3d78:start:7d970104e24856dc9bc17225d1721fb5",
+      "action": "prompt",
+      "instance_id": "claude-1",
+      "session_id": "da313570-7432-4e2b-996a-33312eb207c6",
+      "observation": null,
+      "receipt_status": "completed"
+    },
+    {
+      "operation_id": "delegation:adafc683-4f41-4df4-aee6-4165321b3d78:release:ad7e4678939dad84b63fa18425040969:delegation:adafc683-4f41-4df4-aee6-4165321b3d78:start:7d970104e24856dc9bc17225d1721fb5",
+      "action": "detach",
+      "instance_id": "claude-1",
+      "session_id": "da313570-7432-4e2b-996a-33312eb207c6",
+      "observation": null,
+      "receipt_status": "detached"
+    }
+  ],
+  "marks": [
+    {
+      "t": 4.999,
+      "mark": "person_stopped"
+    },
+    {
+      "t": 5.019,
+      "mark": "connector_start",
+      "device": "mac-a"
+    },
+    {
+      "t": 14.346,
+      "mark": "release",
+      "work_id": "adafc683-4f41-4df4-aee6-4165321b3d78"
+    },
+    {
+      "t": 19.595,
+      "mark": "yuki_process_closed"
+    }
+  ],
+  "model_requests": [
+    {
+      "t": 5.509,
+      "activation": "4cdaee63-57e0-4b1d-91d7-a41c0f61d3a7:1",
+      "input_ids": [],
+      "work_id": null,
+      "trigger_event_id": 1,
+      "last_role": "user",
+      "tools": [
+        "manage_task"
+      ],
+      "tool_args_keys": [
+        [
+          "action",
+          "goal"
+        ]
+      ]
+    },
+    {
+      "t": 5.563,
+      "activation": "4cdaee63-57e0-4b1d-91d7-a41c0f61d3a7:1",
+      "input_ids": [],
+      "work_id": "ec5e203f-1406-4a51-bd9d-c852c96766b5",
+      "trigger_event_id": 1,
+      "last_role": "tool",
+      "tools": [
+        "start_subtask"
+      ],
+      "tool_args_keys": [
+        [
+          "executor",
+          "goal",
+          "relationship",
+          "scope",
+          "session"
+        ]
+      ]
+    },
+    {
+      "t": 5.647,
+      "activation": "4cdaee63-57e0-4b1d-91d7-a41c0f61d3a7:1",
+      "input_ids": [],
+      "work_id": "ec5e203f-1406-4a51-bd9d-c852c96766b5",
+      "trigger_event_id": 1,
+      "last_role": "tool",
+      "tools": [
+        "wait"
+      ],
+      "tool_args_keys": [
+        [
+          "for"
+        ]
+      ]
+    },
+    {
+      "t": 14.345,
+      "activation": "0fd42092-f730-4b33-bee6-0cf5e0fba1b6:2",
+      "input_ids": [
+        1,
+        2
+      ],
+      "work_id": "ec5e203f-1406-4a51-bd9d-c852c96766b5",
+      "trigger_event_id": 1,
+      "last_role": "user",
+      "tools": [
+        "manage_task"
+      ],
+      "tool_args_keys": [
+        [
+          "action",
+          "id"
+        ]
+      ]
+    },
+    {
+      "t": 14.405,
+      "activation": "0fd42092-f730-4b33-bee6-0cf5e0fba1b6:2",
+      "input_ids": [
+        1,
+        2
+      ],
+      "work_id": "ec5e203f-1406-4a51-bd9d-c852c96766b5",
+      "trigger_event_id": 1,
+      "last_role": "tool",
+      "tools": [
+        "manage_task"
+      ],
+      "tool_args_keys": [
+        [
+          "action",
+          "result"
+        ]
+      ]
+    }
+  ]
+}

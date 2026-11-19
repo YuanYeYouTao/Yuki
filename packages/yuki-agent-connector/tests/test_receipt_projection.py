@@ -35,6 +35,22 @@ def event(key, status, *, kind="progress", **values):
     }
 
 
+def sent(journal, event_id):
+    """The durable original of one event, as it crosses the wire."""
+    row = journal.db.execute("SELECT event FROM events WHERE id=?", (event_id,)).fetchone()
+    return json.loads(row[0])
+
+
+def receipt(journal, key):
+    """Protocol 5: the last receipt event answering one command."""
+    rows = journal.db.execute(
+        "SELECT event FROM events WHERE json_extract(event, '$.kind')='receipt' "
+        "AND json_extract(event, '$.operation_id')=? ORDER BY sequence",
+        (key,),
+    ).fetchall()
+    return json.loads(rows[-1][0])["payload"]["result"]
+
+
 @pytest.fixture
 def journal(tmp_path):
     with contextlib.closing(Journal(tmp_path / "journal.db", namespace="fixture")) as value:
@@ -54,7 +70,7 @@ def test_loss_updates_projection_without_readmission_and_terminal_cannot_regress
     )
     lost = journal.operation("watch")
     assert lost["status"] == "unknown" and lost["pending"] and lost["admitted"]
-    wire = json.loads(journal.next_event()[2])
+    wire = sent(journal, "loss")
     assert wire["operation_state"] == lost and wire["sequence"] == lost["state_sequence"]
     journal.append(event("recovered", "running"))
     assert "reason" not in journal.operation("watch")
@@ -81,7 +97,7 @@ def test_session_observation_keeps_turn_identity_in_event_only(journal):
     journal.begin(operation(observation_scope="session"))
     journal.complete("watch", {"result": {"status": "idle", "admitted": True, "pending": True}})
     journal.append({**event("turn-1", "running"), "execution_id": "turn-1"})
-    wire = json.loads(journal.next_event()[2])
+    wire = sent(journal, "turn-1")
     assert wire["execution_id"] == "turn-1"
     assert "execution_id" not in wire["operation_state"]
     assert journal.observations()
@@ -223,6 +239,8 @@ def test_detach_after_native_terminal_keeps_terminal_and_stops_event_upload(jour
     journal.begin(operation("detach", "detach", arguments={"operation_id": "watch"}))
     journal.complete("detach", {"result": {"admitted": True, "detached": True}})
     journal.append(event("late", "running"))
+    assert [json.loads(row[2])["kind"] for row in [journal.next_event()]] == ["receipt"]
+    journal.ack(journal.next_event()[1])
     assert journal.next_event() is None
     assert journal.operation("watch")["status"] == "completed"
     assert journal.operation("watch")["detached"] is True
@@ -275,10 +293,11 @@ async def test_native_unavailability_does_not_prevent_local_detach(journal, has_
 
     if has_driver:
         connector.drivers["local"] = Driver()
-    response = await connector.dispatch(
-        operation("detach", "detach", arguments={"operation_id": "watch"})
+    assert (
+        await connector.dispatch(operation("detach", "detach", arguments={"operation_id": "watch"}))
+        is None
     )
-    assert response["result"]["status"] == "detached"
+    assert receipt(journal, "detach")["status"] == "detached"
     assert journal.operation("watch")["detached"] is True
     assert journal.observations() == []
 
@@ -295,10 +314,11 @@ async def test_rejected_native_command_returns_same_ordered_receipt_as_get(journ
 
     connector = Connector(Config("ws://localhost", "device", "fixture"), journal)
     connector.drivers["local"] = Driver()
-    response = await connector.dispatch(operation())
-    assert response["result"] == journal.operation("watch")
-    assert response["result"]["status"] == "failed"
-    assert response["result"]["pending"] is False
-    assert response["result"]["admitted"] is False
-    assert response["result"]["state_sequence"] > 0
-    assert response["result"]["error"]["code"] == "unsupported_action"
+    assert await connector.dispatch(operation()) is None
+    result = receipt(journal, "watch")
+    assert result == journal.operation("watch")
+    assert result["status"] == "failed"
+    assert result["pending"] is False
+    assert result["admitted"] is False
+    assert result["state_sequence"] > 0
+    assert result["error"]["code"] == "unsupported_action"

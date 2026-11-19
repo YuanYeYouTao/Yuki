@@ -1,0 +1,13 @@
+{"t": 1.017, "side": "claude-agent-acp-0.108.0", "dir": "local", "method": "spawn", "pid": 20654}
+{"t": 1.017, "side": "claude-agent-acp-0.108.0", "dir": "out", "method": "initialize", "id": 1, "protocolVersion": 1}
+{"t": 1.276, "side": "claude-agent-acp-0.108.0", "dir": "in", "method": "initialize:result", "id": 1, "protocolVersion": 1}
+{"t": 1.276, "side": "claude-agent-acp-0.108.0", "dir": "local", "method": "agentCapabilities", "caps": {"_meta": {"claudeCode": {"promptQueueing": true}, "authStatus": {}}, "promptCapabilities": {"image": true, "embeddedContext": true}, "mcpCapabilities": {"http": true, "sse": true, "acp": true}, "auth": {"logout": {}, "status": {}}, "providers": {}, "loadSession": true, "sessionCapabilities": {"additionalDirectories": {}, "close": {}, "delete": {}, "fork": {}, "list": {}, "options": {}, "resume": {}, "status": {}, "systemPrompt": {"mode": {"override": {}}}, "title": {}}}, "authMethods": [], "agentInfo": {"name": "@agentclientprotocol/claude-agent-acp", "title": "Claude Agent", "version": "0.108.0"}}
+{"t": 1.276, "side": "claude-agent-acp-0.108.0", "dir": "out", "method": "session/new", "id": 2}
+{"t": 3.901, "side": "claude-agent-acp-0.108.0", "dir": "in", "kind": "notification", "method": "_auth/status_update", "id": null}
+{"t": 3.901, "side": "claude-agent-acp-0.108.0", "dir": "in", "kind": "notification", "method": "auth/status_update", "id": null}
+{"t": 4.258, "side": "claude-agent-acp-0.108.0", "dir": "in", "kind": "notification", "method": "_auth/status_update", "id": null}
+{"t": 4.258, "side": "claude-agent-acp-0.108.0", "dir": "in", "kind": "notification", "method": "auth/status_update", "id": null}
+{"t": 4.265, "side": "claude-agent-acp-0.108.0", "dir": "in", "method": "session/new:result", "id": 2, "sessionId": "3cc1cda3-c351-4b74-a41a-7bf2523bfb2a"}
+{"t": 4.265, "side": "harness", "dir": "note", "note": "session/new ok; modes=['default', 'acceptEdits', 'plan', 'auto', 'bypassPermissions']; models=[]"}
+{"t": 4.271, "side": "claude-agent-acp-0.108.0", "dir": "in", "method": "eof"}
+{"t": 4.271, "side": "claude-agent-acp-0.108.0", "dir": "local", "method": "process_exit", "returncode": 0}

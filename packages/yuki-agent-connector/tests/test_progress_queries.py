@@ -40,6 +40,8 @@ class NativeRPC:
                 ],
                 "nextCursor": None if old else "older",
             }
+        if method == "thread/queue/list":
+            return {"data": []}
         if method == "thread/items/list":
             return {
                 "data": [
@@ -66,7 +68,12 @@ async def test_codex_one_native_page_keeps_current_turn_separate_from_old_page()
     assert result["status"] == "idle" and result["status_scope"] == "session"
     assert result["latest_turn"]["id"] == "new"
     assert result["latest_turn"]["items"][0]["text"] == "latest fact"
-    assert len(rpc.calls) == 2
+    assert result["queued_inputs"] == []
+    assert [method for method, _ in rpc.calls] == [
+        "thread/read",
+        "thread/turns/list",
+        "thread/queue/list",
+    ]
     rpc.calls.clear()
     result = await driver.execute(
         {

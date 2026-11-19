@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import func, literal, or_, select, update
+from sqlalchemy import String, cast, func, literal, or_, select, update
 
 from yuki.client_api.errors import ClientError
 from yuki.conversation.canonical_db_models import CanonicalConversationModel
@@ -36,7 +36,7 @@ from yuki.runtime.work_schema_v1 import work
 from yuki.sandbox.db_models import SandboxTaskRunModel
 from yuki.sandbox.task_repository import SandboxTaskRepository
 
-CONNECTOR_PROTOCOL = 4
+CONNECTOR_PROTOCOL = 5
 # Actions that create a Work-owned run. Their device RPC belongs to this service,
 # never to the activation: the run, events and completion carry the outcome.
 _SUBMITTED = frozenset({"prompt", "queue", "watch"})
@@ -75,23 +75,30 @@ class ExternalAgentService:
         self._queries: dict[str, asyncio.Task[None]] = {}
 
     async def close(self) -> None:
-        # Closing Yuki's transport never sends native cancel or closes a user daemon.
+        # Closing Yuki's transport never sends native cancel or closes a user daemon. The
+        # Bot stopping is not the device going offline: no offline fact is recorded and
+        # no Work is woken (each reconnect after the restart is ordinary progress).
         errors: list[BaseException] = []
-        connections = self.connections.active()
         try:
             await self.connections.close()
         except BaseException as close_error:
             errors.append(close_error)
-        for connection in connections:
-            try:
-                await self.repository.connection_event(connection.device_id, connection.id, False)
-            except BaseException as close_error:
-                errors.append(close_error)
-        # Each owned task's outcome is reported once, even if close() runs again.
-        owned = (*self._retiring.values(), *self._dispatches.values(), *self._queries.values())
-        self._retiring.clear()
-        results = await asyncio.gather(*owned, return_exceptions=True)
-        errors.extend(result for result in results if isinstance(result, BaseException))
+        # Each owned task's outcome is reported once, even if close() runs again. Tasks
+        # created while earlier ones finish are collected too, as drain() does.
+        seen: set[asyncio.Task[None]] = set()
+        while owned := [
+            task
+            for task in (
+                *self._retiring.values(),
+                *self._dispatches.values(),
+                *self._queries.values(),
+            )
+            if task not in seen
+        ]:
+            seen.update(owned)
+            self._retiring.clear()
+            results = await asyncio.gather(*owned, return_exceptions=True)
+            errors.extend(result for result in results if isinstance(result, BaseException))
         if errors:
             cancellation = next(
                 (error for error in errors if not isinstance(error, Exception)), None
@@ -125,9 +132,6 @@ class ExternalAgentService:
             return
         self.database.commit_hints.publish()
         await self.repository.connection_event(device_id, connection.id, True)
-        # Answers lost with the previous socket are read back by original ID only.
-        for identity, local_id in await self.repository.unconfirmed(device_id):
-            self._query_original(identity, connection, local_id)
 
     async def disconnect(self, connection: DeviceConnection) -> None:
         if self.connections.detach(connection):
@@ -227,17 +231,17 @@ class ExternalAgentService:
                 await self.repository.control_settled(identity)
             return
         try:
-            result = await connection.request(command)
+            # Protocol 5: the device's answer is a retransmitted receipt event settled
+            # in receive_events before its ACK, never an RPC reply awaited here.
+            await connection.send(command)
         except Exception as error:
-            # Whatever ended the socket call (offline, a closed or replaced socket), delivery
-            # is unknown. The original ID is queried after reconnect; it is never resent.
+            # Whatever ended the write, delivery is unknown; the original ID stays
+            # queryable and is never resent.
             logger.info(
                 "external_agent_dispatch_unconfirmed operation=%s error=%s",
                 identity,
                 type(error).__name__,
             )
-            return
-        await self._settle(identity, result)
 
     async def _settle(self, identity: str, result: dict[str, Any]) -> None:
         """Record one device answer and everything it settles, idempotently.
@@ -586,8 +590,18 @@ class ExternalAgentService:
         return operation
 
     async def execute(
-        self, args: dict[str, Any], request_id: str, source: dict[str, Any] | None
+        self,
+        args: dict[str, Any],
+        request_id: str,
+        source: dict[str, Any] | None,
+        *,
+        owner_work_id: str | None = None,
     ) -> dict[str, Any]:
+        """Register one native action. ``owner_work_id`` is set only by trusted callers.
+
+        A delegation, observation or Desktop answer names the record that owns the
+        operation; the activation's lease (when there is one) still guards the write.
+        """
         action = args.get("action")
         if action not in {
             "list",
@@ -626,7 +640,30 @@ class ExternalAgentService:
             await control.validate()
             if not await control.repository.valid(control.lease):
                 raise ValueError("external_agent_source_obsolete")
-        if action in {"prompt", "queue", "watch"}:
+        if owner_work_id is not None:
+            async with self.database.read_session() as reader:
+                record = (
+                    (await reader.execute(select(work).where(work.c.id == owner_work_id)))
+                    .mappings()
+                    .first()
+                )
+            if record is None or (record["state"] in TERMINAL and action != "detach"):
+                # Ending a relationship (release of a finished delegation) is still allowed;
+                # new input to a finished delegation continues it with resume.
+                if record is not None and action in {"queue", "steer", "respond"}:
+                    raise ExternalAgentArgumentError(
+                        "delegation_finished_use_resume",
+                        "这个委派已结束；在同一会话继续用 manage_task(action=resume, id, text)。"
+                        "本次未派发。",
+                    )
+                raise ValueError("external_agent_source_obsolete")
+            trusted = {
+                **trusted,
+                "work_id": owner_work_id,
+                "conversation_id": record["conversation_id"],
+                "generation": record["generation"],
+            }
+        elif action in {"prompt", "queue", "watch"}:
             if control is None or control.current is None:
                 raise ExternalAgentArgumentError(
                     "accept_work_before_execution",
@@ -649,6 +686,13 @@ class ExternalAgentService:
                 "generation": control.lease.generation,
             }
         owned = await self._operation_target(args, actor)
+        if owned is not None and owned.action == "watch" and action != "detach":
+            # Observation only looks (D6): no input, no answer (not even deny), no control.
+            raise ExternalAgentArgumentError(
+                "observe_only",
+                "这是观察关系：只看不答，不发送输入、不回答或拒绝权限、不发原生控制；"
+                "等待需由用户在本机终端处理。停止观察用 detach。本次未派发。",
+            )
         execution = (
             await self.repository.native_execution(args["execution_id"], actor)
             if isinstance(args.get("execution_id"), str)
@@ -733,6 +777,13 @@ class ExternalAgentService:
         # (selected by operation_id or by its execution) and undeclared instances still
         # go to the device, which decides.
         declared = connection.declared.get(instance.local_id)
+        if "scope" in args and "scope" not in (declared or frozenset()):
+            # A fixed scope is never dropped silently (D2): an older connector would
+            # run the delegation without it.
+            raise ExternalAgentArgumentError(
+                "connector_outdated",
+                "这台电脑的连接器不支持委派范围，请先在 Desktop 更新连接器。本次未派发。",
+            )
         if (
             action in _DECLARED
             and not original_control
@@ -780,6 +831,11 @@ class ExternalAgentService:
             native_execution = None
         if target is not None:
             arguments["operation_id"] = target.id
+            if target.action == "followup":
+                # A turn the native owner started itself: the device locates it by owner.
+                arguments["owner_operation_id"] = json.loads(target.command_json)[
+                    "owner_operation_id"
+                ]
         if action == "steer":
             arguments["expected_execution_id"] = native_execution
         if action == "respond":
@@ -788,7 +844,7 @@ class ExternalAgentService:
             except (KeyError, ValueError, TypeError) as error:
                 raise ExternalAgentArgumentError(
                     "permission_id_required",
-                    "question 用原操作事件中的 permission_id，不用 Agent 自己的请求 ID。",
+                    "reply_to 用卡片或时间线里的 permission_id，不用 Agent 自己的请求 ID。",
                 ) from error
             async with self.database.read_session() as session:
                 event = await session.get(AgentEventModel, permission_key)
@@ -818,17 +874,48 @@ class ExternalAgentService:
                 elif owned is None or event is None or event.operation_id != owned.id:
                     raise ExternalAgentArgumentError(
                         "external_agent_question_not_found",
-                        "先查看原 operation_id 的事件，"
-                        "question 用其中权限请求或提问的 permission_id。",
+                        "reply_to 用这个子任务卡片或时间线中权限请求或提问的 permission_id。",
                     )
                 assert event is not None
                 event_data = json.loads(event.payload_json)
                 if event.kind not in {"permission", "question"}:
                     raise ExternalAgentArgumentError(
                         "external_agent_question_not_found",
-                        "question 必须是原 operation_id 下的权限请求或提问事件。",
+                        "reply_to 必须是这个子任务的权限请求或提问的 permission_id。",
                     )
                 native_question = event_data["payload"]["native_request_id"]
+                if owned is not None:
+                    earlier = await session.scalar(
+                        select(AgentOperationModel.id).where(
+                            AgentOperationModel.instance_id == owned.instance_id,
+                            AgentOperationModel.action == "respond",
+                            AgentOperationModel.id != request_id,
+                            # Codex request ids are integers; compare their text form.
+                            cast(
+                                func.json_extract(
+                                    AgentOperationModel.command_json,
+                                    "$.arguments.native_request_id",
+                                ),
+                                String,
+                            )
+                            == str(native_question),
+                            func.json_extract(
+                                AgentOperationModel.command_json, "$.arguments.operation_id"
+                            )
+                            == owned.id,
+                            func.coalesce(
+                                func.json_type(AgentOperationModel.result_json, "$.error"), "null"
+                            )
+                            == "null",
+                        )
+                    )
+                    if earlier is not None:
+                        # The native request is consumed once: the first answer wins.
+                        raise ExternalAgentArgumentError(
+                            "request_already_answered",
+                            "这个请求已经有人回答（先答者生效），本次未派发；"
+                            "结果见该子任务的时间线。",
+                        )
                 question_execution = event_data.get("execution_id")
                 if execution is not None and execution.native_id != question_execution:
                     raise ValueError("external_agent_target_mismatch")
@@ -862,7 +949,8 @@ class ExternalAgentService:
             arguments=args,
             command=command,
             source=trusted,
-            session_id=session_id,
+            # A fork's receipt names its new native session; the original is only its source.
+            session_id=None if args.get("fork") else session_id,
             native_execution_id=native_execution,
             lease=control.lease if control is not None and trusted.get("work_id") else None,
         )
@@ -907,6 +995,63 @@ class ExternalAgentService:
                 self._dispatch(operation.id, connection, command),
             )
         return await self._view(operation)
+
+    async def release(
+        self,
+        work_id: str,
+        source: dict[str, Any],
+        *,
+        request_id: str,
+        close_owner: bool,
+    ) -> list[dict[str, Any]]:
+        """End Yuki's relationship with every live operation of one record.
+
+        Each operation is detached (offline: released without the device). With
+        ``close_owner`` a connector declaring ``release`` also closes the native
+        process Yuki opened for it once the current turn ends, so the user can take
+        the session back without a fork (G9). Nothing native is cancelled.
+        """
+        async with self.database.read_session() as reader:
+            live = list(
+                await reader.scalars(
+                    select(AgentOperationModel)
+                    .where(
+                        # Finished operations too: an idle owner still holds the session.
+                        AgentOperationModel.work_id == work_id,
+                        AgentOperationModel.run_id.is_not(None),
+                        AgentOperationModel.detached_at.is_(None),
+                    )
+                    .order_by(AgentOperationModel.created_at, AgentOperationModel.id)
+                )
+            )
+        results = []
+        for operation in live:
+            arguments: dict[str, Any] = {"action": "detach", "operation_id": operation.id}
+            if close_owner:
+                arguments["release"] = True
+            results.append(
+                await self.execute(
+                    arguments,
+                    f"{request_id}:{operation.id}"[:256],
+                    source,
+                    owner_work_id=work_id,
+                )
+            )
+            # The relationship ends now, a server fact; the device's detach follows in
+            # the background, so no later cleanup mistakes it for work to cancel and no
+            # later self-started turn is attributed to it.
+            await self._detached(operation)
+        if live:
+            async with self.database.immediate_session() as writer:
+                await writer.execute(
+                    update(AgentOperationModel)
+                    .where(
+                        AgentOperationModel.id.in_([item.id for item in live]),
+                        AgentOperationModel.detached_at.is_(None),
+                    )
+                    .values(detached_at=datetime.now(UTC))
+                )
+        return results
 
     async def _release(
         self,
@@ -1027,7 +1172,35 @@ class ExternalAgentService:
                 )
 
     async def receive_events(self, device_id: str, events: list[dict[str, Any]]) -> None:
-        await self.repository.receive_events(device_id, events)
+        """Commit native facts and receipts; the caller ACKs only after this returns."""
+        facts = [event for event in events if event.get("kind") != "receipt"]
+        if facts:
+            await self.repository.receive_events(device_id, facts)
+        for receipt in (event for event in events if event.get("kind") == "receipt"):
+            identity = receipt.get("operation_id")
+            result = (receipt.get("payload") or {}).get("result")
+            if not isinstance(identity, str) or not isinstance(result, dict):
+                raise ValueError("invalid_external_agent_receipt")
+            async with self.database.read_session() as reader:
+                operation = await reader.get(AgentOperationModel, identity)
+                instance = (
+                    await reader.get(AgentInstanceModel, operation.instance_id)
+                    if operation is not None
+                    else None
+                )
+            if (
+                instance is None
+                or instance.device_id != device_id
+                or instance.local_id != receipt.get("instance_id")
+            ):
+                # A device settles only its own original operations. The receipt is
+                # acknowledged and dropped: refusing the ACK would make the device resend
+                # it forever and stay offline.
+                logger.warning(
+                    "external_agent_receipt_mismatch device=%s operation=%s", device_id, identity
+                )
+                continue
+            await self._settle(identity, result)
 
     async def cleanup_tasks(
         self, tasks: Any, operation_id: str, *, purge: bool = False
@@ -1065,30 +1238,48 @@ class ExternalAgentService:
             except (DeviceOffline, ClientError):
                 results.append({"operation_id": row.id, "status": "unknown", "pending": True})
                 continue
-            try:
-                result = await connection.request(
-                    {
-                        "type": "command",
-                        "id": f"{operation_id}:{row.id}:{action}",
-                        "action": action,
-                        "instance_id": instance.local_id,
-                        "execution_id": row.native_execution_id,
-                        "session_id": resource.native_id if resource is not None else None,
-                        "arguments": {
-                            "operation_id": row.id,
-                            **(
-                                {"queued_submission_id": current["queued_submission_id"]}
-                                if "queued_submission_id" in current
-                                else {}
-                            ),
-                        },
-                    }
+            # One attempt per connection: a control the source check refused before
+            # writing is written again on the next connection, never twice on one.
+            identity = f"{operation_id}:{row.id}:{action}:{connection.id}"[:256]
+            command = {
+                "type": "command",
+                "id": identity,
+                "action": action,
+                "instance_id": instance.local_id,
+                "execution_id": row.native_execution_id,
+                "session_id": resource.native_id if resource is not None else None,
+                "arguments": {
+                    "operation_id": row.id,
+                    **(
+                        {"queued_submission_id": current["queued_submission_id"]}
+                        if "queued_submission_id" in current
+                        else {}
+                    ),
+                },
+            }
+            # Registered first, then written: the receipt event settles the target.
+            source = {
+                key: value
+                for key, value in json.loads(row.source_json).items()
+                if key not in {"work_id", "generation"}
+            }
+            control, created = await self.repository.prepare(
+                identity=identity,
+                instance_id=row.instance_id,
+                actor=row.actor_person_id,
+                action=action,
+                arguments={"action": action, "operation_id": row.id, "source_cleanup": True},
+                command=command,
+                source={**source, "source_cleanup": operation_id},
+                session_id=row.session_id,
+                native_execution_id=None,
+                lease=None,
+            )
+            if created:
+                self._background(
+                    self._dispatches, identity, self._dispatch(identity, connection, command)
                 )
-            except (DeviceOffline, OSError):
-                results.append({"operation_id": row.id, "status": "unknown", "pending": True})
-                continue
-            results.append({"operation_id": row.id, **result})
-            await self._control_result(row, action, result)
+            results.append(await self._view(control))
         return results
 
     async def _retire_legacy(self, task: Any, operation_id: str, *, purge: bool) -> dict[str, Any]:

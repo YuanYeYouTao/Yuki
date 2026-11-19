@@ -1,0 +1,54 @@
+{"type": "mode", "sessionId": "ad2f044e-ec18-4f67-a52e-91839b966841"}
+{"type": "permission-mode", "sessionId": "ad2f044e-ec18-4f67-a52e-91839b966841", "permissionMode": "auto"}
+{"type": "atis-latch", "sessionId": "ad2f044e-ec18-4f67-a52e-91839b966841"}
+{"type": "file-history-snapshot"}
+{"t": 0.0, "type": "user", "uuid": "e7f481ac-eae2-448e-8147-15d9d6dc0c07", "sessionId": "ad2f044e-ec18-4f67-a52e-91839b966841", "entrypoint": "cli", "isSidechain": false, "promptSource": "typed", "turnOrigin": "human", "permissionMode": "auto", "blocks": ["<text>"]}
+{"t": -0.0, "type": "attachment", "uuid": "0c449046-6bca-4b69-abec-f44dd85f70f4", "parentUuid": "e7f481ac-eae2-448e-8147-15d9d6dc0c07", "sessionId": "ad2f044e-ec18-4f67-a52e-91839b966841", "entrypoint": "cli", "isSidechain": false, "attachment_type": "environment"}
+{"t": -0.0, "type": "attachment", "uuid": "bf9fa954-3347-40e0-856c-d4c4e1363833", "parentUuid": "0c449046-6bca-4b69-abec-f44dd85f70f4", "sessionId": "ad2f044e-ec18-4f67-a52e-91839b966841", "entrypoint": "cli", "isSidechain": false, "attachment_type": "model"}
+{"t": -0.0, "type": "attachment", "uuid": "63f67c2f-72df-484d-92f2-2f54ab4661de", "parentUuid": "bf9fa954-3347-40e0-856c-d4c4e1363833", "sessionId": "ad2f044e-ec18-4f67-a52e-91839b966841", "entrypoint": "cli", "isSidechain": false, "attachment_type": "deferred_tools_delta"}
+{"t": -0.0, "type": "attachment", "uuid": "abf4f08a-7bc8-4f0e-a39b-06369a900849", "parentUuid": "63f67c2f-72df-484d-92f2-2f54ab4661de", "sessionId": "ad2f044e-ec18-4f67-a52e-91839b966841", "entrypoint": "cli", "isSidechain": false, "attachment_type": "agent_listing_delta"}
+{"t": -0.0, "type": "attachment", "uuid": "a027a719-efee-46dd-9623-e0de8c2e59bd", "parentUuid": "abf4f08a-7bc8-4f0e-a39b-06369a900849", "sessionId": "ad2f044e-ec18-4f67-a52e-91839b966841", "entrypoint": "cli", "isSidechain": false, "attachment_type": "mcp_instructions_delta"}
+{"t": -0.0, "type": "attachment", "uuid": "61052db6-9fc6-46e8-a7aa-6e0b5b36e398", "parentUuid": "a027a719-efee-46dd-9623-e0de8c2e59bd", "sessionId": "ad2f044e-ec18-4f67-a52e-91839b966841", "entrypoint": "cli", "isSidechain": false, "attachment_type": "skill_listing"}
+{"t": -0.0, "type": "attachment", "uuid": "5f040c98-b94b-4191-b843-9994d76c332f", "parentUuid": "61052db6-9fc6-46e8-a7aa-6e0b5b36e398", "sessionId": "ad2f044e-ec18-4f67-a52e-91839b966841", "entrypoint": "cli", "isSidechain": false, "attachment_type": "total_tokens_reminder"}
+{"t": 0.02, "type": "attachment", "uuid": "62cb0a01-1f18-4519-9385-d6a31909e466", "parentUuid": "5f040c98-b94b-4191-b843-9994d76c332f", "sessionId": "ad2f044e-ec18-4f67-a52e-91839b966841", "entrypoint": "cli", "isSidechain": false, "attachment_type": "session_context"}
+{"t": 0.02, "type": "attachment", "uuid": "8e403279-7acc-45ad-b728-1d67a4d67152", "parentUuid": "62cb0a01-1f18-4519-9385-d6a31909e466", "sessionId": "ad2f044e-ec18-4f67-a52e-91839b966841", "entrypoint": "cli", "isSidechain": false, "attachment_type": "date"}
+{"t": 0.02, "type": "attachment", "uuid": "b0ffcb79-65a9-4e18-b262-9447543adc7c", "parentUuid": "8e403279-7acc-45ad-b728-1d67a4d67152", "sessionId": "ad2f044e-ec18-4f67-a52e-91839b966841", "entrypoint": "cli", "isSidechain": false, "attachment_type": "credential_org"}
+{"t": 0.02, "type": "attachment", "uuid": "15f0ea6a-4165-4c94-8811-55d53fff235c", "parentUuid": "b0ffcb79-65a9-4e18-b262-9447543adc7c", "sessionId": "ad2f044e-ec18-4f67-a52e-91839b966841", "entrypoint": "cli", "isSidechain": false, "attachment_type": "remote_session_change"}
+{"t": 0.02, "type": "attachment", "uuid": "cd1b4a03-39bf-4056-aa61-e51e484933b9", "parentUuid": "15f0ea6a-4165-4c94-8811-55d53fff235c", "sessionId": "ad2f044e-ec18-4f67-a52e-91839b966841", "entrypoint": "cli", "isSidechain": false, "attachment_type": "prompt_snapshot"}
+{"t": 0.06, "type": "api-request-shape", "sessionId": "ad2f044e-ec18-4f67-a52e-91839b966841"}
+{"type": "api-request-blob"}
+{"type": "api-request-blob"}
+{"t": 0.06, "type": "api-request"}
+{"type": "last-prompt", "sessionId": "ad2f044e-ec18-4f67-a52e-91839b966841"}
+{"type": "mode", "sessionId": "ad2f044e-ec18-4f67-a52e-91839b966841"}
+{"type": "permission-mode", "sessionId": "ad2f044e-ec18-4f67-a52e-91839b966841", "permissionMode": "auto"}
+{"type": "atis-latch", "sessionId": "ad2f044e-ec18-4f67-a52e-91839b966841"}
+{"type": "ai-title", "sessionId": "ad2f044e-ec18-4f67-a52e-91839b966841"}
+{"type": "tools-used", "sessionId": "ad2f044e-ec18-4f67-a52e-91839b966841"}
+{"t": 1.64, "type": "assistant", "uuid": "bf91d997-a286-40f4-92fb-4af61b8f45c7", "parentUuid": "cd1b4a03-39bf-4056-aa61-e51e484933b9", "sessionId": "ad2f044e-ec18-4f67-a52e-91839b966841", "entrypoint": "cli", "isSidechain": false, "blocks": [{"type": "tool_use", "id": "toolu_01Jc3fNZy4sSwJAYnVgWgNox", "name": "Bash"}]}
+{"t": 14.0, "type": "user", "uuid": "7f4e5f4d-a823-4e40-a533-7db73a953cf0", "parentUuid": "bf91d997-a286-40f4-92fb-4af61b8f45c7", "sessionId": "ad2f044e-ec18-4f67-a52e-91839b966841", "entrypoint": "cli", "isSidechain": false, "blocks": [{"type": "tool_result", "tool_use_id": "toolu_01Jc3fNZy4sSwJAYnVgWgNox", "is_error": false}]}
+{"t": 14.0, "type": "attachment", "uuid": "606bd718-337c-45c7-8f64-85b52918dbc9", "parentUuid": "7f4e5f4d-a823-4e40-a533-7db73a953cf0", "sessionId": "ad2f044e-ec18-4f67-a52e-91839b966841", "entrypoint": "cli", "isSidechain": false, "attachment_type": "prompt_snapshot"}
+{"type": "api-request-blob"}
+{"t": 14.07, "type": "api-request"}
+{"type": "last-prompt", "sessionId": "ad2f044e-ec18-4f67-a52e-91839b966841"}
+{"type": "ai-title", "sessionId": "ad2f044e-ec18-4f67-a52e-91839b966841"}
+{"type": "mode", "sessionId": "ad2f044e-ec18-4f67-a52e-91839b966841"}
+{"type": "permission-mode", "sessionId": "ad2f044e-ec18-4f67-a52e-91839b966841", "permissionMode": "auto"}
+{"type": "atis-latch", "sessionId": "ad2f044e-ec18-4f67-a52e-91839b966841"}
+{"t": 14.01, "type": "attachment", "uuid": "e3c79a5c-59c6-4dd5-b625-a53b961fe703", "parentUuid": "606bd718-337c-45c7-8f64-85b52918dbc9", "sessionId": "ad2f044e-ec18-4f67-a52e-91839b966841", "entrypoint": "cli", "isSidechain": false, "attachment_type": "total_tokens_reminder"}
+{"t": 14.77, "type": "assistant", "uuid": "0815cd09-d860-4d80-8d94-3c2fff0e2a3d", "parentUuid": "e3c79a5c-59c6-4dd5-b625-a53b961fe703", "sessionId": "ad2f044e-ec18-4f67-a52e-91839b966841", "entrypoint": "cli", "isSidechain": false, "blocks": [{"type": "text"}]}
+{"t": 15.17, "type": "system", "subtype": "turn_duration", "uuid": "9a310c2c-b4b6-482f-bd91-913c4f17b47c", "parentUuid": "0815cd09-d860-4d80-8d94-3c2fff0e2a3d", "sessionId": "ad2f044e-ec18-4f67-a52e-91839b966841", "entrypoint": "cli", "isSidechain": false}
+{"type": "file-history-snapshot"}
+{"type": "api-request-blob"}
+{"type": "api-request-blob"}
+{"t": 37.88, "type": "api-request"}
+{"t": 37.87, "type": "user", "uuid": "b2e82bee-5112-4fd0-ab87-0d99e9e37123", "parentUuid": "9a310c2c-b4b6-482f-bd91-913c4f17b47c", "sessionId": "ad2f044e-ec18-4f67-a52e-91839b966841", "entrypoint": "cli", "isSidechain": false, "promptSource": "typed", "turnOrigin": "human", "permissionMode": "default", "blocks": ["<text>"]}
+{"t": 37.87, "type": "attachment", "uuid": "1718e569-0f5a-42a9-91fd-f5db55460053", "parentUuid": "b2e82bee-5112-4fd0-ab87-0d99e9e37123", "sessionId": "ad2f044e-ec18-4f67-a52e-91839b966841", "entrypoint": "cli", "isSidechain": false, "attachment_type": "plan_mode_exit"}
+{"t": 37.87, "type": "attachment", "uuid": "54d8bd19-2871-41cc-b574-6ae80d430d95", "parentUuid": "1718e569-0f5a-42a9-91fd-f5db55460053", "sessionId": "ad2f044e-ec18-4f67-a52e-91839b966841", "entrypoint": "cli", "isSidechain": false, "attachment_type": "total_tokens_reminder"}
+{"t": 38.85, "type": "assistant", "uuid": "13b40053-6724-49cd-b328-c95badd286f1", "parentUuid": "54d8bd19-2871-41cc-b574-6ae80d430d95", "sessionId": "ad2f044e-ec18-4f67-a52e-91839b966841", "entrypoint": "cli", "isSidechain": false, "blocks": [{"type": "tool_use", "id": "toolu_019yWoJ5dYFYgsNvQmnkJ6vt", "name": "Bash"}]}
+{"t": 71.0, "type": "user", "uuid": "aa99d692-de8f-4459-86b3-b5ad07d85771", "parentUuid": "13b40053-6724-49cd-b328-c95badd286f1", "sessionId": "ad2f044e-ec18-4f67-a52e-91839b966841", "entrypoint": "cli", "isSidechain": false, "blocks": [{"type": "tool_result", "tool_use_id": "toolu_019yWoJ5dYFYgsNvQmnkJ6vt", "is_error": false}]}
+{"type": "api-request-blob"}
+{"t": 71.03, "type": "api-request"}
+{"t": 71.0, "type": "attachment", "uuid": "0b788702-9a70-4def-a8c5-85ffbf875f7f", "parentUuid": "aa99d692-de8f-4459-86b3-b5ad07d85771", "sessionId": "ad2f044e-ec18-4f67-a52e-91839b966841", "entrypoint": "cli", "isSidechain": false, "attachment_type": "total_tokens_reminder"}
+{"t": 71.91, "type": "assistant", "uuid": "d4bdec69-9e32-48e0-b4e2-982e19f296a9", "parentUuid": "0b788702-9a70-4def-a8c5-85ffbf875f7f", "sessionId": "ad2f044e-ec18-4f67-a52e-91839b966841", "entrypoint": "cli", "isSidechain": false, "blocks": [{"type": "text"}]}
+{"t": 71.92, "type": "system", "subtype": "turn_duration", "uuid": "7f7baed6-8941-41c4-af42-802fc1a1170f", "parentUuid": "d4bdec69-9e32-48e0-b4e2-982e19f296a9", "sessionId": "ad2f044e-ec18-4f67-a52e-91839b966841", "entrypoint": "cli", "isSidechain": false}

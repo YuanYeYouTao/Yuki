@@ -5,7 +5,12 @@ import json
 from uuid import uuid4
 
 import pytest
-from tests.integration.test_external_agent_bridge import NativeComputer, accepted_work, directory
+from tests.integration.test_external_agent_bridge import (
+    NativeComputer,
+    accepted_work,
+    directory,
+    settled,
+)
 from tests.integration.test_external_agent_bridge import bridge as bridge_fixture
 from tests.support.canonical_identity import ensure_person
 from websockets.asyncio.client import connect
@@ -33,8 +38,8 @@ async def test_original_operation_http_keeps_work_link_for_pending_and_completed
                 operation,
                 bridge.source,
             )
-            # The device receipt is recorded by the service after the tool returned.
-            await bridge.service.drain()
+            # The device receipt event is settled by the service after the tool returned.
+            await settled(bridge)
             work_id = control.current["id"]
         if completed:
             await computer.event(
@@ -120,8 +125,8 @@ async def test_original_control_receipt_and_work_operation_projection(bridge):
                 operation,
                 bridge.source,
             )
-            # The device receipt is recorded by the service after the tool returned.
-            await bridge.service.drain()
+            # The device receipt event is settled by the service after the tool returned.
+            await settled(bridge)
             work_id = control.current["id"]
         source = bridge.source
         command = {"action": "detach", "operation_id": operation}
@@ -160,7 +165,7 @@ async def test_original_control_receipt_and_work_operation_projection(bridge):
 
 async def test_empty_catalog_retains_person_device_and_real_connection_state(bridge):
     before = (await bridge.http.get("/agents/v1/devices", headers=bridge.headers)).json()
-    assert before["connector_protocol"] == 4
+    assert before["connector_protocol"] == 5
     assert before["instances"] == []
     assert before["devices"][0]["id"] == bridge.device["device_id"]
     assert before["devices"][0]["online"] is False
@@ -170,7 +175,7 @@ async def test_empty_catalog_retains_person_device_and_real_connection_state(bri
         proxy=None,
         additional_headers={"Authorization": f"Bearer {bridge.device['token']}"},
     ) as socket:
-        await socket.send(json.dumps({"type": "hello", "protocol_version": 4, "instances": []}))
+        await socket.send(json.dumps({"type": "hello", "protocol_version": 5, "instances": []}))
         await socket.send(json.dumps({"type": "ping"}))
         assert json.loads(await socket.recv())["type"] == "pong"
         active = (await bridge.http.get("/agents/v1/devices", headers=bridge.headers)).json()
@@ -192,7 +197,7 @@ async def test_protocol_mismatch_returns_actual_close_reason(bridge):
         assert error.value.rcvd.reason == "unsupported_connector_protocol"
     directory = (await bridge.http.get("/agents/v1/devices", headers=bridge.headers)).json()
     assert directory["devices"][0]["online"] is False
-    assert directory["connector_protocol"] == 4
+    assert directory["connector_protocol"] == 5
 
 
 async def test_handshake_refusals_park_but_server_failures_let_connector_reconnect(bridge):
@@ -212,7 +217,7 @@ async def test_handshake_refusals_park_but_server_failures_let_connector_reconne
                     await socket.recv()
         return error.value.rcvd.code, error.value.rcvd.reason
 
-    hello = {"type": "hello", "protocol_version": 4, "instances": []}
+    hello = {"type": "hello", "protocol_version": 5, "instances": []}
     assert await closed_by([{"type": "ping"}]) == (1008, "connector_hello_required")
     assert await closed_by([{**hello, "device_id": str(uuid4())}]) == (
         1008,
@@ -255,7 +260,7 @@ async def test_empty_device_transport_changes_wake_existing_hint_without_work(br
             proxy=None,
             additional_headers={"Authorization": f"Bearer {bridge.device['token']}"},
         ) as socket:
-            await socket.send(json.dumps({"type": "hello", "protocol_version": 4, "instances": []}))
+            await socket.send(json.dumps({"type": "hello", "protocol_version": 5, "instances": []}))
             await asyncio.wait_for(attach_entered.wait(), 5)
             # The catalog transaction has committed while the transport is still offline.
             while not queue.empty():

@@ -80,6 +80,8 @@ allow-direct-references = true
 target-version = "py312"
 line-length = 100
 src = ["src", "tests"]
+# Recorded experiment drivers are evidence, kept as they ran (taskbook §15).
+extend-exclude = ["docs/operations/external-agent-phase2-experiments"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "ASYNC", "RUF"]
@@ -115,4 +117,5 @@ testpaths = ["tests"]
 markers = [
     "qwen_embedding_integration: opt-in test against the real DashScope embedding API",
     "native_worker: real pinned Monty worker/binding; executed by the native CI job",
+    "real_agent: real native Claude/Codex/ACP agents (paid); runs only with YUKI_REAL_AGENT_E2E=1",
 ]

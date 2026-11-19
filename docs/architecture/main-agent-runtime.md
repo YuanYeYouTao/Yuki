@@ -1,6 +1,6 @@
 # 主 Agent 执行与恢复合同
 
-个人明确授权的本机 Codex、Claude 沿现有 NativeConnector 和固定的 `get_coding_agents`／`use_coding_agent` 工具执行。桌面建立连接不要求选择项目；原生会话、任务目录与真实授权仍各认原事实。`local_device` 工具和活执行协议已退出；旧 Work 保留原表、内部 ID 与效果键的只读回执查询，pending/unknown 不转成已完成，不重派，也不转换为 Native 操作。远程电脑的有头界面继续沿现役终端/Manager 能力，不复制 Main。
+个人明确授权的本机 Codex、Claude 与 ACP Agent 沿现有 NativeConnector，作为子任务工具的执行者工作（工具合同 40，见下文“外部 Agent 委派”）。桌面建立连接不要求选择项目；原生会话、任务目录与真实授权仍各认原事实。`local_device` 工具和活执行协议已退出；旧 Work 保留原表、内部 ID 与效果键的只读回执查询，pending/unknown 不转成已完成，不重派，也不转换为 Native 操作。远程电脑的有头界面继续沿现役终端/Manager 能力，不复制 Main。
 
 本文定义当前执行合同；实际部署版本以运行镜像和提交记录为准。
 
@@ -464,13 +464,21 @@ SubagentScheduler 同样启动以恢复原子任务；新子任务接纳关闭�
 
 ## 预算、等待与异常
 
-外部 Agent 由 ExternalAgent 服务管理授权和原操作关联，经用户电脑主动建立的设备通道连接原生 Codex、Claude 或通用 ACP 驱动。原生会话归用户／设备／实例，Work 只拥有自己提交的操作或监督关系。list／get 无需接纳 Work；prompt／queue／watch 保存原 Work 关联；steer／respond／cancel／detach 按当前人物授权操作原资源，不要求另接纳 Work。
+外部 Agent 由 ExternalAgent 服务管理授权和原操作关联，经用户电脑主动建立的设备通道连接原生 Codex、Claude 或通用 ACP 驱动。原生会话归用户／设备／实例。
 
-prompt／queue／watch 沿稳定调用键登记原 SandboxTaskRun 与 ExternalAgent 操作后即返回原操作视图（设备回执尚未记录时为 unknown／pending），激活不等待设备写入或回复：写出与回复由 ExternalAgent 服务在 writer 外承接，写前再核当前连接、设备授权与原 Work 来源，回复写入原回执并沿原 run 结算。投递不明不重发，设备重连后只按原 ID 查证；原操作查询先返回已持久事实。新的 prompt／queue 只以所选操作或执行定位会话，不预先认领其原生回合。显式 detach 在设备离线或设备确认无原记录时只解除 Work 所属关系，原生状态保持未知，不改写原接纳事实。实例能力只按当前连接的实时声明提前拒绝新输入，原操作控制交设备裁决。list 与会话级 get 是在线只读查询，仍等设备回复（连接断开即失败），不在上述承诺内。run_id 是原 Work 等待引用，execution_id 是原生执行映射的内部 ID，二者不混用；native thread／turn／permission ID 留在适配器映射中。watch 使用 ownership=observe，只接收事实，不作为所属执行阻止 Work 完成。结束监督只 detach，不关闭用户 session、daemon 或兄弟执行。真正属于 Work 的未完成操作在来源撤销／终态时精确取消；取消接纳与原生终态回执分开。
+**外部 Agent 委派**（[第二阶段任务书](Yuki-外部Agent委派与协作第二阶段任务书-2026-11-18.md)）。没有单独的编码 Agent 工具：`start_subtask` 给 `executor={agent, device?}` 时创建委派记录，`relationship` 为 delegate（默认）、observe 或 takeover（仅在用户明确要求时）。委派记录是发起它的 Work 的子 Work，观察记录是原会话的根 Work；二者的执行者资料保存在 `runtime_subagents.executor_json`，两个调度器都不为它们启动 Main。委派时可固定 `scope`（`write_paths`、`network`、`commands`），随记录保存、写进每次派发；改范围就是新委派。连接器没有声明 `scope` 能力时，带范围的委派在执行处返回 `connector_outdated`，不在无范围的情况下执行。同一原生会话同时只有一个委派拥有者，第二个返回 `conflict` 与现有拥有者（事实，不是上限；不设并发上限）。
 
-重要进度、权限和用户问题先进入原 Work 私有输入与原回执，再确认设备事件。沿原等待／恢复链接入，不逐 token 激活 Main，不复活终态或已撤权 Work。回答绑定原问题和原执行，普通已授权操作不一律升级为人工批准。跨入口查询认原 Person 授权，不拼接 Conversation 历史。外部输出是待核对材料，交付继续通过 send／Social。
+委派记录的状态由原生事实确定性结算：权限或提问 → `waiting_user`（父视角 `waiting_parent`）并以卡片唤醒父 Work；属于该委派的全部运行都结束 → completed／failed／cancelled，结果卡片经子任务结果通知交给父 Work；执行者消失（`status: unknown`、设备离线）只记原因并告诉父 Work 一次，不改判失败、不重派，设备重连后按真实终态结算。进展（文本、工具调用、计划、处置、已解决）只入时间线，不写 Work 输入、不唤醒、不打断时间或 `all` 等待。父 Work 只等消息（`waiting_user`）时，委派的请求也会唤醒它；挂起或终态的父 Work 保存卡片但不被复活。`message_task(id, text, mode?)` 向委派追加输入（默认 queue），`message_task(id, reply_to=permission_id, answer, text=理由)` 回答一个原生请求（先答者生效，回答者、选项、理由与原请求摘要写进时间线，批准只对该请求有效）；`manage_task(cancel)` 取消原生回合并结束关系，`resume` 带 text 在同一会话继续，`release` 只结束拥有关系，声明 `release` 的连接器在回合边界关闭 Yuki 自己持有的原生进程，以便用户接回而不分叉。`get_tasks(id)` 读卡片与时间线，`get_tasks(agents=…)` 浏览设备、Agent、会话与历史（在线只读查询）。
 
-每次 `use_coding_agent`／`get_coding_agents` 调用计入原 Work 工具预算；prompt／queue 登记新输入操作，steer 和查询不冒充新模型执行。原生内部轮数、usage、cache 只记实际报告字段，缺失保持未知。原生完整上下文和工具留在原生 Agent，Yuki 只接收必要进度、问题与结果引用。
+没有任何操作接收的原生等待（只上传了元信息）交给最后持有该会话的记录：委派的父 Work 收到 `answer_at: deny_only` 的卡片，只能拒绝；观察记录只通知。连接器只接受一次性回答（`one_time_only`），持续性的"总是允许"不经 Yuki 或 Desktop 生效。
+
+观察记录只看：服务端拒绝以观察记录或其操作为目标的输入、回答（含 deny）与原生控制（`observe_only`），观察到的请求不带 `permission_id`。唤醒更窄：同一请求只提醒一次，整轮失败、执行者消失或会话消失才提醒，回合结束只在用户要求“做完告诉我”时提醒（`notify_turn_end`）；提醒由原会话里的一次普通 Main（独立的通知 Work，沿原请求的来源）用 send 告诉用户。观察独立存在，直到用户停止或原生会话消失。
+
+所有派发沿稳定调用键登记原 SandboxTaskRun 与 ExternalAgent 操作后即返回原操作视图，激活不等待设备写入或回复：写出由 ExternalAgent 服务在 writer 外承接，写前再核当前连接、设备授权与原来源；设备协议 5 的回执作为可重传事件随事件流到达，服务器在结算提交后才 ACK。投递不明不重发，只按原 ID 查证。实例能力只按当前连接的实时声明提前拒绝新输入，原操作控制交设备裁决。run_id 是原 Work 等待引用，execution_id 是原生执行映射的内部 ID，native thread／turn／permission ID 留在适配器映射中。
+
+Desktop「等你回答」中设备所属人物的回答由服务端直接结算到原生请求（`POST /client/v1/works/{id}/native-requests/{permission_id}/answer`），不经 Main、不花模型调用；观察记录的请求只显示“在终端处理”。
+
+每次子任务工具调用计入原 Work 工具预算；原生内部轮数、usage、cache 只记实际报告字段，缺失保持未知。原生完整上下文和工具留在原生 Agent，Yuki 只接收卡片与按 ID 读取的时间线。部署前已登记的旧编码 Agent 操作沿原 run 与回执结算，旧名调用按未声明工具拒绝。
 
 旧服务器 ACP 不再接纳新 peer 或 prompt；legacy reader 仅保原 request／run／peer／cursor／permission／completion 的查询、原活动精准取消和结算，不作为后备设备 runtime。确认丢失查原 ID，unknown 不重发；历史回执不改名、不清空，也不声称擦除供应商或用户电脑上的资料。
 

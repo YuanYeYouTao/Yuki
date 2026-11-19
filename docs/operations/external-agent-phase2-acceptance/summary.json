@@ -1,0 +1,61 @@
+{
+  "generated_at": "2026-11-18T16:15:15.388882+00:00",
+  "pytest_exit_status": 0,
+  "scenarios": {
+    "A1": {
+      "status": "completed",
+      "error": null,
+      "artifact": "A1.json"
+    },
+    "A2": {
+      "status": "completed",
+      "error": null,
+      "artifact": "A2.json"
+    },
+    "A4-run1-resume-conflict": {
+      "status": "completed",
+      "error": null,
+      "artifact": "A4-run1-resume-conflict.json"
+    },
+    "A4-run2-tui-steer-merged": {
+      "status": "completed",
+      "error": null,
+      "artifact": "A4-run2-tui-steer-merged.json"
+    },
+    "A4": {
+      "status": "completed",
+      "error": null,
+      "artifact": "A4.json"
+    },
+    "A5": {
+      "status": "completed",
+      "error": null,
+      "artifact": "A5.json"
+    },
+    "A6-acp": {
+      "status": "completed",
+      "error": null,
+      "artifact": "A6-acp.json"
+    },
+    "A6-claude": {
+      "status": "completed",
+      "error": null,
+      "artifact": "A6-claude.json"
+    },
+    "A6-codex": {
+      "status": "completed",
+      "error": null,
+      "artifact": "A6-codex.json"
+    },
+    "A7": {
+      "status": "completed",
+      "error": null,
+      "artifact": "A7.json"
+    },
+    "A8": {
+      "status": "completed",
+      "error": null,
+      "artifact": "A8.json"
+    }
+  }
+}

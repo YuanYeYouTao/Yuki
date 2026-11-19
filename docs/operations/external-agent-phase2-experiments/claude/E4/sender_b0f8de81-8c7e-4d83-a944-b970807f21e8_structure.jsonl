@@ -1,0 +1,52 @@
+{"t": 0.0, "type": "queue-operation", "sessionId": "b0f8de81-8c7e-4d83-a944-b970807f21e8"}
+{"t": 0.0, "type": "queue-operation", "sessionId": "b0f8de81-8c7e-4d83-a944-b970807f21e8"}
+{"t": 0.01, "type": "user", "uuid": "27893b7a-79b1-4127-a875-ac4c61ec3d23", "sessionId": "b0f8de81-8c7e-4d83-a944-b970807f21e8", "entrypoint": "sdk-py", "isSidechain": false, "promptSource": "sdk", "turnOrigin": "sdk", "permissionMode": "default", "blocks": ["<text>"]}
+{"t": 0.01, "type": "attachment", "uuid": "a0ba90de-40eb-41dd-aeee-d36d3b7835cf", "parentUuid": "27893b7a-79b1-4127-a875-ac4c61ec3d23", "sessionId": "b0f8de81-8c7e-4d83-a944-b970807f21e8", "entrypoint": "sdk-py", "isSidechain": false, "attachment_type": "environment"}
+{"t": 0.01, "type": "attachment", "uuid": "3bbfd46a-6a00-4c94-86e2-4dab51a5be83", "parentUuid": "a0ba90de-40eb-41dd-aeee-d36d3b7835cf", "sessionId": "b0f8de81-8c7e-4d83-a944-b970807f21e8", "entrypoint": "sdk-py", "isSidechain": false, "attachment_type": "model"}
+{"t": 0.01, "type": "attachment", "uuid": "fbe63b0b-1df3-464d-a9a9-a3d181583674", "parentUuid": "3bbfd46a-6a00-4c94-86e2-4dab51a5be83", "sessionId": "b0f8de81-8c7e-4d83-a944-b970807f21e8", "entrypoint": "sdk-py", "isSidechain": false, "attachment_type": "deferred_tools_delta"}
+{"t": 0.01, "type": "attachment", "uuid": "4e66bd29-c5f6-4681-8686-cbc5351ebeb2", "parentUuid": "fbe63b0b-1df3-464d-a9a9-a3d181583674", "sessionId": "b0f8de81-8c7e-4d83-a944-b970807f21e8", "entrypoint": "sdk-py", "isSidechain": false, "attachment_type": "agent_listing_delta"}
+{"t": 0.01, "type": "attachment", "uuid": "29ae811c-22d6-4efa-9d3e-b1f3d0d77db0", "parentUuid": "4e66bd29-c5f6-4681-8686-cbc5351ebeb2", "sessionId": "b0f8de81-8c7e-4d83-a944-b970807f21e8", "entrypoint": "sdk-py", "isSidechain": false, "attachment_type": "skill_listing"}
+{"t": 0.01, "type": "attachment", "uuid": "e6411b7b-4d2f-4cb5-8f14-6f041a7d471a", "parentUuid": "29ae811c-22d6-4efa-9d3e-b1f3d0d77db0", "sessionId": "b0f8de81-8c7e-4d83-a944-b970807f21e8", "entrypoint": "sdk-py", "isSidechain": false, "attachment_type": "total_tokens_reminder"}
+{"type": "atis-latch", "sessionId": "b0f8de81-8c7e-4d83-a944-b970807f21e8"}
+{"t": 0.02, "type": "attachment", "uuid": "33a8e37f-51c5-42f7-ae9b-ec14a5696911", "parentUuid": "e6411b7b-4d2f-4cb5-8f14-6f041a7d471a", "sessionId": "b0f8de81-8c7e-4d83-a944-b970807f21e8", "entrypoint": "sdk-py", "isSidechain": false, "attachment_type": "session_context"}
+{"t": 0.02, "type": "attachment", "uuid": "68da8fc5-26db-4e4f-8511-d6dc33130125", "parentUuid": "33a8e37f-51c5-42f7-ae9b-ec14a5696911", "sessionId": "b0f8de81-8c7e-4d83-a944-b970807f21e8", "entrypoint": "sdk-py", "isSidechain": false, "attachment_type": "date"}
+{"t": 0.02, "type": "attachment", "uuid": "a5afc73d-8865-4d15-9567-c007c31d1422", "parentUuid": "68da8fc5-26db-4e4f-8511-d6dc33130125", "sessionId": "b0f8de81-8c7e-4d83-a944-b970807f21e8", "entrypoint": "sdk-py", "isSidechain": false, "attachment_type": "credential_org"}
+{"t": 0.02, "type": "attachment", "uuid": "b5e1914d-fb0b-469a-a21c-aca53486a639", "parentUuid": "a5afc73d-8865-4d15-9567-c007c31d1422", "sessionId": "b0f8de81-8c7e-4d83-a944-b970807f21e8", "entrypoint": "sdk-py", "isSidechain": false, "attachment_type": "remote_session_change"}
+{"t": 0.02, "type": "attachment", "uuid": "2d811a02-d0b1-45dc-93ed-57b24ef12f15", "parentUuid": "b5e1914d-fb0b-469a-a21c-aca53486a639", "sessionId": "b0f8de81-8c7e-4d83-a944-b970807f21e8", "entrypoint": "sdk-py", "isSidechain": false, "attachment_type": "prompt_snapshot"}
+{"type": "last-prompt", "sessionId": "b0f8de81-8c7e-4d83-a944-b970807f21e8"}
+{"type": "atis-latch", "sessionId": "b0f8de81-8c7e-4d83-a944-b970807f21e8"}
+{"type": "last-prompt", "sessionId": "b0f8de81-8c7e-4d83-a944-b970807f21e8"}
+{"type": "atis-latch", "sessionId": "b0f8de81-8c7e-4d83-a944-b970807f21e8"}
+{"type": "ai-title", "sessionId": "b0f8de81-8c7e-4d83-a944-b970807f21e8"}
+{"type": "tools-used", "sessionId": "b0f8de81-8c7e-4d83-a944-b970807f21e8"}
+{"t": 2.34, "type": "assistant", "uuid": "dee83362-6f4b-4df2-916e-cf5266aa57b5", "parentUuid": "2d811a02-d0b1-45dc-93ed-57b24ef12f15", "sessionId": "b0f8de81-8c7e-4d83-a944-b970807f21e8", "entrypoint": "sdk-py", "isSidechain": false, "blocks": [{"type": "thinking"}]}
+{"t": 2.35, "type": "assistant", "uuid": "629f93e2-6d03-4eeb-8f6a-c7021c84ce78", "parentUuid": "dee83362-6f4b-4df2-916e-cf5266aa57b5", "sessionId": "b0f8de81-8c7e-4d83-a944-b970807f21e8", "entrypoint": "sdk-py", "isSidechain": false, "blocks": [{"type": "tool_use", "id": "toolu_01UGEeiDvuBffVvPQH33eCwM", "name": "ListAgents"}]}
+{"t": 2.35, "type": "user", "uuid": "e80b2d52-3b39-4613-a5a5-0b252f7fd002", "parentUuid": "629f93e2-6d03-4eeb-8f6a-c7021c84ce78", "sessionId": "b0f8de81-8c7e-4d83-a944-b970807f21e8", "entrypoint": "sdk-py", "isSidechain": false, "blocks": [{"type": "tool_result", "tool_use_id": "toolu_01UGEeiDvuBffVvPQH33eCwM", "is_error": null}]}
+{"t": 2.36, "type": "attachment", "uuid": "f6f6f5d9-11ca-4332-98d3-c6cdc45475c7", "parentUuid": "e80b2d52-3b39-4613-a5a5-0b252f7fd002", "sessionId": "b0f8de81-8c7e-4d83-a944-b970807f21e8", "entrypoint": "sdk-py", "isSidechain": false, "attachment_type": "prompt_snapshot"}
+{"t": 2.36, "type": "attachment", "uuid": "8dbb2686-202d-41db-a345-7940e0931c5a", "parentUuid": "f6f6f5d9-11ca-4332-98d3-c6cdc45475c7", "sessionId": "b0f8de81-8c7e-4d83-a944-b970807f21e8", "entrypoint": "sdk-py", "isSidechain": false, "attachment_type": "deferred_tools_delta"}
+{"t": 2.36, "type": "attachment", "uuid": "01f1eb00-ba15-4991-aa6b-057e564b9674", "parentUuid": "8dbb2686-202d-41db-a345-7940e0931c5a", "sessionId": "b0f8de81-8c7e-4d83-a944-b970807f21e8", "entrypoint": "sdk-py", "isSidechain": false, "attachment_type": "mcp_instructions_delta"}
+{"t": 2.36, "type": "attachment", "uuid": "a1911bc6-9c31-4c5c-93d5-627ad18fb103", "parentUuid": "01f1eb00-ba15-4991-aa6b-057e564b9674", "sessionId": "b0f8de81-8c7e-4d83-a944-b970807f21e8", "entrypoint": "sdk-py", "isSidechain": false, "attachment_type": "total_tokens_reminder"}
+{"type": "last-prompt", "sessionId": "b0f8de81-8c7e-4d83-a944-b970807f21e8"}
+{"type": "ai-title", "sessionId": "b0f8de81-8c7e-4d83-a944-b970807f21e8"}
+{"type": "atis-latch", "sessionId": "b0f8de81-8c7e-4d83-a944-b970807f21e8"}
+{"type": "tools-used", "sessionId": "b0f8de81-8c7e-4d83-a944-b970807f21e8"}
+{"t": 3.2, "type": "assistant", "uuid": "ec036ed7-d6ad-4ab0-bab6-4d3e126fc779", "parentUuid": "a1911bc6-9c31-4c5c-93d5-627ad18fb103", "sessionId": "b0f8de81-8c7e-4d83-a944-b970807f21e8", "entrypoint": "sdk-py", "isSidechain": false, "blocks": [{"type": "thinking"}]}
+{"t": 3.29, "type": "assistant", "uuid": "376c851c-28c1-41c7-88cd-ea85cd061ba6", "parentUuid": "ec036ed7-d6ad-4ab0-bab6-4d3e126fc779", "sessionId": "b0f8de81-8c7e-4d83-a944-b970807f21e8", "entrypoint": "sdk-py", "isSidechain": false, "blocks": [{"type": "tool_use", "id": "toolu_01S19RudGWwnJ5vrpapzvxre", "name": "ToolSearch"}]}
+{"t": 3.29, "type": "user", "uuid": "d819c74a-5678-4346-9176-438687033ed5", "parentUuid": "376c851c-28c1-41c7-88cd-ea85cd061ba6", "sessionId": "b0f8de81-8c7e-4d83-a944-b970807f21e8", "entrypoint": "sdk-py", "isSidechain": false, "blocks": [{"type": "tool_result", "tool_use_id": "toolu_01S19RudGWwnJ5vrpapzvxre", "is_error": null}]}
+{"t": 3.3, "type": "attachment", "uuid": "aea5bb42-2df1-4bdf-9be0-e479066cb1a8", "parentUuid": "d819c74a-5678-4346-9176-438687033ed5", "sessionId": "b0f8de81-8c7e-4d83-a944-b970807f21e8", "entrypoint": "sdk-py", "isSidechain": false, "attachment_type": "total_tokens_reminder"}
+{"type": "last-prompt", "sessionId": "b0f8de81-8c7e-4d83-a944-b970807f21e8"}
+{"type": "ai-title", "sessionId": "b0f8de81-8c7e-4d83-a944-b970807f21e8"}
+{"type": "atis-latch", "sessionId": "b0f8de81-8c7e-4d83-a944-b970807f21e8"}
+{"t": 4.31, "type": "attachment", "uuid": "95bd30ae-7d1f-471e-a55c-bacd64676800", "parentUuid": "aea5bb42-2df1-4bdf-9be0-e479066cb1a8", "sessionId": "b0f8de81-8c7e-4d83-a944-b970807f21e8", "entrypoint": "sdk-py", "isSidechain": false, "attachment_type": "deferred_tools_record"}
+{"type": "tools-used", "sessionId": "b0f8de81-8c7e-4d83-a944-b970807f21e8"}
+{"t": 4.31, "type": "assistant", "uuid": "2999e6b8-671b-4968-9d33-242d31f9679c", "parentUuid": "95bd30ae-7d1f-471e-a55c-bacd64676800", "sessionId": "b0f8de81-8c7e-4d83-a944-b970807f21e8", "entrypoint": "sdk-py", "isSidechain": false, "blocks": [{"type": "tool_use", "id": "toolu_01UP4AXzHNy6zUEXuj5DuTwj", "name": "SendMessage"}]}
+{"t": 4.46, "type": "user", "uuid": "12ac5d6d-7bf2-47ca-abd8-e8baeb5c4de8", "parentUuid": "2999e6b8-671b-4968-9d33-242d31f9679c", "sessionId": "b0f8de81-8c7e-4d83-a944-b970807f21e8", "entrypoint": "sdk-py", "isSidechain": false, "blocks": [{"type": "tool_result", "tool_use_id": "toolu_01UP4AXzHNy6zUEXuj5DuTwj", "is_error": null}]}
+{"t": 4.46, "type": "attachment", "uuid": "4a3c35bf-74c7-400b-87e8-051ba48522b0", "parentUuid": "12ac5d6d-7bf2-47ca-abd8-e8baeb5c4de8", "sessionId": "b0f8de81-8c7e-4d83-a944-b970807f21e8", "entrypoint": "sdk-py", "isSidechain": false, "attachment_type": "total_tokens_reminder"}
+{"t": 4.82, "type": "queue-operation", "sessionId": "b0f8de81-8c7e-4d83-a944-b970807f21e8"}
+{"t": 5.37, "type": "assistant", "uuid": "106825a7-d7a4-44ef-a4ed-3d67c24610b0", "parentUuid": "4a3c35bf-74c7-400b-87e8-051ba48522b0", "sessionId": "b0f8de81-8c7e-4d83-a944-b970807f21e8", "entrypoint": "sdk-py", "isSidechain": false, "blocks": [{"type": "text"}]}
+{"t": 5.38, "type": "queue-operation", "sessionId": "b0f8de81-8c7e-4d83-a944-b970807f21e8"}
+{"t": 5.38, "type": "user", "uuid": "a7db3a90-f377-4382-8ade-dc23b9ea37f6", "parentUuid": "106825a7-d7a4-44ef-a4ed-3d67c24610b0", "sessionId": "b0f8de81-8c7e-4d83-a944-b970807f21e8", "entrypoint": "sdk-py", "isSidechain": false, "promptSource": "system", "turnOrigin": "system", "permissionMode": "default", "blocks": ["<text>"]}
+{"t": 6.13, "type": "assistant", "uuid": "8fb7d479-4263-4b71-a6b0-532c9bbb05f8", "parentUuid": "a7db3a90-f377-4382-8ade-dc23b9ea37f6", "sessionId": "b0f8de81-8c7e-4d83-a944-b970807f21e8", "entrypoint": "sdk-py", "isSidechain": false, "blocks": [{"type": "thinking"}]}
+{"t": 7.2, "type": "assistant", "uuid": "be83b746-94fa-45b1-87c0-487a9a243a51", "parentUuid": "8fb7d479-4263-4b71-a6b0-532c9bbb05f8", "sessionId": "b0f8de81-8c7e-4d83-a944-b970807f21e8", "entrypoint": "sdk-py", "isSidechain": false, "blocks": [{"type": "text"}]}
+{"type": "last-prompt", "sessionId": "b0f8de81-8c7e-4d83-a944-b970807f21e8"}
+{"type": "cost-state", "sessionId": "b0f8de81-8c7e-4d83-a944-b970807f21e8"}

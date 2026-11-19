@@ -16,6 +16,7 @@ from yuki.client_api.agent_target import (
     input_content,
     stored_target,
     target_data,
+    target_record,
     target_segments,
 )
 from yuki.client_api.errors import ClientError
@@ -83,7 +84,12 @@ class ClientMessages:
                 not payload_segments
                 or payload_segments[0] != {"type": "text", "data": {"text": text}}
                 or original_references != references
-                or event.content != input_content(rendered, agent_target)
+                or event.content
+                != input_content(
+                    rendered,
+                    agent_target,
+                    await target_record(self.identity.database, agent_target),
+                )
                 or target_data(stored_target(json.loads(event.segments_json)))
                 != target_data(agent_target)
             ):
@@ -109,7 +115,7 @@ class ClientMessages:
         previous = await self._previous(principal, request_id, text, attachments, agent_target)
         if previous is not None:
             return previous
-        await authorize_target(self.identity.database, principal.person_id, agent_target)
+        record = await authorize_target(self.identity.database, principal.person_id, agent_target)
         transient: tuple[MessageAttachment, ...] = ()
         rendered = text
         if attachments:
@@ -122,7 +128,7 @@ class ClientMessages:
                 for index, part in enumerate(media_segments)
             )
         segments += target_segments(agent_target)
-        rendered = input_content(rendered, agent_target)
+        rendered = input_content(rendered, agent_target, record)
         async with self.identity.database.read_session() as session:
             principal = await self.identity.require_principal(session, principal)
             binding = await session.get(IdentityBindingModel, principal.binding_id)

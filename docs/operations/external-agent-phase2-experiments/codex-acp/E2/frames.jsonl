@@ -1,0 +1,106 @@
+{"t": 0.0, "side": "harness", "dir": "note", "note": "E2 start; TUI already running on our app-server"}
+{"t": 0.818, "side": "tui", "dir": "out", "method": "user_prompt(TUI)", "marker": "TUIHELLO1"}
+{"t": 12.832, "side": "tui", "dir": "local", "method": "screen", "marker": "TUIHELLO1", "visible": true}
+{"t": 12.834, "side": "S", "dir": "out", "method": "initialize", "id": "d9d3c99d"}
+{"t": 12.835, "side": "S", "dir": "in", "kind": "notification", "method": "remoteControl/status/changed"}
+{"t": 12.835, "side": "S", "dir": "in", "method": "initialize:result", "id": "d9d3c99d"}
+{"t": 12.835, "side": "harness", "dir": "note", "note": "TUI thread id taken from the TUI session (non-ephemeral loaded thread)"}
+{"t": 12.835, "side": "S", "dir": "out", "method": "thread/resume", "id": "3f0125b8", "threadId": "01a1eec8-4680-7a80-a518-c513162d95e6"}
+{"t": 12.836, "side": "S", "dir": "in", "kind": "notification", "method": "account/updated"}
+{"t": 12.841, "side": "S", "dir": "in", "kind": "notification", "method": "thread/goal/cleared", "threadId": "01a1eec8-4680-7a80-a518-c513162d95e6"}
+{"t": 12.841, "side": "S", "dir": "in", "method": "thread/resume:result", "id": "3f0125b8", "thread.id": "01a1eec8-4680-7a80-a518-c513162d95e6", "thread.status": "idle"}
+{"t": 12.841, "side": "S", "dir": "out", "method": "turn/start", "id": "1b36da46", "threadId": "01a1eec8-4680-7a80-a518-c513162d95e6", "clientUserMessageId": "e2-script-idle"}
+{"t": 12.853, "side": "S", "dir": "in", "method": "turn/start:result", "id": "1b36da46", "turn.id": "01a1eeca-64d7-7432-9e8f-8498a595ed40", "turn.status": "inProgress"}
+{"t": 12.861, "side": "S", "dir": "in", "kind": "notification", "method": "thread/status/changed", "threadId": "01a1eec8-4680-7a80-a518-c513162d95e6", "status": "active"}
+{"t": 12.861, "side": "S", "dir": "in", "kind": "notification", "method": "turn/started", "threadId": "01a1eec8-4680-7a80-a518-c513162d95e6", "turn.id": "01a1eeca-64d7-7432-9e8f-8498a595ed40", "turn.status": "inProgress"}
+{"t": 12.871, "side": "S", "dir": "in", "kind": "notification", "method": "item/started", "threadId": "01a1eec8-4680-7a80-a518-c513162d95e6", "turnId": "01a1eeca-64d7-7432-9e8f-8498a595ed40", "item.id": "01a1eeca-64f3-7a72-a29d-1fa8d1f1b092", "item.type": "userMessage", "item.clientId": "e2-script-idle"}
+{"t": 12.872, "side": "S", "dir": "in", "kind": "notification", "method": "item/completed", "threadId": "01a1eec8-4680-7a80-a518-c513162d95e6", "turnId": "01a1eeca-64d7-7432-9e8f-8498a595ed40", "item.id": "01a1eeca-64f3-7a72-a29d-1fa8d1f1b092", "item.type": "userMessage", "item.clientId": "e2-script-idle"}
+{"t": 14.142, "side": "S", "dir": "in", "kind": "notification", "method": "item/started", "threadId": "01a1eec8-4680-7a80-a518-c513162d95e6", "turnId": "01a1eeca-64d7-7432-9e8f-8498a595ed40", "item.id": "msg_0fcb3d1a60822e8b016afda4751e2087d1a6d219472bf91da5", "item.type": "agentMessage"}
+{"t": 14.248, "side": "S", "dir": "in", "kind": "notification", "method": "turn/moderationMetadata", "threadId": "01a1eec8-4680-7a80-a518-c513162d95e6", "turnId": "01a1eeca-64d7-7432-9e8f-8498a595ed40"}
+{"t": 14.417, "side": "S", "dir": "in", "kind": "notification", "method": "item/completed", "threadId": "01a1eec8-4680-7a80-a518-c513162d95e6", "turnId": "01a1eeca-64d7-7432-9e8f-8498a595ed40", "item.id": "msg_0fcb3d1a60822e8b016afda4751e2087d1a6d219472bf91da5", "item.type": "agentMessage"}
+{"t": 14.423, "side": "S", "dir": "in", "kind": "notification", "method": "thread/readState/changed", "threadId": "01a1eec8-4680-7a80-a518-c513162d95e6"}
+{"t": 14.423, "side": "S", "dir": "in", "kind": "notification", "method": "thread/status/changed", "threadId": "01a1eec8-4680-7a80-a518-c513162d95e6", "status": "idle"}
+{"t": 14.423, "side": "S", "dir": "in", "kind": "notification", "method": "turn/completed", "threadId": "01a1eec8-4680-7a80-a518-c513162d95e6", "turn.id": "01a1eeca-64d7-7432-9e8f-8498a595ed40", "turn.status": "completed"}
+{"t": 14.431, "side": "S", "dir": "in", "kind": "notification", "method": "thread/readState/changed", "threadId": "01a1eec8-4680-7a80-a518-c513162d95e6"}
+{"t": 16.44, "side": "tui", "dir": "local", "method": "screen", "marker": "SCRIPTIDLE2", "visible": true}
+{"t": 17.271, "side": "tui", "dir": "out", "method": "user_prompt(TUI, needs approval)"}
+{"t": 17.299, "side": "S", "dir": "in", "kind": "notification", "method": "thread/status/changed", "threadId": "01a1eec8-4680-7a80-a518-c513162d95e6", "status": "active"}
+{"t": 17.299, "side": "S", "dir": "in", "kind": "notification", "method": "turn/started", "threadId": "01a1eec8-4680-7a80-a518-c513162d95e6", "turn.id": "01a1eeca-762b-7822-82e8-73ec1038d2f3", "turn.status": "inProgress"}
+{"t": 17.309, "side": "S", "dir": "in", "kind": "notification", "method": "item/started", "threadId": "01a1eec8-4680-7a80-a518-c513162d95e6", "turnId": "01a1eeca-762b-7822-82e8-73ec1038d2f3", "item.id": "01a1eeca-7649-7ea3-b67a-18fab1d606f4", "item.type": "userMessage", "item.clientId": "ed8b2e0a-6b51-4ed7-ba86-396810c185ad"}
+{"t": 17.311, "side": "S", "dir": "in", "kind": "notification", "method": "item/completed", "threadId": "01a1eec8-4680-7a80-a518-c513162d95e6", "turnId": "01a1eeca-762b-7822-82e8-73ec1038d2f3", "item.id": "01a1eeca-7649-7ea3-b67a-18fab1d606f4", "item.type": "userMessage", "item.clientId": "ed8b2e0a-6b51-4ed7-ba86-396810c185ad"}
+{"t": 19.908, "side": "S", "dir": "in", "kind": "notification", "method": "turn/moderationMetadata", "threadId": "01a1eec8-4680-7a80-a518-c513162d95e6", "turnId": "01a1eeca-762b-7822-82e8-73ec1038d2f3"}
+{"t": 19.935, "side": "S", "dir": "in", "kind": "notification", "method": "thread/status/changed", "threadId": "01a1eec8-4680-7a80-a518-c513162d95e6", "status": "active"}
+{"t": 19.935, "side": "S", "dir": "in", "kind": "notification", "method": "item/started", "threadId": "01a1eec8-4680-7a80-a518-c513162d95e6", "turnId": "01a1eeca-762b-7822-82e8-73ec1038d2f3", "item.id": "exec-7ea5dab3-2baf-45b1-92c8-53436200314a", "item.type": "commandExecution", "item.status": "inProgress"}
+{"t": 19.935, "side": "S", "dir": "in", "kind": "serverRequest", "method": "item/commandExecution/requestApproval", "requestId": 5, "threadId": "01a1eec8-4680-7a80-a518-c513162d95e6", "turnId": "01a1eeca-762b-7822-82e8-73ec1038d2f3", "itemId": "exec-7ea5dab3-2baf-45b1-92c8-53436200314a"}
+{"t": 19.935, "side": "harness", "dir": "note", "note": "script received approval request of the TUI-started turn: True"}
+{"t": 21.942, "side": "tui", "dir": "local", "method": "screen", "approval_prompt_visible": true}
+{"t": 21.942, "side": "S", "dir": "out", "method": "serverRequest:response", "requestId": 5, "decision": "decline"}
+{"t": 21.943, "side": "S", "dir": "in", "kind": "notification", "method": "serverRequest/resolved", "threadId": "01a1eec8-4680-7a80-a518-c513162d95e6", "requestId": 5}
+{"t": 21.943, "side": "harness", "dir": "note", "note": "script's decline accepted by app-server (serverRequest/resolved): True"}
+{"t": 21.943, "side": "S", "dir": "in", "kind": "notification", "method": "item/completed", "threadId": "01a1eec8-4680-7a80-a518-c513162d95e6", "turnId": "01a1eeca-762b-7822-82e8-73ec1038d2f3", "item.id": "exec-7ea5dab3-2baf-45b1-92c8-53436200314a", "item.type": "commandExecution", "item.status": "declined"}
+{"t": 21.943, "side": "S", "dir": "in", "kind": "notification", "method": "thread/status/changed", "threadId": "01a1eec8-4680-7a80-a518-c513162d95e6", "status": "active"}
+{"t": 22.747, "side": "S", "dir": "in", "kind": "notification", "method": "item/started", "threadId": "01a1eec8-4680-7a80-a518-c513162d95e6", "turnId": "01a1eeca-762b-7822-82e8-73ec1038d2f3", "item.id": "msg_0fcb3d1a60822e8b016afda47db74887d1930252860f91ac2e", "item.type": "agentMessage"}
+{"t": 22.979, "side": "S", "dir": "in", "kind": "notification", "method": "turn/moderationMetadata", "threadId": "01a1eec8-4680-7a80-a518-c513162d95e6", "turnId": "01a1eeca-762b-7822-82e8-73ec1038d2f3"}
+{"t": 22.982, "side": "S", "dir": "in", "kind": "notification", "method": "item/completed", "threadId": "01a1eec8-4680-7a80-a518-c513162d95e6", "turnId": "01a1eeca-762b-7822-82e8-73ec1038d2f3", "item.id": "msg_0fcb3d1a60822e8b016afda47db74887d1930252860f91ac2e", "item.type": "agentMessage"}
+{"t": 23.151, "side": "S", "dir": "in", "kind": "notification", "method": "thread/readState/changed", "threadId": "01a1eec8-4680-7a80-a518-c513162d95e6"}
+{"t": 23.151, "side": "S", "dir": "in", "kind": "notification", "method": "thread/status/changed", "threadId": "01a1eec8-4680-7a80-a518-c513162d95e6", "status": "idle"}
+{"t": 23.151, "side": "S", "dir": "in", "kind": "notification", "method": "turn/completed", "threadId": "01a1eec8-4680-7a80-a518-c513162d95e6", "turn.id": "01a1eeca-762b-7822-82e8-73ec1038d2f3", "turn.status": "completed"}
+{"t": 23.163, "side": "S", "dir": "in", "kind": "notification", "method": "thread/readState/changed", "threadId": "01a1eec8-4680-7a80-a518-c513162d95e6"}
+{"t": 24.962, "side": "tui", "dir": "local", "method": "screen", "approval_prompt_still_visible": false}
+{"t": 28.791, "side": "tui", "dir": "out", "method": "user_prompt(TUI, long turn)"}
+{"t": 28.815, "side": "S", "dir": "in", "kind": "notification", "method": "thread/status/changed", "threadId": "01a1eec8-4680-7a80-a518-c513162d95e6", "status": "active"}
+{"t": 28.815, "side": "S", "dir": "in", "kind": "notification", "method": "turn/started", "threadId": "01a1eec8-4680-7a80-a518-c513162d95e6", "turn.id": "01a1eeca-a329-7b31-b33d-410376b20fa1", "turn.status": "inProgress"}
+{"t": 28.825, "side": "S", "dir": "in", "kind": "notification", "method": "item/started", "threadId": "01a1eec8-4680-7a80-a518-c513162d95e6", "turnId": "01a1eeca-a329-7b31-b33d-410376b20fa1", "item.id": "01a1eeca-a345-7451-a003-076bd47a640f", "item.type": "userMessage", "item.clientId": "45d7eb10-71c8-4653-bed5-21952ef2ba79"}
+{"t": 28.826, "side": "S", "dir": "in", "kind": "notification", "method": "item/completed", "threadId": "01a1eec8-4680-7a80-a518-c513162d95e6", "turnId": "01a1eeca-a329-7b31-b33d-410376b20fa1", "item.id": "01a1eeca-a345-7451-a003-076bd47a640f", "item.type": "userMessage", "item.clientId": "45d7eb10-71c8-4653-bed5-21952ef2ba79"}
+{"t": 30.835, "side": "S", "dir": "in", "kind": "notification", "method": "turn/moderationMetadata", "threadId": "01a1eec8-4680-7a80-a518-c513162d95e6", "turnId": "01a1eeca-a329-7b31-b33d-410376b20fa1"}
+{"t": 31.005, "side": "S", "dir": "in", "kind": "notification", "method": "item/started", "threadId": "01a1eec8-4680-7a80-a518-c513162d95e6", "turnId": "01a1eeca-a329-7b31-b33d-410376b20fa1", "item.id": "exec-6a263cd0-eabd-419b-9b67-69649fc1d9ac", "item.type": "commandExecution", "item.status": "inProgress"}
+{"t": 31.005, "side": "S", "dir": "out", "method": "turn/start", "id": "150ad35f", "threadId": "01a1eec8-4680-7a80-a518-c513162d95e6"}
+{"t": 31.011, "side": "S", "dir": "in", "method": "turn/start:result", "id": "150ad35f", "turn.id": "01a1eeca-a329-7b31-b33d-410376b20fa1", "turn.status": "inProgress"}
+{"t": 31.011, "side": "harness", "dir": "note", "note": "turn/start while TUI turn running: accepted"}
+{"t": 31.011, "side": "S", "dir": "out", "method": "turn/steer", "id": "9f926202", "threadId": "01a1eec8-4680-7a80-a518-c513162d95e6", "expectedTurnId": "01a1eeca-a329-7b31-b33d-410376b20fa1", "clientUserMessageId": "e2-steer"}
+{"t": 31.013, "side": "S", "dir": "in", "method": "turn/steer:result", "id": "9f926202", "turnId": "01a1eeca-a329-7b31-b33d-410376b20fa1"}
+{"t": 31.013, "side": "harness", "dir": "note", "note": "steer with correct expectedTurnId: accepted"}
+{"t": 31.013, "side": "S", "dir": "out", "method": "turn/steer", "id": "566eda27", "threadId": "01a1eec8-4680-7a80-a518-c513162d95e6", "expectedTurnId": "00000000-0000-0000-0000-000000000000"}
+{"t": 31.014, "side": "S", "dir": "in", "method": "turn/steer:error", "id": "566eda27", "code": -32600, "message": "expected active turn id `00000000-0000-0000-0000-000000000000` but found `01a1eeca-a329-7b31-b33d-410376b20fa1`"}
+{"t": 31.014, "side": "harness", "dir": "note", "note": "steer with wrong expectedTurnId: rejected"}
+{"t": 31.014, "side": "S", "dir": "out", "method": "thread/queue/add", "id": "8a6a2f26", "threadId": "01a1eec8-4680-7a80-a518-c513162d95e6", "clientUserMessageId": "e2-queued"}
+{"t": 31.014, "side": "S", "dir": "in", "kind": "notification", "method": "item/started", "threadId": "01a1eec8-4680-7a80-a518-c513162d95e6", "turnId": "01a1eeca-a329-7b31-b33d-410376b20fa1", "item.id": "01a1eeca-abd3-7ec3-a390-161794690f17", "item.type": "userMessage"}
+{"t": 31.015, "side": "S", "dir": "in", "method": "thread/queue/add:result", "id": "8a6a2f26", "queuedSubmission.id": "01a1eeca-abd3-7ec3-a390-16312c87b238"}
+{"t": 31.015, "side": "S", "dir": "in", "kind": "notification", "method": "thread/queue/changed", "threadId": "01a1eec8-4680-7a80-a518-c513162d95e6"}
+{"t": 31.016, "side": "S", "dir": "in", "kind": "notification", "method": "item/completed", "threadId": "01a1eec8-4680-7a80-a518-c513162d95e6", "turnId": "01a1eeca-a329-7b31-b33d-410376b20fa1", "item.id": "01a1eeca-abd3-7ec3-a390-161794690f17", "item.type": "userMessage"}
+{"t": 31.018, "side": "S", "dir": "in", "kind": "notification", "method": "item/started", "threadId": "01a1eec8-4680-7a80-a518-c513162d95e6", "turnId": "01a1eeca-a329-7b31-b33d-410376b20fa1", "item.id": "01a1eeca-abd6-7992-be17-ac20b3dba6ba", "item.type": "userMessage", "item.clientId": "e2-steer"}
+{"t": 31.019, "side": "S", "dir": "in", "kind": "notification", "method": "item/completed", "threadId": "01a1eec8-4680-7a80-a518-c513162d95e6", "turnId": "01a1eeca-a329-7b31-b33d-410376b20fa1", "item.id": "01a1eeca-abd6-7992-be17-ac20b3dba6ba", "item.type": "userMessage", "item.clientId": "e2-steer"}
+{"t": 32.791, "side": "S", "dir": "in", "kind": "notification", "method": "turn/moderationMetadata", "threadId": "01a1eec8-4680-7a80-a518-c513162d95e6", "turnId": "01a1eeca-a329-7b31-b33d-410376b20fa1"}
+{"t": 38.142, "side": "S", "dir": "in", "kind": "notification", "method": "thread/queue/changed", "threadId": "01a1eec8-4680-7a80-a518-c513162d95e6"}
+{"t": 50.89, "side": "S", "dir": "in", "kind": "notification", "method": "item/completed", "threadId": "01a1eec8-4680-7a80-a518-c513162d95e6", "turnId": "01a1eeca-a329-7b31-b33d-410376b20fa1", "item.id": "exec-6a263cd0-eabd-419b-9b67-69649fc1d9ac", "item.type": "commandExecution", "item.status": "completed"}
+{"t": 51.882, "side": "S", "dir": "in", "kind": "notification", "method": "item/started", "threadId": "01a1eec8-4680-7a80-a518-c513162d95e6", "turnId": "01a1eeca-a329-7b31-b33d-410376b20fa1", "item.id": "msg_0fcb3d1a60822e8b016afda49addcc87d1bc21d4c3eab93e79", "item.type": "agentMessage"}
+{"t": 52.202, "side": "S", "dir": "in", "kind": "notification", "method": "turn/moderationMetadata", "threadId": "01a1eec8-4680-7a80-a518-c513162d95e6", "turnId": "01a1eeca-a329-7b31-b33d-410376b20fa1"}
+{"t": 52.203, "side": "S", "dir": "in", "kind": "notification", "method": "item/completed", "threadId": "01a1eec8-4680-7a80-a518-c513162d95e6", "turnId": "01a1eeca-a329-7b31-b33d-410376b20fa1", "item.id": "msg_0fcb3d1a60822e8b016afda49addcc87d1bc21d4c3eab93e79", "item.type": "agentMessage"}
+{"t": 52.22, "side": "S", "dir": "in", "kind": "notification", "method": "thread/readState/changed", "threadId": "01a1eec8-4680-7a80-a518-c513162d95e6"}
+{"t": 52.22, "side": "S", "dir": "in", "kind": "notification", "method": "thread/status/changed", "threadId": "01a1eec8-4680-7a80-a518-c513162d95e6", "status": "idle"}
+{"t": 52.22, "side": "S", "dir": "in", "kind": "notification", "method": "turn/completed", "threadId": "01a1eec8-4680-7a80-a518-c513162d95e6", "turn.id": "01a1eeca-a329-7b31-b33d-410376b20fa1", "turn.status": "completed"}
+{"t": 52.22, "side": "harness", "dir": "note", "note": "TUI turn completed: True"}
+{"t": 52.228, "side": "S", "dir": "in", "kind": "notification", "method": "thread/readState/changed", "threadId": "01a1eec8-4680-7a80-a518-c513162d95e6"}
+{"t": 52.228, "side": "S", "dir": "in", "kind": "notification", "method": "thread/queue/changed", "threadId": "01a1eec8-4680-7a80-a518-c513162d95e6"}
+{"t": 52.237, "side": "S", "dir": "in", "kind": "notification", "method": "thread/status/changed", "threadId": "01a1eec8-4680-7a80-a518-c513162d95e6", "status": "active"}
+{"t": 52.238, "side": "S", "dir": "in", "kind": "notification", "method": "turn/started", "threadId": "01a1eec8-4680-7a80-a518-c513162d95e6", "turn.id": "01a1eeca-fea7-75b2-b765-f27a5af1ea3b", "turn.status": "inProgress"}
+{"t": 52.246, "side": "S", "dir": "in", "kind": "notification", "method": "item/started", "threadId": "01a1eec8-4680-7a80-a518-c513162d95e6", "turnId": "01a1eeca-fea7-75b2-b765-f27a5af1ea3b", "item.id": "01a1eeca-fec3-7560-844f-f8382e228971", "item.type": "userMessage", "item.clientId": "e2-queued"}
+{"t": 52.246, "side": "harness", "dir": "note", "note": "queued item started its own turn after the TUI turn: True"}
+{"t": 52.247, "side": "S", "dir": "in", "kind": "notification", "method": "item/completed", "threadId": "01a1eec8-4680-7a80-a518-c513162d95e6", "turnId": "01a1eeca-fea7-75b2-b765-f27a5af1ea3b", "item.id": "01a1eeca-fec3-7560-844f-f8382e228971", "item.type": "userMessage", "item.clientId": "e2-queued"}
+{"t": 53.498, "side": "S", "dir": "in", "kind": "notification", "method": "item/started", "threadId": "01a1eec8-4680-7a80-a518-c513162d95e6", "turnId": "01a1eeca-fea7-75b2-b765-f27a5af1ea3b", "item.id": "msg_0fcb3d1a60822e8b016afda49c7ba487d1962030b517934a51", "item.type": "agentMessage"}
+{"t": 53.613, "side": "S", "dir": "in", "kind": "notification", "method": "turn/moderationMetadata", "threadId": "01a1eec8-4680-7a80-a518-c513162d95e6", "turnId": "01a1eeca-fea7-75b2-b765-f27a5af1ea3b"}
+{"t": 53.614, "side": "S", "dir": "in", "kind": "notification", "method": "item/completed", "threadId": "01a1eec8-4680-7a80-a518-c513162d95e6", "turnId": "01a1eeca-fea7-75b2-b765-f27a5af1ea3b", "item.id": "msg_0fcb3d1a60822e8b016afda49c7ba487d1962030b517934a51", "item.type": "agentMessage"}
+{"t": 53.637, "side": "S", "dir": "in", "kind": "notification", "method": "thread/readState/changed", "threadId": "01a1eec8-4680-7a80-a518-c513162d95e6"}
+{"t": 53.639, "side": "S", "dir": "in", "kind": "notification", "method": "thread/status/changed", "threadId": "01a1eec8-4680-7a80-a518-c513162d95e6", "status": "idle"}
+{"t": 53.639, "side": "S", "dir": "in", "kind": "notification", "method": "turn/completed", "threadId": "01a1eec8-4680-7a80-a518-c513162d95e6", "turn.id": "01a1eeca-fea7-75b2-b765-f27a5af1ea3b", "turn.status": "completed"}
+{"t": 53.645, "side": "S", "dir": "in", "kind": "notification", "method": "thread/readState/changed", "threadId": "01a1eec8-4680-7a80-a518-c513162d95e6"}
+{"t": 57.653, "side": "tui", "dir": "local", "method": "screen", "marker": "SLEPT3", "visible": true}
+{"t": 57.665, "side": "tui", "dir": "local", "method": "screen", "marker": "STEERED5", "visible": true}
+{"t": 57.675, "side": "tui", "dir": "local", "method": "screen", "marker": "QUEUED6", "visible": true}
+{"t": 57.675, "side": "S", "dir": "out", "method": "thread/read", "id": "1175c146", "threadId": "01a1eec8-4680-7a80-a518-c513162d95e6"}
+{"t": 57.681, "side": "S", "dir": "in", "kind": "notification", "method": "deprecationNotice"}
+{"t": 57.681, "side": "S", "dir": "in", "method": "thread/read:result", "id": "1175c146", "thread.id": "01a1eec8-4680-7a80-a518-c513162d95e6", "thread.status": "idle"}
+{"t": 57.681, "side": "S", "dir": "local", "method": "thread/read:summary", "turns": [{"id": "01a1eec9-4d2e-7493-87bf-837b3aeb0c61", "status": "completed", "items": ["userMessage", "agentMessage"], "clientIds": ["b9e3fed4-f7e3-4342-9763-45b1bdcfb250"]}, {"id": "01a1eec9-a5a0-7553-92ce-f397bfc04bdc", "status": "completed", "items": ["userMessage", "agentMessage"], "clientIds": ["20c502c3-1b96-40a0-8c8e-093c19be2e53"]}, {"id": "01a1eeca-35e2-7f70-885f-882164b7e33e", "status": "completed", "items": ["userMessage", "agentMessage"], "clientIds": ["191eb4e7-e851-463b-b723-596e08e43d75"]}, {"id": "01a1eeca-64d7-7432-9e8f-8498a595ed40", "status": "completed", "items": ["userMessage", "agentMessage"], "clientIds": ["e2-script-idle"]}, {"id": "01a1eeca-762b-7822-82e8-73ec1038d2f3", "status": "completed", "items": ["userMessage", "agentMessage"], "clientIds": ["ed8b2e0a-6b51-4ed7-ba86-396810c185ad"]}, {"id": "01a1eeca-a329-7b31-b33d-410376b20fa1", "status": "completed", "items": ["userMessage", "userMessage", "userMessage", "commandExecution", "agentMessage"], "clientIds": ["45d7eb10-71c8-4653-bed5-21952ef2ba79", "e2-steer"]}, {"id": "01a1eeca-fea7-75b2-b765-f27a5af1ea3b", "status": "completed", "items": ["userMessage", "agentMessage"], "clientIds": ["e2-queued"]}]}
+{"t": 57.682, "side": "S", "dir": "local", "method": "close"}
+{"t": 57.682, "side": "S", "dir": "in", "method": "connection_closed", "error": "ConnectionClosedError"}
+{"t": 57.682, "side": "harness", "dir": "note", "note": "E2 end"}

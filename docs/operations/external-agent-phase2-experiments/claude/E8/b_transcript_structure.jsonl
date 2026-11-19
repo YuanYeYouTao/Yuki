@@ -1,0 +1,56 @@
+{"t": 0.0, "type": "queue-operation", "sessionId": "84756bee-d89e-4806-90a7-f89970bf9812"}
+{"t": 0.0, "type": "queue-operation", "sessionId": "84756bee-d89e-4806-90a7-f89970bf9812"}
+{"t": 0.01, "type": "user", "uuid": "0786be25-1a32-4ac5-9b36-3bad0bbd1e9c", "sessionId": "84756bee-d89e-4806-90a7-f89970bf9812", "entrypoint": "sdk-py", "isSidechain": false, "promptSource": "sdk", "turnOrigin": "sdk", "permissionMode": "default", "blocks": ["<text>"]}
+{"t": 0.01, "type": "attachment", "uuid": "c819686d-2024-4897-b059-2c9c51d87067", "parentUuid": "0786be25-1a32-4ac5-9b36-3bad0bbd1e9c", "sessionId": "84756bee-d89e-4806-90a7-f89970bf9812", "entrypoint": "sdk-py", "isSidechain": false, "attachment_type": "environment"}
+{"t": 0.01, "type": "attachment", "uuid": "61f1b14c-f1a1-4038-90e4-d31017776189", "parentUuid": "c819686d-2024-4897-b059-2c9c51d87067", "sessionId": "84756bee-d89e-4806-90a7-f89970bf9812", "entrypoint": "sdk-py", "isSidechain": false, "attachment_type": "model"}
+{"t": 0.01, "type": "attachment", "uuid": "98ecd624-1d3f-4a5d-bcde-9511a837c9a7", "parentUuid": "61f1b14c-f1a1-4038-90e4-d31017776189", "sessionId": "84756bee-d89e-4806-90a7-f89970bf9812", "entrypoint": "sdk-py", "isSidechain": false, "attachment_type": "deferred_tools_delta"}
+{"t": 0.01, "type": "attachment", "uuid": "4c86d857-8662-4a44-b9c1-160133a68263", "parentUuid": "98ecd624-1d3f-4a5d-bcde-9511a837c9a7", "sessionId": "84756bee-d89e-4806-90a7-f89970bf9812", "entrypoint": "sdk-py", "isSidechain": false, "attachment_type": "agent_listing_delta"}
+{"t": 0.01, "type": "attachment", "uuid": "c47d2393-f384-4f50-8b73-581c70d752b0", "parentUuid": "4c86d857-8662-4a44-b9c1-160133a68263", "sessionId": "84756bee-d89e-4806-90a7-f89970bf9812", "entrypoint": "sdk-py", "isSidechain": false, "attachment_type": "skill_listing"}
+{"t": 0.01, "type": "attachment", "uuid": "90b96671-1abe-4e0b-91ff-1a3e3105f044", "parentUuid": "c47d2393-f384-4f50-8b73-581c70d752b0", "sessionId": "84756bee-d89e-4806-90a7-f89970bf9812", "entrypoint": "sdk-py", "isSidechain": false, "attachment_type": "total_tokens_reminder"}
+{"type": "atis-latch", "sessionId": "84756bee-d89e-4806-90a7-f89970bf9812"}
+{"t": 0.02, "type": "attachment", "uuid": "b70ae4b6-0acd-4730-a1e3-08f6a44b4a86", "parentUuid": "90b96671-1abe-4e0b-91ff-1a3e3105f044", "sessionId": "84756bee-d89e-4806-90a7-f89970bf9812", "entrypoint": "sdk-py", "isSidechain": false, "attachment_type": "session_context"}
+{"t": 0.02, "type": "attachment", "uuid": "5a6aa43d-d839-419f-8e63-eb993cc174bf", "parentUuid": "b70ae4b6-0acd-4730-a1e3-08f6a44b4a86", "sessionId": "84756bee-d89e-4806-90a7-f89970bf9812", "entrypoint": "sdk-py", "isSidechain": false, "attachment_type": "date"}
+{"t": 0.02, "type": "attachment", "uuid": "a369e7e7-da19-4e25-80d4-ab2ef389243f", "parentUuid": "5a6aa43d-d839-419f-8e63-eb993cc174bf", "sessionId": "84756bee-d89e-4806-90a7-f89970bf9812", "entrypoint": "sdk-py", "isSidechain": false, "attachment_type": "credential_org"}
+{"t": 0.02, "type": "attachment", "uuid": "adaafa62-0d93-4b42-8472-9456cc0e5e4a", "parentUuid": "a369e7e7-da19-4e25-80d4-ab2ef389243f", "sessionId": "84756bee-d89e-4806-90a7-f89970bf9812", "entrypoint": "sdk-py", "isSidechain": false, "attachment_type": "remote_session_change"}
+{"t": 0.02, "type": "attachment", "uuid": "11b8cd2c-9ed3-44ef-8a8c-de76781164aa", "parentUuid": "adaafa62-0d93-4b42-8472-9456cc0e5e4a", "sessionId": "84756bee-d89e-4806-90a7-f89970bf9812", "entrypoint": "sdk-py", "isSidechain": false, "attachment_type": "prompt_snapshot"}
+{"type": "last-prompt", "sessionId": "84756bee-d89e-4806-90a7-f89970bf9812"}
+{"type": "atis-latch", "sessionId": "84756bee-d89e-4806-90a7-f89970bf9812"}
+{"type": "last-prompt", "sessionId": "84756bee-d89e-4806-90a7-f89970bf9812"}
+{"type": "atis-latch", "sessionId": "84756bee-d89e-4806-90a7-f89970bf9812"}
+{"t": 1.84, "type": "assistant", "uuid": "c5d8ceba-d304-4f1d-b18c-8129d9d4b8ed", "parentUuid": "11b8cd2c-9ed3-44ef-8a8c-de76781164aa", "sessionId": "84756bee-d89e-4806-90a7-f89970bf9812", "entrypoint": "sdk-py", "isSidechain": false, "blocks": [{"type": "text"}]}
+{"t": 1.85, "type": "attachment", "uuid": "e6053572-c99d-43a0-b5a7-db32f0735496", "parentUuid": "c5d8ceba-d304-4f1d-b18c-8129d9d4b8ed", "sessionId": "84756bee-d89e-4806-90a7-f89970bf9812", "entrypoint": "sdk-py", "isSidechain": false, "attachment_type": "prompt_snapshot"}
+{"type": "last-prompt", "sessionId": "84756bee-d89e-4806-90a7-f89970bf9812"}
+{"type": "atis-latch", "sessionId": "84756bee-d89e-4806-90a7-f89970bf9812"}
+{"type": "cost-state", "sessionId": "84756bee-d89e-4806-90a7-f89970bf9812"}
+{"type": "ai-title", "sessionId": "84756bee-d89e-4806-90a7-f89970bf9812"}
+{"type": "file-history-snapshot"}
+{"t": 27.02, "type": "user", "uuid": "d92bfa84-b5d1-4c72-aad7-bbfe3db20459", "parentUuid": "e6053572-c99d-43a0-b5a7-db32f0735496", "sessionId": "84756bee-d89e-4806-90a7-f89970bf9812", "entrypoint": "cli", "isSidechain": false, "promptSource": "typed", "turnOrigin": "human", "permissionMode": "auto", "blocks": ["<text>"]}
+{"t": 27.02, "type": "attachment", "uuid": "d1bd9da2-e835-4942-a695-3d9d34e2379b", "parentUuid": "d92bfa84-b5d1-4c72-aad7-bbfe3db20459", "sessionId": "84756bee-d89e-4806-90a7-f89970bf9812", "entrypoint": "cli", "isSidechain": false, "attachment_type": "environment"}
+{"t": 27.02, "type": "attachment", "uuid": "72d8af00-fe36-4a8e-ac95-9f4aa2d6146e", "parentUuid": "d1bd9da2-e835-4942-a695-3d9d34e2379b", "sessionId": "84756bee-d89e-4806-90a7-f89970bf9812", "entrypoint": "cli", "isSidechain": false, "attachment_type": "deferred_tools_delta"}
+{"t": 27.02, "type": "attachment", "uuid": "305fd388-aef1-402c-aaeb-f2801829d802", "parentUuid": "72d8af00-fe36-4a8e-ac95-9f4aa2d6146e", "sessionId": "84756bee-d89e-4806-90a7-f89970bf9812", "entrypoint": "cli", "isSidechain": false, "attachment_type": "agent_listing_delta"}
+{"t": 27.02, "type": "attachment", "uuid": "0c88b55b-60f6-4ddb-a627-d60ade6dd2d1", "parentUuid": "305fd388-aef1-402c-aaeb-f2801829d802", "sessionId": "84756bee-d89e-4806-90a7-f89970bf9812", "entrypoint": "cli", "isSidechain": false, "attachment_type": "mcp_instructions_delta"}
+{"t": 27.02, "type": "attachment", "uuid": "200c757f-cae3-42c9-8016-91a6fafa5061", "parentUuid": "0c88b55b-60f6-4ddb-a627-d60ade6dd2d1", "sessionId": "84756bee-d89e-4806-90a7-f89970bf9812", "entrypoint": "cli", "isSidechain": false, "attachment_type": "skill_listing"}
+{"t": 27.02, "type": "attachment", "uuid": "bbd02191-0aa8-49c2-9175-ad8ec6e0ce12", "parentUuid": "200c757f-cae3-42c9-8016-91a6fafa5061", "sessionId": "84756bee-d89e-4806-90a7-f89970bf9812", "entrypoint": "cli", "isSidechain": false, "attachment_type": "total_tokens_reminder"}
+{"type": "last-prompt", "sessionId": "84756bee-d89e-4806-90a7-f89970bf9812"}
+{"type": "ai-title", "sessionId": "84756bee-d89e-4806-90a7-f89970bf9812"}
+{"type": "mode", "sessionId": "84756bee-d89e-4806-90a7-f89970bf9812"}
+{"type": "permission-mode", "sessionId": "84756bee-d89e-4806-90a7-f89970bf9812", "permissionMode": "auto"}
+{"type": "atis-latch", "sessionId": "84756bee-d89e-4806-90a7-f89970bf9812"}
+{"t": 27.94, "type": "assistant", "uuid": "1ba5ac5c-e02e-4306-b2b0-12a4f1722808", "parentUuid": "bbd02191-0aa8-49c2-9175-ad8ec6e0ce12", "sessionId": "84756bee-d89e-4806-90a7-f89970bf9812", "entrypoint": "cli", "isSidechain": false, "blocks": [{"type": "text"}]}
+{"t": 27.99, "type": "system", "subtype": "turn_duration", "uuid": "2d583cc8-2a3b-4c56-9eae-65f3812e0745", "parentUuid": "1ba5ac5c-e02e-4306-b2b0-12a4f1722808", "sessionId": "84756bee-d89e-4806-90a7-f89970bf9812", "entrypoint": "cli", "isSidechain": false}
+{"t": 45.89, "type": "queue-operation", "sessionId": "84756bee-d89e-4806-90a7-f89970bf9812"}
+{"t": 45.89, "type": "queue-operation", "sessionId": "84756bee-d89e-4806-90a7-f89970bf9812"}
+{"t": 45.91, "type": "user", "uuid": "32b923c0-a17f-470b-8503-b0ab3b6cf1e9", "parentUuid": "2d583cc8-2a3b-4c56-9eae-65f3812e0745", "sessionId": "84756bee-d89e-4806-90a7-f89970bf9812", "entrypoint": "sdk-py", "isSidechain": false, "promptSource": "sdk", "turnOrigin": "sdk", "permissionMode": "default", "blocks": ["<text>"]}
+{"t": 45.91, "type": "attachment", "uuid": "8e2b2f06-94e3-4498-bdfc-7c0cdf1e555f", "parentUuid": "32b923c0-a17f-470b-8503-b0ab3b6cf1e9", "sessionId": "84756bee-d89e-4806-90a7-f89970bf9812", "entrypoint": "sdk-py", "isSidechain": false, "attachment_type": "environment"}
+{"t": 45.91, "type": "attachment", "uuid": "47961d62-cdb1-47cf-8ce7-9f2c200b1175", "parentUuid": "8e2b2f06-94e3-4498-bdfc-7c0cdf1e555f", "sessionId": "84756bee-d89e-4806-90a7-f89970bf9812", "entrypoint": "sdk-py", "isSidechain": false, "attachment_type": "deferred_tools_delta"}
+{"t": 45.91, "type": "attachment", "uuid": "f2764046-c850-49c4-a78a-a1e3d719c808", "parentUuid": "47961d62-cdb1-47cf-8ce7-9f2c200b1175", "sessionId": "84756bee-d89e-4806-90a7-f89970bf9812", "entrypoint": "sdk-py", "isSidechain": false, "attachment_type": "agent_listing_delta"}
+{"t": 45.91, "type": "attachment", "uuid": "4a7d3e65-8e09-4772-94a9-f7c6b4848ea4", "parentUuid": "f2764046-c850-49c4-a78a-a1e3d719c808", "sessionId": "84756bee-d89e-4806-90a7-f89970bf9812", "entrypoint": "sdk-py", "isSidechain": false, "attachment_type": "mcp_instructions_delta"}
+{"t": 45.91, "type": "attachment", "uuid": "e916a727-29d2-4fae-9724-9a595bdf5407", "parentUuid": "4a7d3e65-8e09-4772-94a9-f7c6b4848ea4", "sessionId": "84756bee-d89e-4806-90a7-f89970bf9812", "entrypoint": "sdk-py", "isSidechain": false, "attachment_type": "total_tokens_reminder"}
+{"t": 47.85, "type": "assistant", "uuid": "4fb124a6-ba7c-49cd-bc7f-22e6ec2ef5da", "parentUuid": "e916a727-29d2-4fae-9724-9a595bdf5407", "sessionId": "84756bee-d89e-4806-90a7-f89970bf9812", "entrypoint": "sdk-py", "isSidechain": false, "blocks": [{"type": "text"}]}
+{"type": "last-prompt", "sessionId": "84756bee-d89e-4806-90a7-f89970bf9812"}
+{"type": "cost-state", "sessionId": "84756bee-d89e-4806-90a7-f89970bf9812"}
+{"type": "file-history-snapshot"}
+{"t": 49.36, "type": "user", "uuid": "6a16c6cc-3dcf-49e5-aafb-b42494937597", "parentUuid": "2d583cc8-2a3b-4c56-9eae-65f3812e0745", "sessionId": "84756bee-d89e-4806-90a7-f89970bf9812", "entrypoint": "cli", "isSidechain": false, "promptSource": "typed", "turnOrigin": "human", "permissionMode": "auto", "blocks": ["<text>"]}
+{"t": 49.36, "type": "attachment", "uuid": "d1925bd3-cc52-43a6-8844-339cf7eb52ac", "parentUuid": "6a16c6cc-3dcf-49e5-aafb-b42494937597", "sessionId": "84756bee-d89e-4806-90a7-f89970bf9812", "entrypoint": "cli", "isSidechain": false, "attachment_type": "total_tokens_reminder"}
+{"t": 50.21, "type": "assistant", "uuid": "7852f811-3053-4657-b455-a1bfee64480e", "parentUuid": "d1925bd3-cc52-43a6-8844-339cf7eb52ac", "sessionId": "84756bee-d89e-4806-90a7-f89970bf9812", "entrypoint": "cli", "isSidechain": false, "blocks": [{"type": "text"}]}
+{"t": 50.21, "type": "system", "subtype": "turn_duration", "uuid": "2d563846-837d-43e5-8ec7-5c2f8e9996b6", "parentUuid": "7852f811-3053-4657-b455-a1bfee64480e", "sessionId": "84756bee-d89e-4806-90a7-f89970bf9812", "entrypoint": "cli", "isSidechain": false}

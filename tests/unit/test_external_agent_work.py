@@ -157,22 +157,24 @@ async def test_unknown_paid_receipt_keeps_original_action_without_replaying(case
     assert not case.client.calls
 
 
-def test_invocation_keeps_action_but_not_prompt_in_durable_metadata():
+def test_invocation_keeps_no_delegated_text_in_durable_metadata():
     from yuki.capabilities.invocation import direct_invocations
     from yuki.domain.messages import ToolCall, ToolFunction
 
-    for arguments in ['{"action":"prompt","prompt":"private"}', "invalid JSON"]:
+    calls = [
+        ("start_subtask", '{"goal":"private","executor":{"agent":"a"}}'),
+        ("message_task", '{"id":"d","text":"private","mode":"steer"}'),
+        ("start_subtask", "invalid JSON"),
+    ]
+    for name, arguments in calls:
         invocation = direct_invocations(
-            (
-                ToolCall(
-                    id="original",
-                    function=ToolFunction(name="use_coding_agent", arguments=arguments),
-                ),
-            ),
+            (ToolCall(id="original", function=ToolFunction(name=name, arguments=arguments)),),
             SimpleNamespace(),
         )[0]
         metadata = invocation.durable_metadata()
-        assert metadata.get("action") == ("prompt" if arguments.startswith("{") else None)
+        assert metadata["tool_id"] == name
+        # Only the digest identifies the arguments; new calls carry no recorded action.
+        assert "action" not in metadata
         assert "private" not in json.dumps(metadata)
 
 
@@ -199,7 +201,7 @@ def test_management_intent_admission_is_separate_from_remote_prompt_completion(a
 
 
 @pytest.mark.parametrize("code_enabled", [False, True])
-async def test_fixed_main_and_code_contract_exposes_generic_agent_without_operator_secrets(
+async def test_fixed_main_and_code_contract_exposes_native_executor_without_operator_secrets(
     database, tmp_path, code_enabled
 ):
     from tests.integration.test_current_material_main_contract import _deployment
@@ -211,25 +213,37 @@ async def test_fixed_main_and_code_contract_exposes_generic_agent_without_operat
         contract = app.main_agent_contract
         full = await contract.definitions()
         direct = await contract.model_definitions()
-        for name in ("get_coding_agents", "use_coding_agent"):
+
+        def property_names(schema):
+            if isinstance(schema, dict):
+                for key, value in schema.items():
+                    if key == "properties":
+                        yield from value
+                    yield from property_names(value)
+            elif isinstance(schema, list):
+                for value in schema:
+                    yield from property_names(value)
+
+        names = {tool.name for tool in full}
+        # A native agent is only an executor of the one subtask tool set.
+        assert not {"get_coding_agents", "use_coding_agent"} & names
+        for name in ("start_subtask", "message_task", "manage_task", "get_tasks", "wait"):
             declared = next(tool for tool in direct if tool.name == name)
             assert declared == next(tool for tool in full if tool.name == name)
-            assert (
-                not {"command", "argv", "env", "peer_id", "agent_id"}
-                & declared.parameters["properties"].keys()
+            assert not {"command", "argv", "env", "peer_id", "agent_id"} & set(
+                property_names(declared.parameters)
             )
             if code_enabled:
                 assert contract.script_api.schemas[name] == declared.parameters
-        use = next(tool for tool in direct if tool.name == "use_coding_agent")
-        assert use.parameters["properties"]["action"]["enum"] == [
-            "prompt",
-            "queue",
-            "steer",
-            "watch",
-            "answer",
-            "cancel",
-            "detach",
-        ]
+        start = next(tool for tool in direct if tool.name == "start_subtask").parameters
+        assert start["properties"]["executor"]["properties"].keys() == {"device", "agent"}
+        assert start["properties"]["relationship"]["enum"] == ["delegate", "observe", "takeover"]
+        message = next(tool for tool in direct if tool.name == "message_task").parameters
+        assert message["properties"]["mode"]["enum"] == ["queue", "steer"]
+        manage = next(tool for tool in direct if tool.name == "manage_task").parameters
+        assert {"cancel", "resume", "release"} <= set(manage["properties"]["action"]["enum"])
+        tasks = next(tool for tool in direct if tool.name == "get_tasks").parameters
+        assert tasks["properties"]["agents"]["properties"].keys() == {"device", "agent", "session"}
         assert "external_agent" not in {tool.name for tool in full}
         if not code_enabled:
             assert contract.script_api is None

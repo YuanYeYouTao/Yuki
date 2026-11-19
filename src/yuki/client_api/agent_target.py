@@ -32,36 +32,57 @@ def target_data(target: AgentTarget | None) -> dict[str, Any] | None:
     return target.model_dump(exclude_none=True) if target is not None else None
 
 
-def tool_arguments(target: AgentTarget) -> dict[str, Any]:
-    """The App's selection in coding-Agent tool terms; the App payload is unchanged."""
+def tool_arguments(target: AgentTarget, record: str | None = None) -> dict[str, Any]:
+    """The App's selection in the one subtask tool set; the App payload is unchanged.
+
+    ``record`` is the delegation or observation the selected operation belongs to,
+    resolved from the original operation when the target was authorized.
+    """
     data = target.model_dump(exclude_none=True)
-    arguments: dict[str, Any] = {}
-    if "intent" in data:
-        arguments["action"] = "answer" if data["intent"] == "respond" else data["intent"]
-    # The most specific selected resource; the service resolves the rest from it.
-    for key in ("operation_id", "execution_id", "session_id", "instance_id"):
-        if key in data:
-            arguments["target"] = {key: data[key]}
-            break
-    if "device_id" in data:
-        arguments["device"] = data["device_id"]
-    for key in ("cwd",):
-        if key in data:
-            arguments[key] = data[key]
-    if "permission_id" in data:
-        arguments["question"] = data["permission_id"]
-    if "option_id" in data or "response" in data:
-        arguments["answer"] = data.get("option_id", data.get("response"))
+    intent = data.get("intent")
+    executor = {
+        key: value
+        for key, value in (("agent", data.get("instance_id")), ("device", data.get("device_id")))
+        if value is not None
+    }
+    arguments: dict[str, Any]
+    if intent in {None, "prompt", "watch"}:
+        arguments = {"tool": "start_subtask"}
+        if executor:
+            arguments["executor"] = executor
+        if "session_id" in data:
+            arguments["session"] = data["session_id"]
+        if "cwd" in data:
+            arguments["cwd"] = data["cwd"]
+        if intent == "watch":
+            arguments["relationship"] = "observe"
+    elif intent in {"queue", "steer"}:
+        arguments = {"tool": "message_task", "mode": intent}
+    elif intent == "respond":
+        arguments = {"tool": "message_task", "reply_to": data.get("permission_id")}
+        if "option_id" in data or "response" in data:
+            arguments["answer"] = data.get("option_id", data.get("response"))
+    else:
+        arguments = {"tool": "manage_task", "action": "cancel" if intent == "cancel" else "release"}
+    if intent in {"queue", "steer", "respond", "cancel", "detach"}:
+        if record is None:
+            # An operation recorded before contract 40 belongs to no delegation; the
+            # retired tools that controlled it have no successor (tool-kernel.md).
+            return {
+                "note": "所选原操作不属于任何委派，现行工具不能控制它；可查看其回执或新建委派。",
+                "operation_id": data.get("operation_id"),
+            }
+        arguments["id"] = record
     return arguments
 
 
-def input_content(body: str, target: AgentTarget | None) -> str:
+def input_content(body: str, target: AgentTarget | None, record: str | None = None) -> str:
     if target is None:
         return body
     return (
         body
         + "\n[用户明确选择的本机 Agent 目标与操作]\n"
-        + json.dumps(tool_arguments(target), ensure_ascii=False, sort_keys=True)
+        + json.dumps(tool_arguments(target, record), ensure_ascii=False, sort_keys=True)
     )
 
 
@@ -84,9 +105,27 @@ def stored_target(segments: list[dict[str, Any]]) -> AgentTarget | None:
     )
 
 
-async def authorize_target(database: Database, actor: str, target: AgentTarget | None) -> None:
+async def target_record(database: Database, target: AgentTarget | None) -> str | None:
+    """The record a selected original operation belongs to (a fact, not a new grant).
+
+    A replay of an already accepted request renders with it without authorizing
+    the device again (the original receipt does not depend on the device today).
+    """
+    if target is None or target.operation_id is None:
+        return None
+    from yuki.external_agents.db_models import AgentOperationModel
+
+    async with database.read_session() as reader:
+        operation = await reader.get(AgentOperationModel, target.operation_id)
+    return operation.work_id if operation is not None else None
+
+
+async def authorize_target(
+    database: Database, actor: str, target: AgentTarget | None
+) -> str | None:
+    """Authorize the selection; return the record its original operation belongs to."""
     if target is None:
-        return
+        return None
     repository = AgentRepository(database)
     try:
         operation = (
@@ -137,3 +176,4 @@ async def authorize_target(database: Database, actor: str, target: AgentTarget |
             await repository.identity.require_device(reader, instance.device_id)
     except ValueError as error:
         raise ClientError("not_found") from error
+    return operation.work_id if operation is not None else None

@@ -1,13 +1,13 @@
 # Yuki Agent Connector
 
-Connector **0.6.2 / wire protocol 4** connects an existing computer to Yuki through
+Connector **0.9.0 / wire protocol 5** connects an existing computer to Yuki through
 one outbound WSS connection. It provides native Codex, Claude SDK and ACP
 connections, and optional local Shell/file capabilities. It does not
 install the Bot, create another business task system or mirror native histories.
 
 Desktop includes this locked Python runtime for the Connector. No user Python
 installation is required. Independent CLI installations use Python 3.12:
-`uv tool install path/to/yuki_agent_connector-0.6.2-py3-none-any.whl`.
+`uv tool install path/to/yuki_agent_connector-0.9.0-py3-none-any.whl`.
 
 ## Installation and ownership
 
@@ -194,10 +194,37 @@ claimed attached. ACP negotiates native capabilities; its callbacks use the
 actual local session directory.
 
 Agent actions remain list/get/watch/prompt/steer/queue/respond/cancel/detach,
-advertised only where supported. Session watches follow actual turns;
-execution-scoped watches retain the original turn. Detach ends observation,
-not a native session. Formal permission/response IDs retain their native owner.
+plus scope/observe/release, advertised only where supported. Session watches
+follow actual turns; execution-scoped watches retain the original turn. Detach
+ends observation, not a native session; detach with release also closes the
+native hold Yuki has at the turn boundary once no other operation holds it
+(Claude SDK process, ACP session or process, Codex client subscription only).
+Formal permission/response IDs retain their native owner.
 response_submitted/cancel_submitted confirms submission, not task completion.
+
+Protocol 5: prompt/queue/watch/steer/respond/cancel/detach are answered by a
+`receipt` event written in the same journal transaction as their outcome and
+retransmitted until the server's ACK; reads and device resources keep their RPC
+response. A duplicate command ID never executes again.
+
+An observe watch only ever receives request metadata (request ID, tool name,
+`observed: true`) and is never answered, controlled or written through. A Claude
+terminal session is observed through the profile's session registry
+(`$CLAUDE_CONFIG_DIR/sessions`); a Claude session live in another process is
+not resumed (`session_live_elsewhere`) unless explicitly forked. A scope
+(`write_paths`, `network`, command prefixes) only narrows: Claude routes side
+effects through the connector with a `permissions.ask` override, Codex narrows
+and later restores the thread settings, ACP switches to an asking mode; anything
+outside the scope is reported. Codex thread settings apply to the thread's next
+turns: a turn that starts before Yuki's queued input (for example the user's own)
+also runs with the narrowed settings until Yuki's turn ends or the item is
+cancelled; the receipt says so (`scope_race`) and carries the settings to restore
+(`thread_settings_before`), so a restarted connector still restores them. Codex
+always lets a workspace-write turn write the thread's cwd, so a scope that does
+not cover it is refused (`scope_unsupported`). Owner answers are one-time only
+(`one_time_only` for session/policy-wide options). Codex requests of turns Yuki did not start reach
+Yuki as metadata only. Turns a native agent starts by itself inside an owner
+Yuki holds carry `owner_operation_id` and `followup_execution`.
 
 Operation receipts, native progress and Work settlement remain distinct. Codex
 get returns the latest summary turn by default. include_history returns one
@@ -223,7 +250,7 @@ Desktop ships a platform-specific relocatable CPython runtime with this exact
 locked wheel and dependencies. Its content digest distinguishes same-version
 builds. Upgrades retain the selected config/data/IDs/journal. Another installation
 and external-runtime adoption require their explicit UI actions. Bot and
-Connector must both use protocol 4. Builds use pinned Python archive/dependency
+Connector must both use protocol 5. Builds use pinned Python archive/dependency
 hashes, then move to a Unicode/spaces path for module/driver/SQLite/TLS/status
 checks. Notices/licenses travel with the runtime. Managed launches preserve
 isolated mode, so project modules cannot replace the bundled Connector. Package

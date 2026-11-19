@@ -29,12 +29,6 @@ async def test_source_revoked_after_queued_prepare_is_never_first_dispatched(
     class Socket:
         async def send_json(self, command):
             commands.append(command)
-            connection.respond(
-                {
-                    "id": command["id"],
-                    "result": {"admitted": True, "status": "running", "pending": True},
-                }
-            )
 
         async def close(self, code=1000, reason=None):
             pass

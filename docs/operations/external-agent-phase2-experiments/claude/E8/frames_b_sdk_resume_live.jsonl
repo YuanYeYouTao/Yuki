@@ -1,0 +1,14 @@
+{"t": 0.0, "side": "mark", "type": "mode", "mode": "resume", "session": null, "target": "84756bee-d89e-4806-90a7-f89970bf9812"}
+{"t": 0.01, "side": "sdk->cli", "type": "control_request", "request_id": "req_1_e39b5f78", "request": {"subtype": "initialize"}}
+{"t": 0.19, "side": "cli->sdk", "type": "system", "subtype": "hook_started", "uuid": "f7611d16-bc5e-46c2-a5f8-150d12034a88", "session_id": "84756bee-d89e-4806-90a7-f89970bf9812"}
+{"t": 0.22, "side": "cli->sdk", "type": "system", "subtype": "hook_response", "uuid": "c0cf1ce2-f2da-410c-bda9-85537ac2f5da", "session_id": "84756bee-d89e-4806-90a7-f89970bf9812"}
+{"t": 0.23, "side": "cli->sdk", "type": "control_response", "response": {"subtype": "success", "request_id": "req_1_e39b5f78", "behavior": null}}
+{"t": 0.23, "side": "sdk->cli", "type": "user", "session_id": "default", "parent_tool_use_id": null, "blocks": [{"type": "text"}]}
+{"t": 0.23, "side": "cli->sdk", "type": "system", "subtype": "session_state_changed", "uuid": "a8b43533-3b43-4aa7-a6ff-b961363e5769", "session_id": "84756bee-d89e-4806-90a7-f89970bf9812", "state": "running"}
+{"t": 0.26, "side": "cli->sdk", "type": "system", "subtype": "init", "uuid": "b07519cf-4963-4c50-83ce-dd5dec9009a7", "session_id": "84756bee-d89e-4806-90a7-f89970bf9812", "permissionMode": "default", "model": "claude-haiku-5-5", "init": {"permissionMode": "default", "cwd_set": true, "tools_count": 27, "has_ScheduleWakeup": true, "has_SendMessage": true, "has_ListAgents": true, "claude_code_version": "2.1.311"}}
+{"t": 2.19, "side": "cli->sdk", "type": "user", "uuid": "32b923c0-a17f-470b-8503-b0ab3b6cf1e9", "session_id": "84756bee-d89e-4806-90a7-f89970bf9812", "parent_tool_use_id": null, "isReplay": true, "blocks": [{"type": "text"}]}
+{"t": 2.19, "side": "cli->sdk", "type": "assistant", "uuid": "4fb124a6-ba7c-49cd-bc7f-22e6ec2ef5da", "session_id": "84756bee-d89e-4806-90a7-f89970bf9812", "parent_tool_use_id": null, "request_id": "req_011ChATmd13sLru5qEhVE48M", "blocks": [{"type": "text"}]}
+{"t": 2.19, "side": "cli->sdk", "type": "rate_limit_event", "uuid": "2d9ce378-5827-4569-936c-c952abac0f11", "session_id": "84756bee-d89e-4806-90a7-f89970bf9812"}
+{"t": 2.19, "side": "cli->sdk", "type": "result", "subtype": "success", "uuid": "fbab3237-c7e7-4c2d-aba7-70ddc91ade23", "session_id": "84756bee-d89e-4806-90a7-f89970bf9812", "is_error": false, "num_turns": 1, "stop_reason": "end_turn"}
+{"t": 2.19, "side": "mark", "type": "turn_boundary_close", "session": "84756bee-d89e-4806-90a7-f89970bf9812"}
+{"t": 3.33, "side": "mark", "type": "process_exited"}

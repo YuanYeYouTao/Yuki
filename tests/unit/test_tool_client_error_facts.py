@@ -2,7 +2,7 @@
 
 Failure cases written before the change:
 1. Unknown or foreign device id before any effect -> ``not_found``, points to
-   ``get_coding_agents`` for the device list, and states nothing happened.
+   ``get_tasks(agents=…)`` for the device list, and states nothing happened.
 2. The same error after the effect may have started -> still ``tool_failed`` with
    unknown effect; never claims nothing happened.
 3. Revoked/expired device credential -> ``unauthenticated`` with the reconnect step.
@@ -28,7 +28,7 @@ def test_unknown_device_is_a_fact_the_model_can_correct():
     result = failure(ClientError("not_found"))
     assert (result.ok, result.error_code, result.uncertain) == (False, "not_found", False)
     assert result.mutation_committed is False
-    assert "get_coding_agents" in result.public_message
+    assert "get_tasks(agents=" in result.public_message
     assert "没有产生效果" in result.public_message
 
 

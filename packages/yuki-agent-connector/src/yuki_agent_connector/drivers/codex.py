@@ -18,7 +18,43 @@ from websockets.exceptions import ConnectionClosed, InvalidHandshake
 from .. import __version__
 from ..config import Instance
 from ..discovery import creation_flags, profile_environment
+from ..scope import Scope
 from . import DriverError, Emit
+
+APPROVAL_METHODS = {
+    "item/commandExecution/requestApproval",
+    "item/fileChange/requestApproval",
+}
+# An owner's answer applies to this one request (Q1); session caches and policy
+# amendments would also answer later requests.
+ONE_TIME_DECISIONS = ("accept", "decline", "cancel")
+# Narrowed thread settings apply to the thread's next turns; a turn that starts
+# before Yuki's queued input (for example the user's) also runs with them.
+SCOPE_RACE = "turn_starting_before_yuki_input_uses_narrowed_settings"
+
+
+def thread_settings(resumed: dict[str, Any]) -> dict[str, Any]:
+    """The thread's own settings as thread/resume or thread/start reports them."""
+    profile = resumed.get("activePermissionProfile") or {}
+    return {
+        "approvalPolicy": resumed.get("approvalPolicy"),
+        "approvalsReviewer": resumed.get("approvalsReviewer"),
+        "sandboxPolicy": resumed.get("sandbox"),
+        "permissions": profile.get("id"),
+        "cwd": resumed.get("cwd"),
+    }
+
+
+def restored_settings(thread: str, original: dict[str, Any]) -> dict[str, Any]:
+    params: dict[str, Any] = {"threadId": thread, "approvalPolicy": original["approvalPolicy"]}
+    if original["approvalsReviewer"] is not None:
+        params["approvalsReviewer"] = original["approvalsReviewer"]
+    # A named permissions profile cannot be combined with a sandbox policy.
+    if original["permissions"]:
+        params["permissions"] = original["permissions"]
+    else:
+        params["sandboxPolicy"] = original["sandboxPolicy"]
+    return params
 
 
 class CodexRPC:
@@ -352,6 +388,9 @@ class CodexDriver:
         "respond",
         "cancel",
         "detach",
+        "scope",
+        "observe",
+        "release",
     ]
 
     def __init__(self, spec: Instance, emit: Emit) -> None:
@@ -362,13 +401,25 @@ class CodexDriver:
         self.turn_operations: dict[str, str] = {}
         self.turn_sessions: dict[str, str] = {}
         self.queue_operations: dict[str, str] = {}
-        self.pending_prompts: dict[str, str] = {}
         self.buffered: dict[tuple[str, str], list[dict[str, Any]]] = {}
         self.requests: dict[str, dict[str, Any]] = {}
         self.queue_sessions: dict[str, str] = {}
         self.owner: asyncio.Task[None] | None = None
         self.ready: asyncio.Future[None] | None = None
         self.recoveries: dict[str, asyncio.Task[None]] = {}
+        # Observe watches: metadata only, never an answerer (§4.3).
+        self.observers: set[str] = set()
+        self.scopes: dict[str, Scope] = {}
+        # Thread settings before Yuki first narrowed them; they stick to the thread
+        # and would leak into the user's own turns (§15 E6), so they are restored.
+        self.original_settings: dict[str, dict[str, Any]] = {}
+        self.narrowed: dict[str, set[str]] = {}
+        self.thread_cwd: dict[str, str] = {}
+        # Turn -> fileChange item -> paths, for approvals that name only the item.
+        self.item_paths: dict[str, dict[str, list[str]]] = {}
+        # Thread -> Yuki turn after which Yuki's subscription is released.
+        self.releasing: dict[str, str] = {}
+        self.background: set[asyncio.Task[None]] = set()
 
     async def start(self) -> None:
         self.ready = asyncio.get_running_loop().create_future()
@@ -413,7 +464,7 @@ class CodexDriver:
 
     async def stop(self) -> None:
         self.rpc.stopping = True
-        recoveries = list(self.recoveries.values())
+        recoveries = [*self.recoveries.values(), *self.background]
         for task in recoveries:
             task.cancel()
         await asyncio.gather(*recoveries, return_exceptions=True)
@@ -512,6 +563,9 @@ class CodexDriver:
         session_scope = (
             command["action"] == "watch" and command.get("observation_scope") == "session"
         )
+        scope = command.get("arguments", {}).get("scope")
+        if scope is not None and result.get("thread_settings_before") is not None:
+            self._rescope(session, operation, scope, result["thread_settings_before"])
         try:
             if command["action"] == "watch":
                 if not session_scope and not execution:
@@ -556,8 +610,10 @@ class CodexDriver:
                         self.turn_sessions.pop(execution, None)
                         self.watches.pop(operation, None)
                         self.watch_turns.pop(operation, None)
+                        self._unscope(operation)
                         return
-            elif command["action"] == "queue":
+            elif command["action"] in {"prompt", "queue"}:
+                # Yuki's prompts are queue items too; either may still be queued.
                 cursor = None
                 while True:
                     page = await self.rpc.call(
@@ -630,11 +686,159 @@ class CodexDriver:
                 },
             )
 
+    def _spawn(self, coroutine: Any) -> None:
+        # RPC calls wait for the reader that delivers this notification.
+        task = asyncio.create_task(coroutine)
+        self.background.add(task)
+        task.add_done_callback(self.background.discard)
+
+    async def _restore(self, thread: str, operation: str) -> None:
+        original = self.original_settings.pop(thread, None)
+        if original is None:
+            return
+        try:
+            await self.rpc.call("thread/settings/update", restored_settings(thread, original))
+        except DriverError as exc:
+            # Kept for the next scoped end or release on this thread to retry.
+            self.original_settings.setdefault(thread, original)
+            await self.emit(
+                "progress",
+                {
+                    "session_id": thread,
+                    "operation_id": operation,
+                    "payload": {
+                        "scope_restore_failed": True,
+                        "error_code": exc.code,
+                        "thread_settings": original,
+                    },
+                },
+            )
+
+    def _unscope(self, operation: str) -> None:
+        """A scoped operation ended: restore its thread once no scoped operation remains."""
+        if self.scopes.pop(operation, None) is None:
+            return
+        for thread, operations in list(self.narrowed.items()):
+            operations.discard(operation)
+            if not operations:
+                del self.narrowed[thread]
+                self._spawn(self._restore(thread, operation))
+
+    def _rescope(
+        self, thread: str, operation: str, value: dict[str, Any], before: dict[str, Any]
+    ) -> None:
+        """After a restart: the scope and the settings to restore, from the receipt."""
+        self.original_settings.setdefault(thread, before)
+        cwd = str(before.get("cwd") or self.spec.cwd)
+        scope = Scope.parse(value, cwd)
+        assert scope is not None
+        self.scopes[operation] = scope
+        self.narrowed.setdefault(thread, set()).add(operation)
+        self.thread_cwd[thread] = cwd
+
+    async def _narrow(
+        self, thread: str, operation: str, value: dict[str, Any], resumed: dict[str, Any]
+    ) -> None:
+        """Set the scope as thread settings for Yuki's turn; never wider than asked."""
+        cwd = str(resumed.get("cwd") or self.spec.cwd)
+        scope = Scope.parse(value, cwd)
+        assert scope is not None
+        if not scope.covers(cwd):
+            # workspaceWrite always makes the thread's cwd writable; it cannot be
+            # excluded, so a scope narrower than the cwd cannot be enforced.
+            raise DriverError(
+                "scope_unsupported",
+                "Codex workspace writes always include the thread's working directory",
+                {"cwd": cwd},
+            )
+        first = thread not in self.original_settings
+        if first:
+            self.original_settings[thread] = thread_settings(resumed)
+        try:
+            await self.rpc.call(
+                "thread/settings/update",
+                {
+                    "threadId": thread,
+                    "approvalPolicy": "on-request",
+                    # Approvals reach a person (via Yuki), not an automatic reviewer.
+                    "approvalsReviewer": "user",
+                    "sandboxPolicy": {
+                        "type": "workspaceWrite",
+                        "writableRoots": [str(path) for path in scope.write_paths],
+                        "networkAccess": scope.network,
+                        # Otherwise /tmp and $TMPDIR are writable as well.
+                        "excludeSlashTmp": True,
+                        "excludeTmpdirEnvVar": True,
+                    },
+                },
+            )
+        except DriverError as exc:
+            if first:
+                self.original_settings.pop(thread, None)
+            if exc.uncertain:
+                raise
+            # Input carries no policy of its own (thread/queue/add): without settings
+            # that can be set and restored, the scope cannot be enforced.
+            raise DriverError(
+                "scope_unsupported",
+                "This Codex owner cannot set and restore thread settings",
+                exc.details,
+            ) from exc
+        self.scopes[operation] = scope
+        self.narrowed.setdefault(thread, set()).add(operation)
+        self.thread_cwd[thread] = cwd
+
+    def _inside(self, method: str, params: dict[str, Any], scope: Scope, thread: str) -> bool:
+        cwd = str(params.get("cwd") or self.thread_cwd.get(thread) or self.spec.cwd)
+        if method == "item/commandExecution/requestApproval":
+            command = params.get("command")
+            return (
+                not params.get("additionalPermissions")
+                and (scope.network or not params.get("networkApprovalContext"))
+                and isinstance(command, (str, list))
+                and scope.runs(command)
+            )
+        if method == "item/fileChange/requestApproval":
+            paths = self.item_paths.get(str(params.get("turnId")), {}).get(
+                str(params.get("itemId"))
+            )
+            grant = params.get("grantRoot")
+            return (
+                bool(paths)
+                and all(scope.writes(path, cwd) for path in paths or [])
+                and (grant is None or scope.writes(str(grant), cwd))
+            )
+        return False
+
+    async def _unsubscribe(self, thread: str) -> None:
+        # Only Yuki's own client subscription; the daemon and its thread go on.
+        await self.rpc.call("thread/unsubscribe", {"threadId": thread})
+
+    def _held(self, thread: str) -> bool:
+        return (
+            thread in self.watches.values()
+            or thread in self.turn_sessions.values()
+            or any(
+                self.queue_sessions.get(operation) == thread for operation in self.queue_operations
+            )
+        )
+
     async def _notification(self, message: dict[str, Any]) -> None:
         method = message.get("method", "")
         params = message.get("params", {})
         session = params.get("threadId")
         turn = params.get("turnId") or params.get("turn", {}).get("id")
+        started_item = params.get("item", {})
+        if method == "item/started" and started_item.get("type") == "fileChange":
+            self.item_paths.setdefault(str(turn), {})[started_item["id"]] = [
+                change["path"] for change in started_item.get("changes", []) if "path" in change
+            ]
+        if method == "turn/completed":
+            self.item_paths.pop(str(turn), None)
+        if method == "turn/completed" and turn and self.releasing.get(session) == turn:
+            del self.releasing[session]
+            if not self._held(session):
+                self._spawn(self._unsubscribe(session))
         if method == "connector/ownerDisconnected":
             self.requests.clear()
             await self.emit("connection", {"status": "unavailable", **params})
@@ -685,44 +889,69 @@ class CodexDriver:
         item = params.get("item", {})
         if item.get("type") == "userMessage" and item.get("clientId"):
             client_id = item["clientId"]
-            if client_id in self.queue_operations or client_id == self.pending_prompts.get(session):
+            # Yuki's input is a queue item; its turn is Yuki's by clientUserMessageId.
+            if client_id in self.queue_operations:
                 self.turn_operations[turn] = client_id
                 self.turn_sessions[turn] = session
                 self.queue_operations.pop(client_id, None)
                 self.queue_sessions.pop(client_id, None)
-                for earlier in self.buffered.pop((session, turn), []):
+                earlier_messages = self.buffered.pop((session, turn), [])
+                if session not in self.queue_sessions.values():
+                    # No Yuki input is pending here: other held turns are the user's.
+                    for candidate in [key for key in self.buffered if key[0] == session]:
+                        self.buffered.pop(candidate)
+                for earlier in earlier_messages:
                     await self._notification(earlier)
-        if turn in self.turn_operations:
-            operations.add(self.turn_operations[turn])
+        owner = self.turn_operations.get(turn) if turn else None
+        if owner is not None:
+            operations.add(owner)
         if not operations:
-            if (
-                session in self.pending_prompts
-                and turn
-                and (
-                    request
-                    or method
-                    in {
-                        "turn/started",
-                        "turn/completed",
-                        "item/completed",
-                        "turn/plan/updated",
-                    }
+            if method == "turn/completed":
+                # A turn that never became Yuki's: what was held for it is dropped.
+                self.buffered.pop((session, turn), None)
+            elif (
+                turn
+                and any(
+                    self.queue_sessions.get(operation) == session
+                    for operation in self.queue_operations
                 )
+                and (request or method in {"turn/started", "item/completed", "turn/plan/updated"})
             ):
+                # Possibly Yuki's queued turn before its userMessage names it.
                 self.buffered.setdefault((session, turn), []).append(message)
             return  # unobserved native sessions never enter the remote event stream
         kind = "progress"
         payload: dict[str, Any] = {"native_method": method, "admitted": True}
+        metadata: dict[str, Any] = {}
         if request:
             key = str(message["id"])
             self.requests[key] = message
-            kind = "question" if "UserInput" in method or "elicitation" in method else "permission"
-            payload.update(
-                permission_id=key,
-                native_request_id=message["id"],
-                native_request=params,
-                connection_id=self.rpc.connection_id,
-            )
+            scope = self.scopes.get(owner) if owner else None
+            if (
+                method in APPROVAL_METHODS
+                and scope
+                and self._inside(method, params, scope, session)
+            ):
+                # Yuki's own turn, inside the delegation's fixed scope (D2).
+                self.requests.pop(key)
+                await self.rpc.send({"id": message["id"], "result": {"decision": "accept"}})
+                payload = {"permission_auto_approved": message["id"], "native_method": method}
+                request = False
+            else:
+                kind = (
+                    "question" if "UserInput" in method or "elicitation" in method else "permission"
+                )
+                payload.update(
+                    permission_id=key,
+                    native_request_id=message["id"],
+                    native_request=params,
+                    connection_id=self.rpc.connection_id,
+                )
+                metadata = {
+                    "native_method": method,
+                    "tool": method,
+                    "native_request_id": message["id"],
+                }
         elif method == "turn/completed":
             kind = "completed"
             original = params["turn"]
@@ -791,6 +1020,12 @@ class CodexDriver:
                     "status": "idle",
                     "pending": True,
                 }
+            if request and operation in self.observers:
+                event_payload = {**metadata, "observed": True}
+            elif request and owner is None:
+                # The user's own TUI turn: app-server enforces no turn ownership, so
+                # Yuki never answers it; it waits for whoever answers natively (§15 E1).
+                event_payload = {**metadata, "answer_at": "native_terminal", "pending": True}
             await self.emit(
                 event_kind,
                 {
@@ -803,9 +1038,9 @@ class CodexDriver:
         if method == "turn/completed":
             self.turn_operations.pop(turn, None)
             self.turn_sessions.pop(turn, None)
+            if owner is not None:
+                self._unscope(owner)
             for operation in operations:
-                if self.pending_prompts.get(session) == operation:
-                    self.pending_prompts.pop(session)
                 if self.watch_turns.get(operation) == turn:
                     self.watches.pop(operation, None)
                     self.watch_turns.pop(operation, None)
@@ -859,22 +1094,50 @@ class CodexDriver:
             if recovery is not None:
                 recovery.cancel()
                 await asyncio.gather(recovery, return_exceptions=True)
+            threads = {session} if session else set()
+            threads |= {thread for op, thread in self.watches.items() if op == detached}
+            threads |= {thread for op, thread in self.queue_sessions.items() if op == detached}
+            running = {
+                turn_id: self.turn_sessions.get(turn_id)
+                for turn_id, owner in self.turn_operations.items()
+                if owner == detached
+            }
+            threads |= {thread for thread in running.values() if thread}
+            self.observers.discard(detached)
+            self._unscope(detached)
             self.watches.pop(detached, None)
             self.watch_turns.pop(detached, None)
             self.queue_operations.pop(detached, None)
             self.queue_sessions.pop(detached, None)
-            for turn_id, owner in list(self.turn_operations.items()):
-                if owner == detached:
-                    self.turn_operations.pop(turn_id)
-                    self.turn_sessions.pop(turn_id, None)
-            for session_id, owner in list(self.pending_prompts.items()):
-                if owner == detached:
-                    self.pending_prompts.pop(session_id)
+            for turn_id in running:
+                self.turn_operations.pop(turn_id)
+                self.turn_sessions.pop(turn_id, None)
+            if not arguments.get("release"):
+                return {
+                    "status": "completed",
+                    "session_id": session,
+                    "detached": True,
+                    "admitted": True,
+                }
+            closed: str | None = "now"
+            for thread in threads:
+                if self._held(thread):
+                    closed = None
+                    continue
+                ending = next((key for key, value in running.items() if value == thread), None)
+                if ending is not None:
+                    # Yuki's turn ends first; then only Yuki's subscription is dropped.
+                    self.releasing[thread] = ending
+                    closed = "after_turn" if closed == "now" else closed
+                else:
+                    await self._unsubscribe(thread)
             return {
-                "status": "completed",
+                "status": "detached",
                 "session_id": session,
                 "detached": True,
+                "pending": False,
                 "admitted": True,
+                "closed": closed,
             }
         if action == "get":
             original = (
@@ -954,6 +1217,24 @@ class CodexDriver:
                 )
             if execution and selected is None:
                 result["reason"] = "execution_not_found"
+            if not execution:
+                queued_inputs: list[dict[str, Any]] = []
+                cursor = None
+                while True:
+                    listed = await self.rpc.call(
+                        "thread/queue/list", {"threadId": session, "cursor": cursor}
+                    )
+                    queued_inputs.extend(
+                        {
+                            "queued_submission_id": item["id"],
+                            "operation_id": item.get("clientUserMessageId"),
+                        }
+                        for item in listed.get("data", [])
+                    )
+                    cursor = listed.get("nextCursor")
+                    if not cursor:
+                        break
+                result["queued_inputs"] = queued_inputs
             return result
         if action == "watch":
             if not await self._loaded(session):
@@ -963,6 +1244,8 @@ class CodexDriver:
             session_scope = command.get("observation_scope") == "session"
             self.watches[operation] = session
             self.watch_turns[operation] = None if session_scope else execution or ""
+            if arguments.get("observation") == "observe":
+                self.observers.add(operation)
             try:
                 thread = (
                     await self.rpc.call(
@@ -1000,55 +1283,65 @@ class CodexDriver:
                 "pending": not terminal,
                 "admitted": True,
             }
-        if action == "prompt":
-            if session:
-                original = (
-                    await self.rpc.call(
-                        "thread/read",
-                        {
-                            "threadId": session,
-                            "includeTurns": False,
-                        },
+        if action in {"prompt", "queue"}:
+            # Yuki's input is always a queue item (§4.11, §15 E2): turn/start on a
+            # running thread merges into the user's turn and returns its ID.
+            resumed: dict[str, Any] | None = None
+            if action == "prompt" and session:
+                # A running (user) turn is no conflict: the queue item waits behind it.
+                resumed = await self.rpc.call(
+                    "thread/resume", {"threadId": session, "excludeTurns": True}
+                )
+            elif action == "prompt":
+                resumed = await self.rpc.call(
+                    "thread/start", {"cwd": arguments.get("cwd") or self.spec.cwd}
+                )
+                session = resumed["thread"]["id"]
+            if arguments.get("scope") is not None:
+                if resumed is None:
+                    resumed = await self.rpc.call(
+                        "thread/resume", {"threadId": session, "excludeTurns": True}
                     )
-                )["thread"]
-                if native_status(original) == "running":
-                    raise DriverError("conflict", "Native session is active; choose steer or queue")
-                await self.rpc.call("thread/resume", {"threadId": session, "excludeTurns": True})
-            else:
-                session = (
-                    await self.rpc.call(
-                        "thread/start",
-                        {
-                            "cwd": arguments.get("cwd") or self.spec.cwd,
-                        },
-                    )
-                )["thread"]["id"]
-            self.pending_prompts[session] = operation
+                await self._narrow(session, operation, arguments["scope"], resumed)
+            self.queue_operations[operation] = ""
+            self.queue_sessions[operation] = session
             try:
                 result = await self.rpc.call(
-                    "turn/start",
+                    "thread/queue/add",
                     {
                         "threadId": session,
                         "clientUserMessageId": operation,
                         "input": [{"type": "text", "text": arguments["prompt"]}],
                     },
                 )
-                execution = result["turn"]["id"]
-                if self.pending_prompts.get(session) == operation:
-                    self.turn_operations[execution] = operation
-                    self.turn_sessions[execution] = session
-                    for earlier in self.buffered.pop((session, execution), []):
-                        await self._notification(earlier)
-            finally:
-                self.pending_prompts.pop(session, None)
-                for candidate in [key for key in self.buffered if key[0] == session]:
-                    self.buffered.pop(candidate)
+            except BaseException:
+                self._unscope(operation)
+                raise
+            queue_id = result["queuedSubmission"]["id"]
+            if operation in self.queue_operations:
+                self.queue_operations[operation] = queue_id
+            active_turn = next(
+                (key for key, value in self.turn_operations.items() if value == operation), None
+            )
             return {
                 "session_id": session,
-                "execution_id": execution,
-                "status": "running",
+                "execution_id": active_turn,
+                "queued_submission_id": queue_id,
+                "status": "running"
+                if active_turn
+                else ("queued" if operation in self.queue_operations else "unknown"),
                 "pending": True,
                 "admitted": True,
+                # Persisted with this receipt so a restarted connector still restores.
+                **(
+                    {
+                        "scope_settings": "thread",
+                        "scope_race": SCOPE_RACE,
+                        "thread_settings_before": self.original_settings[session],
+                    }
+                    if operation in self.scopes
+                    else {}
+                ),
             }
         if action == "steer":
             expected = execution or arguments.get("expected_execution_id")
@@ -1066,33 +1359,6 @@ class CodexDriver:
                 "session_id": session,
                 "execution_id": expected,
                 "status": "running",
-                "pending": True,
-                "admitted": True,
-            }
-        if action == "queue":
-            self.queue_operations[operation] = ""
-            self.queue_sessions[operation] = session
-            result = await self.rpc.call(
-                "thread/queue/add",
-                {
-                    "threadId": session,
-                    "clientUserMessageId": operation,
-                    "input": [{"type": "text", "text": arguments["prompt"]}],
-                },
-            )
-            queue_id = result["queuedSubmission"]["id"]
-            if operation in self.queue_operations:
-                self.queue_operations[operation] = queue_id
-            active_turn = next(
-                (key for key, value in self.turn_operations.items() if value == operation), None
-            )
-            return {
-                "session_id": session,
-                "execution_id": active_turn,
-                "queued_submission_id": queue_id,
-                "status": "running"
-                if active_turn
-                else ("queued" if operation in self.queue_operations else "unknown"),
                 "pending": True,
                 "admitted": True,
             }
@@ -1120,6 +1386,7 @@ class CodexDriver:
                 if original_operation:
                     self.queue_operations.pop(original_operation, None)
                     self.queue_sessions.pop(original_operation, None)
+                    self._unscope(original_operation)
                     await self.emit(
                         "completed",
                         {
@@ -1168,12 +1435,22 @@ class CodexDriver:
                 raise DriverError(
                     "request_mismatch", "Response does not target the original request"
                 )
+            if params.get("turnId") not in self.turn_operations:
+                # Not a turn Yuki started: it waits for its own user in Codex.
+                raise DriverError("not_owner", "This request belongs to a turn Yuki did not start")
             response = arguments.get("response")
             if response is None and arguments.get("option_id"):
                 response = {"decision": arguments["option_id"]}
             if response is None:
                 raise DriverError(
                     "response_required", "Provide the original native response object"
+                )
+            if "decision" in response and response["decision"] not in ONE_TIME_DECISIONS:
+                offered = params.get("availableDecisions") or ONE_TIME_DECISIONS
+                raise DriverError(
+                    "one_time_only",
+                    "Choose a decision for this one request",
+                    {"options": [item for item in offered if item in ONE_TIME_DECISIONS]},
                 )
             self.requests.pop(key, None)
             await self.rpc.send({"id": request["id"], "result": response})

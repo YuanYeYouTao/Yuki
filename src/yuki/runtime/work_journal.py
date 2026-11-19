@@ -619,6 +619,16 @@ class WorkJournal:
                 outcome = await queries.inspect_native_operation(
                     work_id=row["work_id"], operation_key=key, action=invocation["action"]
                 )
+            elif recorded_tool(str(invocation.get("tool_id"))) in {
+                "start_subtask",
+                "message_task",
+                "manage_task",
+            }:
+                # A subtask tool aimed at a native executor registers its operation
+                # under this call key; its original receipt is read, not replayed.
+                outcome = await queries.inspect_delegation_operation(
+                    work_id=row["work_id"], operation_key=key
+                )
             if outcome is not None:
                 return recorded_result(
                     json.dumps(

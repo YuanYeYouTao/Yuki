@@ -1,0 +1,4 @@
+trust 13.3
+prompt1_running_turn 25.91
+prompt2_permission 63.79
+user_answers_yes 96.91

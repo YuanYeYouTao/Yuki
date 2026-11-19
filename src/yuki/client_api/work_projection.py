@@ -193,6 +193,17 @@ def public_step(
         target = outcome.get("delivery_target")
         if isinstance(target, dict) and target.get("kind") in {"group", "private", "channel"}:
             detail["target_kind"] = target["kind"]
+    elif tool in {"start_subtask", "message_task", "manage_task"}:
+        # The subtask (or delegation record) the call created or targeted: the Desktop
+        # links the step to it and shows its live state (Client API 14).
+        try:
+            shown = json.loads(receipt.get("result") or "{}")
+        except (TypeError, ValueError):
+            shown = {}
+        if isinstance(shown, dict) and isinstance(shown.get("id"), str):
+            detail["subtask_id"] = shown["id"]
+            if isinstance(shown.get("relationship"), str):
+                detail["relationship"] = shown["relationship"]
     elif kind in {"agent_read", "agent_control"}:
         operation = step_operation(receipt)
         if operation is not None and operation in readable_operations:

@@ -51,7 +51,8 @@ async def test_large_native_turn_does_not_hide_latest_failure_behind_user_prompt
     rendered = await ToolResultBudgeter(
         max_characters=1800, artifacts=store, artifact_access=access
     ).render(
-        ToolExecutionResult(ok=True, data=data, provider_id="core", tool_name="get_coding_agents")
+        # get_tasks(agents={session}) returns the native session read as data.
+        ToolExecutionResult(ok=True, data=data, provider_id="work_control", tool_name="get_tasks")
     )
     short = json.loads(rendered.text)
     assert short["artifact_handle"] == rendered.artifact_id

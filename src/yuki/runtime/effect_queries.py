@@ -7,7 +7,7 @@ import json
 from dataclasses import replace
 from typing import Any
 
-from sqlalchemy import select, text
+from sqlalchemy import or_, select, text
 
 from yuki.capabilities.results import ToolExecutionResult
 from yuki.persistence.database import Database
@@ -104,6 +104,48 @@ class RuntimeEffectQueries:
             replace(outcome, ok=True, uncertain=False, mutation_committed=True)
             if evidence["status"] == "admitted"
             else outcome
+        )
+
+    async def inspect_delegation_operation(
+        self, *, work_id: str, operation_key: str
+    ) -> ToolExecutionResult | None:
+        """Read the native operation a subtask tool registered for one of this Work's
+        delegations under its call key (``delegation:<record>:<purpose>:<digest>``).
+
+        The receipt is read, never re-dispatched (contract 40 delegation controls).
+        """
+        from yuki.external_agents.db_models import AgentOperationModel
+        from yuki.external_agents.repository import AgentRepository
+        from yuki.runtime.subagent_schema import children
+
+        digest = hashlib.sha256(operation_key.encode()).hexdigest()[:32]
+        async with self._database.read_session() as reader:
+            await reader.execute(text("BEGIN"))
+            records = (
+                select(work.c.id)
+                .join(children, children.c.work_id == work.c.id)
+                .where(
+                    children.c.executor_json.is_not(None),
+                    or_(work.c.parent_work_id == work_id, work.c.id == work_id),
+                )
+            )
+            operation = await reader.scalar(
+                select(AgentOperationModel).where(
+                    AgentOperationModel.work_id.in_(records),
+                    AgentOperationModel.id.like(f"delegation:%:%:{digest}"),
+                )
+            )
+            if operation is None:
+                return None
+            view = await AgentRepository(self._database).operation_view(operation, session=reader)
+        error = view.get("error")
+        uncertain = bool(view.get("uncertain"))
+        return ToolExecutionResult(
+            ok=not error,
+            data={**view, "action": operation.action},
+            error_code=str(error) if error else None,
+            uncertain=uncertain and not error,
+            mutation_committed=None if uncertain else not bool(error),
         )
 
     async def inspect_local_operation(

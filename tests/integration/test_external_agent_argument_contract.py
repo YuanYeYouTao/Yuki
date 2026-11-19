@@ -1,114 +1,95 @@
-"""Correctable Main tool arguments retain the original native dispatch and receipt."""
-
-import json
+"""Correctable subtask arguments retain the original native dispatch and receipt."""
 
 import pytest
-from sqlalchemy import select
-from tests.conftest import make_settings
-from tests.integration.test_external_agent_bridge import NativeComputer, accepted_work, directory
+from tests.integration.test_external_agent_bridge import (
+    NativeComputer,
+    accepted_work,
+    directory,
+    settled,
+)
 from tests.integration.test_external_agent_bridge import bridge as bridge_fixture
-from tests.support.service_dependencies import tool_dependencies
 
-from yuki.capabilities.invocation import ToolInvocationContext, current_invocation
-from yuki.domain.conversations import ScopeType
-from yuki.domain.tool_actor import ToolActor
-from yuki.memory.repository import MemoryFactRepository
-from yuki.memory.service import MemoryFactService
-from yuki.persistence.models import ChatEventModel
-from yuki.persistence.repositories import EventLedgerRepository
-from yuki.runtime.origin import TurnOrigin
-from yuki.services.agent_tools import AgentToolService, ToolRuntime
+from yuki.runtime.work_control import WorkControl
+from yuki.runtime.work_repository import WorkRepository
 
 bridge = bridge_fixture
 
 
-@pytest.mark.parametrize("reference", ["operation_id", "run_id"])
-async def test_main_argument_errors_can_be_corrected_without_duplicate_native_dispatch(
-    bridge, reference
+@pytest.mark.parametrize(
+    "wrong_reply,expected",
+    [
+        ("not-a-permission", "permission_id_required"),
+        ("progress-event", "external_agent_question_not_found"),
+    ],
+)
+async def test_subtask_argument_errors_can_be_corrected_without_duplicate_native_dispatch(
+    bridge, wrong_reply, expected
 ):
-    settings = make_settings(bridge.database.url, runtime_work_enabled=True)
-    tools = AgentToolService(
-        settings=settings,
-        ledger=EventLedgerRepository(bridge.database),
-        memories=MemoryFactService(MemoryFactRepository(bridge.database)),
-        **tool_dependencies(bridge.database, settings),
-    )
-    tools.external_agent_service = bridge.service
-    async with bridge.database.read_session() as reader:
-        event = await reader.scalar(select(ChatEventModel))
-    runtime = ToolRuntime(
-        inbound=None,
-        scope_type=ScopeType.PRIVATE,
-        actor_context=ToolActor(
-            user_id="10001",
-            bot_user_id=bridge.env.bot.self_id,
-            group_id=None,
-            origin=TurnOrigin.USER_MESSAGE,
-            instruction="Delegate the selected project",
-            person_id=bridge.env.person,
-            conversation_id=bridge.env.context.conversation_id,
-            presence_id=bridge.env.presence,
-            event_id=event.id,
-        ),
-        conversation_id=bridge.env.context.conversation_id,
-        trigger_event_id=event.id,
-        execution_id=f"event:{event.id}",
-    )
-
-    async def invoke(arguments, invocation_key):
-        token = current_invocation.set(ToolInvocationContext(runtime, invocation_key))
-        try:
-            name = "use_coding_agent" if "action" in arguments else "get_coding_agents"
-            return await tools.execute(name, json.dumps(arguments), runtime)
-        finally:
-            current_invocation.reset(token)
-
     computer = await NativeComputer(bridge).start()
     try:
-        _instance, session = await directory(bridge)
-        prompt = {"action": "prompt", "target": {"session_id": session}, "prompt": "test"}
-        denied = await invoke(prompt, "original-prompt")
-        assert denied.error_code == "accept_work_before_execution"
+        instance, session = await directory(bridge)
+        start = {
+            "goal": "test",
+            "executor": {"agent": instance},
+            "session": session,
+            "relationship": "takeover",
+        }
+        repository = WorkRepository(bridge.database)
+        lease = await repository.acquire(bridge.env.context.conversation_id, 1)
+
+        async def valid():
+            assert await repository.valid(lease)
+
+        idle = WorkControl(repository, lease, "no-current-task", bridge.source, valid)
+        denied = await idle.tool_outcome("start_subtask", start, "original-start")
+        await repository.release(lease)
+        assert denied.error_code == "subtask_requires_current_task"
         assert "manage_task(action=start)" in denied.public_message
         assert not any(command["action"] == "prompt" for command in computer.commands)
-        async with accepted_work(bridge):
-            original = await invoke(prompt, "original-prompt")
-            assert original.ok
-            replay = await invoke(prompt, "original-prompt")
-            assert replay.data == original.data
-            receipt = original.data
+        async with accepted_work(bridge) as control:
+            original = await control.tool_outcome("start_subtask", start, "original-start")
+            assert original.ok, original
+            await settled(bridge)
+            # The same call names the same record and the same native operation; the
+            # dispatch status is the original receipt as it stands now.
+            replay = await control.tool_outcome("start_subtask", start, "original-start")
+            assert replay.data["id"] == original.data["id"]
+            assert (
+                replay.data["dispatch"]["operation_id"] == original.data["dispatch"]["operation_id"]
+            )
+            identity = original.data["id"]
+            [prompt] = [command for command in computer.commands if command["action"] == "prompt"]
             await computer.event(
-                receipt["operation_id"],
+                prompt["id"],
                 "permission",
                 {"native_request_id": 0, "connection_id": "original-native-connection"},
             )
-            # The native turn is recorded from the device answer after the tool returned.
-            await bridge.service.drain()
-            observed = await invoke(
-                {"target": {"operation_id": receipt["operation_id"]}}, "read-original"
+            await computer.event(prompt["id"], "progress", {"text": "reading"})
+            await settled(bridge)
+            observed = await control.tool_outcome("get_tasks", {"id": identity}, "read-original")
+            [pending] = observed.data["card"]["pending"]
+            reply_to = pending["permission_id"]
+            response = {"id": identity, "answer": "accept", "text": "expected"}
+            # A real event of this record that is not a request, or not an event ID at all.
+            response["reply_to"] = (
+                str(int(reply_to) + 1) if wrong_reply == "progress-event" else wrong_reply
             )
-            assert observed.data["execution_id"]
-            permission = observed.data["events"][0]["permission_id"]
-            response = {
-                "action": "answer",
-                "target": {"execution_id": observed.data["execution_id"]},
-                "question": permission,
-                "answer": "accept",
-            }
-            missing = await invoke(response, "original-response")
-            assert missing.error_code == "operation_id_required"
-            assert "operation_id" in missing.public_message
+            missing = await control.tool_outcome("message_task", response, "original-response")
+            assert missing.error_code == expected
+            assert "reply_to" in missing.public_message
             assert not any(command["action"] == "respond" for command in computer.commands)
-            # The original supervision run ID also names the original operation.
-            response["target"] = {"operation_id": receipt[reference]}
-            answered = await invoke(response, "original-response")
-            assert answered.ok
-            repeated = await invoke(response, "original-response")
-            assert repeated.data == answered.data
+            response["reply_to"] = reply_to
+            answered = await control.tool_outcome("message_task", response, "original-response")
+            assert answered.ok, answered
+            await settled(bridge)
+            repeated = await control.tool_outcome("message_task", response, "original-response")
+            assert (repeated.data["id"], repeated.data["answered"]) == (identity, reply_to)
+            assert answered.data["answered"] == reply_to
+            await settled(bridge)
         assert [command["action"] for command in computer.commands].count("prompt") == 1
         assert [command["action"] for command in computer.commands].count("respond") == 1
         native = next(command for command in computer.commands if command["action"] == "respond")
         assert native["arguments"]["native_request_id"] == 0
-        assert native["arguments"]["operation_id"] == receipt["operation_id"]
+        assert native["arguments"]["operation_id"] == prompt["id"]
     finally:
         await computer.close()

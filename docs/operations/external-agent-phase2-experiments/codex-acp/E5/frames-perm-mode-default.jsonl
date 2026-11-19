@@ -1,0 +1,39 @@
+{"t": 0.0, "side": "harness", "dir": "note", "note": "scenario perm start; agent claude-agent-acp 0.108.0, ANTHROPIC_MODEL=haiku"}
+{"t": 0.01, "side": "acp1", "dir": "local", "method": "spawn", "pid": 22942}
+{"t": 0.01, "side": "acp1", "dir": "out", "method": "initialize", "id": 1, "protocolVersion": 1}
+{"t": 0.544, "side": "acp1", "dir": "in", "method": "initialize:result", "id": 1, "protocolVersion": 1}
+{"t": 0.544, "side": "acp1", "dir": "out", "method": "session/new", "id": 2}
+{"t": 0.833, "side": "acp1", "dir": "in", "kind": "notification", "method": "_auth/status_update", "id": null}
+{"t": 0.834, "side": "acp1", "dir": "in", "kind": "notification", "method": "auth/status_update", "id": null}
+{"t": 0.84, "side": "acp1", "dir": "in", "method": "session/new:result", "id": 2, "sessionId": "895a0204-2438-46f8-a9a4-4677d1d23ab3"}
+{"t": 0.84, "side": "harness", "dir": "note", "note": "session/new currentModeId=auto"}
+{"t": 0.84, "side": "acp1", "dir": "out", "method": "session/set_mode", "id": 3, "sessionId": "895a0204-2438-46f8-a9a4-4677d1d23ab3"}
+{"t": 0.844, "side": "acp1", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "895a0204-2438-46f8-a9a4-4677d1d23ab3", "update": "available_commands_update"}
+{"t": 0.855, "side": "acp1", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "895a0204-2438-46f8-a9a4-4677d1d23ab3", "update": "config_option_update"}
+{"t": 0.855, "side": "acp1", "dir": "in", "method": "session/set_mode:result", "id": 3}
+{"t": 0.855, "side": "acp1", "dir": "out", "method": "session/prompt", "id": 4, "sessionId": "895a0204-2438-46f8-a9a4-4677d1d23ab3"}
+{"t": 0.871, "side": "acp1", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "895a0204-2438-46f8-a9a4-4677d1d23ab3", "update": "available_commands_update"}
+{"t": 1.021, "side": "acp1", "dir": "in", "kind": "notification", "method": "_auth/status_update", "id": null}
+{"t": 1.021, "side": "acp1", "dir": "in", "kind": "notification", "method": "auth/status_update", "id": null}
+{"t": 2.3, "side": "acp1", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "895a0204-2438-46f8-a9a4-4677d1d23ab3", "update": "usage_update"}
+{"t": 2.301, "side": "acp1", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "895a0204-2438-46f8-a9a4-4677d1d23ab3", "update": "tool_call", "update.toolCallId": "toolu_01EsLUCCK2yMCyQ47b8ivPa5", "update.kind": "execute", "update.status": "pending", "update.rawInput.keys": []}
+{"t": 2.534, "side": "acp1", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "895a0204-2438-46f8-a9a4-4677d1d23ab3", "update": "usage_update"}
+{"t": 2.535, "side": "acp1", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "895a0204-2438-46f8-a9a4-4677d1d23ab3", "update": "session_info_update"}
+{"t": 2.673, "side": "acp1", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "895a0204-2438-46f8-a9a4-4677d1d23ab3", "update": "tool_call_update", "update.toolCallId": "toolu_01EsLUCCK2yMCyQ47b8ivPa5", "update.rawInput.keys": ["command"]}
+{"t": 2.681, "side": "acp1", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "895a0204-2438-46f8-a9a4-4677d1d23ab3", "update": "tool_call_update", "update.toolCallId": "toolu_01EsLUCCK2yMCyQ47b8ivPa5", "update.rawInput.keys": ["command", "description"]}
+{"t": 2.694, "side": "acp1", "dir": "in", "kind": "request", "method": "session/request_permission", "id": 0, "sessionId": "895a0204-2438-46f8-a9a4-4677d1d23ab3", "toolCall.toolCallId": "toolu_01EsLUCCK2yMCyQ47b8ivPa5", "toolCall.kind": "execute", "toolCall.status": "pending", "toolCall.locations.count": 1, "toolCall.locations.in_scope": [false], "toolCall.rawInput.keys": ["command", "description"], "options": [{"optionId": "allow-once", "kind": "allow_once"}, {"optionId": "reject", "kind": "reject_once"}]}
+{"t": 2.694, "side": "harness", "dir": "note", "note": "permission request received: True; leaving it unanswered for 120 s"}
+{"t": 2.695, "side": "acp1", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "895a0204-2438-46f8-a9a4-4677d1d23ab3", "update": "usage_update"}
+{"t": 122.697, "side": "harness", "dir": "note", "note": "prompt finished while unanswered: False; extra notifications in that window recorded above"}
+{"t": 122.697, "side": "acp1", "dir": "out", "method": "session/cancel", "sessionId": "895a0204-2438-46f8-a9a4-4677d1d23ab3"}
+{"t": 122.702, "side": "acp1", "dir": "in", "kind": "notification", "method": "$/cancel_request", "id": null}
+{"t": 122.706, "side": "acp1", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "895a0204-2438-46f8-a9a4-4677d1d23ab3", "update": "tool_call_update", "update.toolCallId": "toolu_01EsLUCCK2yMCyQ47b8ivPa5", "update.status": "failed"}
+{"t": 122.71, "side": "acp1", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "895a0204-2438-46f8-a9a4-4677d1d23ab3", "update": "usage_update"}
+{"t": 122.71, "side": "acp1", "dir": "in", "method": "session/prompt:result", "id": 4, "stopReason": "cancelled"}
+{"t": 125.698, "side": "harness", "dir": "note", "note": "prompt finished 3 s after session/cancel (permission still unanswered): True"}
+{"t": 125.698, "side": "acp1", "dir": "out", "method": "response", "id": 0, "error": false, "decision": "cancelled"}
+{"t": 125.698, "side": "harness", "dir": "note", "note": "prompt stopReason after cancel: cancelled"}
+{"t": 125.698, "side": "harness", "dir": "note", "note": "outside file created: False"}
+{"t": 125.703, "side": "acp1", "dir": "in", "method": "eof"}
+{"t": 125.703, "side": "acp1", "dir": "local", "method": "process_exit", "returncode": 0}
+{"t": 125.704, "side": "harness", "dir": "note", "note": "scenario perm end"}

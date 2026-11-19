@@ -1,0 +1,40 @@
+{"t": 0.0, "side": "harness", "dir": "note", "note": "scenario term start; agent claude-agent-acp 0.108.0, ANTHROPIC_MODEL=haiku"}
+{"t": 0.003, "side": "acp1", "dir": "local", "method": "spawn", "pid": 24286}
+{"t": 0.003, "side": "acp1", "dir": "out", "method": "initialize", "id": 1, "protocolVersion": 1}
+{"t": 0.171, "side": "acp1", "dir": "in", "method": "initialize:result", "id": 1, "protocolVersion": 1}
+{"t": 0.171, "side": "acp1", "dir": "out", "method": "session/new", "id": 2}
+{"t": 0.291, "side": "acp1", "dir": "in", "kind": "notification", "method": "_auth/status_update", "id": null}
+{"t": 0.291, "side": "acp1", "dir": "in", "kind": "notification", "method": "auth/status_update", "id": null}
+{"t": 0.392, "side": "acp1", "dir": "in", "kind": "notification", "method": "_auth/status_update", "id": null}
+{"t": 0.393, "side": "acp1", "dir": "in", "kind": "notification", "method": "auth/status_update", "id": null}
+{"t": 0.396, "side": "acp1", "dir": "in", "method": "session/new:result", "id": 2, "sessionId": "a46aa18f-7a61-4d69-8376-6cd5ccde69e9"}
+{"t": 0.396, "side": "harness", "dir": "note", "note": "session/new currentModeId=auto"}
+{"t": 0.396, "side": "acp1", "dir": "out", "method": "session/set_mode", "id": 3, "sessionId": "a46aa18f-7a61-4d69-8376-6cd5ccde69e9"}
+{"t": 0.398, "side": "acp1", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "a46aa18f-7a61-4d69-8376-6cd5ccde69e9", "update": "available_commands_update"}
+{"t": 0.402, "side": "acp1", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "a46aa18f-7a61-4d69-8376-6cd5ccde69e9", "update": "config_option_update"}
+{"t": 0.402, "side": "acp1", "dir": "in", "method": "session/set_mode:result", "id": 3}
+{"t": 0.402, "side": "acp1", "dir": "out", "method": "session/prompt", "id": 4, "sessionId": "a46aa18f-7a61-4d69-8376-6cd5ccde69e9"}
+{"t": 0.437, "side": "acp1", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "a46aa18f-7a61-4d69-8376-6cd5ccde69e9", "update": "available_commands_update"}
+{"t": 0.519, "side": "acp1", "dir": "in", "kind": "notification", "method": "_auth/status_update", "id": null}
+{"t": 0.519, "side": "acp1", "dir": "in", "kind": "notification", "method": "auth/status_update", "id": null}
+{"t": 1.97, "side": "acp1", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "a46aa18f-7a61-4d69-8376-6cd5ccde69e9", "update": "usage_update"}
+{"t": 1.971, "side": "acp1", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "a46aa18f-7a61-4d69-8376-6cd5ccde69e9", "update": "tool_call", "update.toolCallId": "toolu_013FfgoBzVC1xxBHbV6bNJ9G", "update.kind": "execute", "update.status": "pending", "update.rawInput.keys": []}
+{"t": 2.294, "side": "acp1", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "a46aa18f-7a61-4d69-8376-6cd5ccde69e9", "update": "tool_call_update", "update.toolCallId": "toolu_013FfgoBzVC1xxBHbV6bNJ9G", "update.rawInput.keys": ["command"]}
+{"t": 2.303, "side": "acp1", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "a46aa18f-7a61-4d69-8376-6cd5ccde69e9", "update": "tool_call_update", "update.toolCallId": "toolu_013FfgoBzVC1xxBHbV6bNJ9G", "update.rawInput.keys": ["command", "description"]}
+{"t": 2.314, "side": "acp1", "dir": "in", "kind": "request", "method": "session/request_permission", "id": 0, "sessionId": "a46aa18f-7a61-4d69-8376-6cd5ccde69e9", "toolCall.toolCallId": "toolu_013FfgoBzVC1xxBHbV6bNJ9G", "toolCall.kind": "execute", "toolCall.status": "pending", "toolCall.locations.count": 1, "toolCall.locations.in_scope": [true], "toolCall.rawInput.keys": ["command", "description"], "options": [{"optionId": "allow-once", "kind": "allow_once"}, {"optionId": "reject", "kind": "reject_once"}]}
+{"t": 2.314, "side": "acp1", "dir": "out", "method": "response", "id": 0, "error": false, "decision": "allow_once"}
+{"t": 2.32, "side": "acp1", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "a46aa18f-7a61-4d69-8376-6cd5ccde69e9", "update": "usage_update"}
+{"t": 2.321, "side": "acp1", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "a46aa18f-7a61-4d69-8376-6cd5ccde69e9", "update": "usage_update"}
+{"t": 2.357, "side": "acp1", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "a46aa18f-7a61-4d69-8376-6cd5ccde69e9", "update": "tool_call_update", "update.toolCallId": "toolu_013FfgoBzVC1xxBHbV6bNJ9G"}
+{"t": 2.36, "side": "acp1", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "a46aa18f-7a61-4d69-8376-6cd5ccde69e9", "update": "tool_call_update", "update.toolCallId": "toolu_013FfgoBzVC1xxBHbV6bNJ9G", "update.status": "completed"}
+{"t": 2.823, "side": "acp1", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "a46aa18f-7a61-4d69-8376-6cd5ccde69e9", "update": "session_info_update"}
+{"t": 2.91, "side": "acp1", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "a46aa18f-7a61-4d69-8376-6cd5ccde69e9", "update": "usage_update"}
+{"t": 3.135, "side": "acp1", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "a46aa18f-7a61-4d69-8376-6cd5ccde69e9", "update": "usage_update"}
+{"t": 3.138, "side": "acp1", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "a46aa18f-7a61-4d69-8376-6cd5ccde69e9", "update": "usage_update"}
+{"t": 3.138, "side": "acp1", "dir": "in", "method": "session/prompt:result", "id": 4, "stopReason": "end_turn"}
+{"t": 3.138, "side": "harness", "dir": "note", "note": "stopReason: end_turn"}
+{"t": 3.138, "side": "harness", "dir": "note", "note": "terminal/create requests: 0"}
+{"t": 3.138, "side": "harness", "dir": "note", "note": "file exists (command ran natively despite client): True"}
+{"t": 3.144, "side": "acp1", "dir": "in", "method": "eof"}
+{"t": 3.144, "side": "acp1", "dir": "local", "method": "process_exit", "returncode": 0}
+{"t": 3.144, "side": "harness", "dir": "note", "note": "scenario term end"}
