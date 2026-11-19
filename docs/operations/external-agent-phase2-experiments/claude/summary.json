@@ -1,0 +1,113 @@
+{
+ "versions": {
+  "claude_cli": "2.1.311 (/opt/homebrew/bin/claude; SDK runs pinned via cli_path)",
+  "claude_agent_sdk": "0.2.172",
+  "model": "haiku (claude-haiku-5-5)",
+  "os": "macOS arm64",
+  "date": "2026-11-18"
+ },
+ "note": "No message bodies, prompts, command text or secrets in frames/structure files; drivers/commands.sh contain the trivial experiment prompts.",
+ "E3": {
+  "registry_fields": {
+   "fact": "claude agents --json rows: pid, cwd, kind, startedAt, sessionId, name, status, waitingFor (only when waiting). Source is $CLAUDE_CONFIG_DIR/sessions/<pid>.json, which also has entrypoint (cli | sdk-py), messagingSocketPath, tmux, statusUpdatedAt, version.",
+   "artifact": "E3/agents_poll.jsonl"
+  },
+  "status_values": {
+   "fact": "idle (interactive, no turn); busy (turn running, 0.14s after Enter); waiting + waitingFor='permission prompt' (1.6s after submit, while the terminal shows the approval dialog); back to busy 0.13s after the user answers, idle at turn end. SDK sessions (entrypoint sdk-py) also listed with kind 'interactive', and show waiting/'permission prompt' while can_use_tool is pending.",
+   "artifact": "E3/agents_poll.jsonl, E3/sdk_can_use_tool_registry.json"
+  },
+  "latency_to_list": {
+   "fact": "Not listed while the workspace-trust dialog is up; listed 0.7s after trust accepted (polling 0.5s). sessionId is present before the first prompt; after --resume the row carries the resumed sessionId.",
+   "artifact": "E3/agents_poll.jsonl, E3/marks.txt, E8/live_registry_row_for_target.json"
+  },
+  "other_profile": {
+   "fact": "CLAUDE_CONFIG_DIR=<other> claude agents --json returns [] while the default profile has live sessions: the registry is per config dir, so detection must run under the instance's CLAUDE_CONFIG_DIR.",
+   "not_verified": "A live, logged-in second profile (scratch config dir is not logged in: 'Not logged in'); an unlogged interactive start under it wrote only a .key file, no row."
+  },
+  "windows": {
+   "not_verified": "No Windows host available."
+  },
+  "timely_permission_fact": {
+   "fact": "Yes for status: waiting/waitingFor flips within ~1.6s of the dialog appearing (registry file mtime-driven; polling cost ~0.1s per call)."
+  },
+  "transcript_as_supplement": {
+   "fact": "No transcript line marks a pending permission: the last line is an assistant tool_use with no tool_result (indistinguishable from a long-running tool) until the tool_result is written after the answer. Turn end writes system/turn_duration. Transcript is a weak supplement only (activity, turn end); registry is the fact source for 'waiting for approval'.",
+   "artifact": "E3/transcript_structure.jsonl"
+  }
+ },
+ "E4": {
+  "delivery_default": {
+   "fact": "With crossSessionInbound unset (mode parity: both prompting class) an SDK session's SendMessage was delivered; the receiver terminal started a new turn whose user line has promptSource=system, turnOrigin=peer, shown as 'Message from @<sender-name>'. The receiver answered in its own transcript; nothing came back to the sender (no reply turn within 85s) because the receiver did not SendMessage back.",
+   "artifact": "E4/frames_default.jsonl, E4/receiver_transcript_structure.jsonl"
+  },
+  "sendmessage_permission": {
+   "fact": "SendMessage (input keys: content, message, recipient, recipient_kind, summary, to, type) ran WITHOUT can_use_tool in an SDK session with default permission mode: a Yuki-held Claude can message any same-user peer session (incl. user's own terminals) unprompted. Forcing it through can_use_tool required --settings permissions.ask=[SendMessage]."
+  },
+  "refuse": {
+   "fact": "Receiver transcript unchanged; the sender got a system-origin follow-up turn reporting the refusal (an extra sender turn).",
+   "artifact": "E4/frames_refuse.jsonl, E4/sender_b5c93bd8-..._structure.jsonl"
+  },
+  "hold": {
+   "fact": "Receiver shows 'Held peer message ... not delivered to Claude' to the user (system/informational line), no Claude turn; sender got a system-origin follow-up turn. Repo-level hold/refuse only tightens; explicit value wins over mode parity.",
+   "artifact": "E4/frames_hold.jsonl"
+  },
+  "sender_must_be_claude": {
+   "fact": "No CLI subcommand sends a peer message; the documented path is the SendMessage tool, so each message costs a sender Claude turn (plus a follow-up turn on refuse/hold). The raw UDS (/tmp/cc-socks/<pid>.sock, peerProtocol 1) is undocumented and was not used."
+  }
+ },
+ "E6": {
+  "setup": "Project .claude/settings.local.json stands in for the user's own allow rules: Bash(touch:*), Write/Edit(//<outside>/**). can_use_tool always denies, so 'effect happened' means the call ran without the connector being asked.",
+  "A_connector_today": {
+   "fact": "No permission_mode (init reports 'default'), all setting sources: user-allowed touch and write-outside ran without can_use_tool; ls ran (read-only auto-allow); mkdir and Write in cwd/add_dir reached can_use_tool."
+  },
+  "B_acceptEdits_add_dirs_allowed_tools": {
+   "fact": "Writes in cwd and add_dir and mkdir in cwd ran without callback (acceptEdits also auto-allows filesystem Bash like mkdir/touch inside working dirs); user-allowed write OUTSIDE scope ran without callback -> scope bypassed."
+  },
+  "C_setting_sources_empty": {
+   "fact": "User rules not loaded: write outside reached can_use_tool. (Drops user CLAUDE.md/hooks/MCP too.)"
+  },
+  "D_disallowed_tools": {
+   "fact": "disallowed_tools Bash(touch:*) beats user allow (denied, no callback). Write(//path/**) in disallowed did NOT match the Write tool; Edit(//path/**) did (D2: write outside denied). Path rules must use Edit(...) and '//' for absolute paths."
+  },
+  "E_settings_ask": {
+   "fact": "--settings permissions.ask beats user allow: touch and (with Edit(//...)) write-outside reached can_use_tool (E2)."
+  },
+  "G_settings_ask_all": {
+   "fact": "--settings {permissions:{ask:[Bash,Edit,Write]}} with all user setting sources kept: EVERY Bash/Write call (incl. user-allowed touch, write-outside, read-only ls, writes in cwd) reached can_use_tool. The connector can thus enforce the delegation scope itself in the callback without dropping the user's setting sources."
+  },
+  "not_verified": "Real user-level (~/.claude/settings.json) rules were not modified; project-local rules were used as stand-in (same precedence chain: flag > local > project > user, deny > ask > allow). User PreToolUse hooks that return allow, MCP tools, WebFetch, NotebookEdit were not tested. acceptEdits+ask interplay inside cwd not tested."
+ },
+ "E7": {
+  "bg_task_notification": {
+   "fact": "After result+idle, ~7.3s later: system task_updated, task_notification(status=completed, task_id, tool_use_id of the owner's original Bash tool_use), background_tasks_changed, session_state_changed=running, a new system/init, assistant (parent_tool_use_id null), result(num_turns 1), session_state_changed=idle. No user/replay frame starts this turn.",
+   "artifact": "E7/frames_bg_notify.jsonl"
+  },
+  "stopped_then_completed": {
+   "fact": "TaskStop inside the same turn produced task_notification status=stopped in-turn; no later 'completed' notification and no self-started turn within 45s. The 'stopped then completed' double notification was not reproduced.",
+   "artifact": "E7/frames_bg_stop_then_complete.jsonl"
+  },
+  "schedule_wakeup": {
+   "fact": "ScheduleWakeup is available headless (input keys delaySeconds, noop, prompt, reason). ~62s after the turn: session_state_changed=running, command_lifecycle=started (no preceding queued from us, no user/replay frame), system/init, assistant, result, idle.",
+   "artifact": "E7/frames_schedule_wakeup.jsonl"
+  },
+  "x2_one_long_tool": {
+   "fact": "Foreground Bash sleep 20: tool_use at 2.4s, task_started at 5.5s (long foreground command tracked as a task), then silence (no heartbeat/progress frames) until 22.5s. Input written at 6.3s got command_lifecycle=queued immediately and was replayed (isReplay, same UUID) only at 22.5s right after the tool_result, merged into the same turn (one result).",
+   "artifact": "E7/frames_x2_one_long_tool.jsonl"
+  },
+  "attribution_fact": "Every self-started turn ran inside the SDK owner process that created the session, began with session_state_changed=running with no Yuki input outstanding, and (for background tasks) carries the originating tool_use_id."
+ },
+ "E8": {
+  "release_at_turn_boundary": {
+   "fact": "SDK owner did one turn, closed at the turn boundary (process exited, no registry row). Terminal 'claude --resume <id>' displayed the SDK turn, ran its own turn; transcript is one linear chain (0 branch points; entrypoints sdk-py 14, cli 9).",
+   "artifact": "E8/a_chain.json, E8/a_transcript_structure.jsonl"
+  },
+  "resume_while_live_G8": {
+   "fact": "SDK resume of the same id while the terminal was live: no error, SDK result carried the same session id; terminal then ran a turn and did not see the SDK turn; transcript has 1 branch point with children [sdk-py, cli]. Before the resume the registry row of the live terminal carried that sessionId, so a pre-open check would have caught it.",
+   "artifact": "E8/b_chain.json, E8/live_registry_row_for_target.json"
+  },
+  "fork_session": {
+   "fact": "resume=<id>, fork_session=True -> new session id; original transcript sha256 and line count unchanged.",
+   "artifact": "E8/c_fork.json"
+  }
+ }
+}

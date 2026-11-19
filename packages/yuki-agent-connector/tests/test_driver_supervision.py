@@ -11,7 +11,7 @@ from websockets.asyncio.server import serve
 
 from yuki_agent_connector.config import Instance
 from yuki_agent_connector.drivers import DriverError
-from yuki_agent_connector.drivers.acp import ACPDriver, Session
+from yuki_agent_connector.drivers.acp import ACPDriver, Session, Waiting
 from yuki_agent_connector.drivers.claude import ClaudeDriver, ManagedSession
 from yuki_agent_connector.drivers.codex import CodexDriver
 
@@ -44,6 +44,17 @@ async def test_codex_eof_reconnect_preserves_queue_and_rejects_old_connection_qu
             await driver.execute(command("queue", identity="queue", prompt="once"))
             await driver.execute(
                 {**command("watch", identity="watch"), "observation_scope": "session"}
+            )
+            # The queued input started Yuki's turn: only its requests are Yuki's to answer.
+            await driver._notification(
+                {
+                    "method": "item/started",
+                    "params": {
+                        "threadId": "thread",
+                        "turnId": "turn",
+                        "item": {"id": "input", "type": "userMessage", "clientId": "queue"},
+                    },
+                }
             )
             await driver._notification(
                 {
@@ -479,7 +490,7 @@ async def test_acp_process_exit_updates_native_status_and_clears_old_questions(m
     session = Session("session", ".", status="running", operation="original", execution="A")
     driver.sessions[session.id] = session
     question = asyncio.get_running_loop().create_future()
-    driver.requests["7"] = (session.id, [], question)
+    driver.requests["7"] = Waiting(session.id, [], question)
     driver.permission_refs[(session.id, "tool")] = 7
     exited.set()
     await asyncio.wait_for(driver.worker, 1)

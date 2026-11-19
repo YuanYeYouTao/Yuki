@@ -1,0 +1,45 @@
+{"t": 0.0, "side": "harness", "dir": "note", "note": "scenario a2 start"}
+{"t": 0.001, "side": "A", "dir": "out", "method": "initialize", "id": "408a8b18"}
+{"t": 0.001, "side": "A", "dir": "in", "method": "initialize:result", "id": "408a8b18"}
+{"t": 0.001, "side": "A", "dir": "out", "method": "thread/start", "id": "51dbf61d"}
+{"t": 0.001, "side": "A", "dir": "in", "kind": "notification", "method": "remoteControl/status/changed"}
+{"t": 0.002, "side": "A", "dir": "in", "kind": "notification", "method": "account/updated"}
+{"t": 0.007, "side": "A", "dir": "in", "kind": "notification", "method": "thread/started", "thread.id": "01a1eec3-742f-7953-a5d0-6dfb133cd7a7", "thread.status": "idle"}
+{"t": 0.007, "side": "A", "dir": "in", "method": "thread/start:result", "id": "51dbf61d", "thread.id": "01a1eec3-742f-7953-a5d0-6dfb133cd7a7", "thread.status": "idle"}
+{"t": 0.007, "side": "A", "dir": "out", "method": "turn/start", "id": "e38d277b", "threadId": "01a1eec3-742f-7953-a5d0-6dfb133cd7a7", "clientUserMessageId": "e1-a-turn"}
+{"t": 0.012, "side": "A", "dir": "in", "kind": "notification", "method": "thread/settings/updated", "threadId": "01a1eec3-742f-7953-a5d0-6dfb133cd7a7"}
+{"t": 0.013, "side": "A", "dir": "in", "method": "turn/start:result", "id": "e38d277b", "turn.id": "01a1eec3-7435-7160-bb5e-8a8e0c4dfa40", "turn.status": "inProgress"}
+{"t": 0.014, "side": "A", "dir": "in", "kind": "notification", "method": "thread/status/changed", "threadId": "01a1eec3-742f-7953-a5d0-6dfb133cd7a7", "status": "active"}
+{"t": 0.014, "side": "A", "dir": "in", "kind": "notification", "method": "turn/started", "threadId": "01a1eec3-742f-7953-a5d0-6dfb133cd7a7", "turn.id": "01a1eec3-7435-7160-bb5e-8a8e0c4dfa40", "turn.status": "inProgress"}
+{"t": 0.314, "side": "A", "dir": "local", "method": "close"}
+{"t": 0.314, "side": "A", "dir": "in", "method": "connection_closed", "error": "ConnectionClosedError"}
+{"t": 0.314, "side": "harness", "dir": "note", "note": "A disconnected without answering"}
+{"t": 15.316, "side": "B", "dir": "out", "method": "initialize", "id": "40f0217a"}
+{"t": 15.316, "side": "B", "dir": "in", "method": "initialize:result", "id": "40f0217a"}
+{"t": 15.317, "side": "B", "dir": "out", "method": "thread/read", "id": "e562f3e4", "threadId": "01a1eec3-742f-7953-a5d0-6dfb133cd7a7"}
+{"t": 15.317, "side": "B", "dir": "in", "kind": "notification", "method": "remoteControl/status/changed"}
+{"t": 15.318, "side": "B", "dir": "in", "kind": "notification", "method": "account/updated"}
+{"t": 15.319, "side": "B", "dir": "in", "kind": "notification", "method": "deprecationNotice"}
+{"t": 15.319, "side": "B", "dir": "in", "method": "thread/read:result", "id": "e562f3e4", "thread.id": "01a1eec3-742f-7953-a5d0-6dfb133cd7a7", "thread.status": "active"}
+{"t": 15.32, "side": "B", "dir": "local", "method": "thread/read:summary", "turns": [{"id": "01a1eec3-7435-7160-bb5e-8a8e0c4dfa40", "status": "inProgress", "items": ["userMessage"]}]}
+{"t": 15.32, "side": "B", "dir": "out", "method": "thread/resume", "id": "d9e625e4", "threadId": "01a1eec3-742f-7953-a5d0-6dfb133cd7a7"}
+{"t": 15.325, "side": "B", "dir": "in", "kind": "notification", "method": "thread/goal/cleared", "threadId": "01a1eec3-742f-7953-a5d0-6dfb133cd7a7"}
+{"t": 15.325, "side": "B", "dir": "in", "method": "thread/resume:result", "id": "d9e625e4", "thread.id": "01a1eec3-742f-7953-a5d0-6dfb133cd7a7", "thread.status": "active"}
+{"t": 15.325, "side": "B", "dir": "in", "kind": "serverRequest", "method": "item/commandExecution/requestApproval", "requestId": 1, "threadId": "01a1eec3-742f-7953-a5d0-6dfb133cd7a7", "turnId": "01a1eec3-7435-7160-bb5e-8a8e0c4dfa40", "itemId": "exec-605da801-436f-40ac-b00d-f0e3f6684c70"}
+{"t": 15.325, "side": "harness", "dir": "note", "note": "B received a (re)sent approval request after resume: True"}
+{"t": 15.325, "side": "B", "dir": "out", "method": "serverRequest:response", "requestId": 1, "decision": "decline"}
+{"t": 15.325, "side": "B", "dir": "in", "kind": "notification", "method": "serverRequest/resolved", "threadId": "01a1eec3-742f-7953-a5d0-6dfb133cd7a7", "requestId": 1}
+{"t": 15.326, "side": "B", "dir": "in", "kind": "notification", "method": "thread/status/changed", "threadId": "01a1eec3-742f-7953-a5d0-6dfb133cd7a7", "status": "active"}
+{"t": 16.741, "side": "B", "dir": "in", "kind": "notification", "method": "item/started", "threadId": "01a1eec3-742f-7953-a5d0-6dfb133cd7a7", "turnId": "01a1eec3-7435-7160-bb5e-8a8e0c4dfa40", "item.id": "msg_0c5ec4e953717e20016afda2bdbd8087d294f62c3b50e262f8", "item.type": "agentMessage"}
+{"t": 17.101, "side": "B", "dir": "in", "kind": "notification", "method": "turn/moderationMetadata", "threadId": "01a1eec3-742f-7953-a5d0-6dfb133cd7a7", "turnId": "01a1eec3-7435-7160-bb5e-8a8e0c4dfa40"}
+{"t": 17.103, "side": "B", "dir": "in", "kind": "notification", "method": "item/completed", "threadId": "01a1eec3-742f-7953-a5d0-6dfb133cd7a7", "turnId": "01a1eec3-7435-7160-bb5e-8a8e0c4dfa40", "item.id": "msg_0c5ec4e953717e20016afda2bdbd8087d294f62c3b50e262f8", "item.type": "agentMessage"}
+{"t": 17.121, "side": "B", "dir": "in", "kind": "notification", "method": "thread/readState/changed", "threadId": "01a1eec3-742f-7953-a5d0-6dfb133cd7a7"}
+{"t": 17.121, "side": "B", "dir": "in", "kind": "notification", "method": "thread/status/changed", "threadId": "01a1eec3-742f-7953-a5d0-6dfb133cd7a7", "status": "idle"}
+{"t": 17.121, "side": "B", "dir": "in", "kind": "notification", "method": "turn/completed", "threadId": "01a1eec3-742f-7953-a5d0-6dfb133cd7a7", "turn.id": "01a1eec3-7435-7160-bb5e-8a8e0c4dfa40", "turn.status": "completed"}
+{"t": 17.121, "side": "B", "dir": "out", "method": "thread/read", "id": "4903639c", "threadId": "01a1eec3-742f-7953-a5d0-6dfb133cd7a7"}
+{"t": 17.123, "side": "B", "dir": "in", "kind": "notification", "method": "deprecationNotice"}
+{"t": 17.123, "side": "B", "dir": "in", "method": "thread/read:result", "id": "4903639c", "thread.id": "01a1eec3-742f-7953-a5d0-6dfb133cd7a7", "thread.status": "idle"}
+{"t": 17.123, "side": "B", "dir": "local", "method": "thread/read:summary", "turns": [{"id": "01a1eec3-7435-7160-bb5e-8a8e0c4dfa40", "status": "completed", "items": ["userMessage", "agentMessage"]}]}
+{"t": 17.123, "side": "B", "dir": "local", "method": "close"}
+{"t": 17.124, "side": "B", "dir": "in", "method": "connection_closed", "error": "ConnectionClosedError"}
+{"t": 17.124, "side": "harness", "dir": "note", "note": "scenario a2 end"}

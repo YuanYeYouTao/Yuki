@@ -1,0 +1,52 @@
+{"t": 0.0, "side": "harness", "dir": "note", "note": "scenario a start"}
+{"t": 0.001, "side": "A", "dir": "out", "method": "initialize", "id": "e67531ac"}
+{"t": 0.001, "side": "A", "dir": "in", "method": "initialize:result", "id": "e67531ac"}
+{"t": 0.001, "side": "A", "dir": "out", "method": "thread/start", "id": "140366b2"}
+{"t": 0.001, "side": "A", "dir": "in", "kind": "notification", "method": "remoteControl/status/changed"}
+{"t": 0.002, "side": "A", "dir": "in", "kind": "notification", "method": "account/updated"}
+{"t": 1.279, "side": "A", "dir": "in", "method": "thread/start:result", "id": "140366b2", "thread.id": "01a1eec2-ff03-7d33-94ae-3749ea5011ab", "thread.status": "idle"}
+{"t": 1.28, "side": "A", "dir": "out", "method": "turn/start", "id": "d36c7d22", "threadId": "01a1eec2-ff03-7d33-94ae-3749ea5011ab", "clientUserMessageId": "e1-a-turn"}
+{"t": 1.28, "side": "A", "dir": "in", "kind": "notification", "method": "thread/started", "thread.id": "01a1eec2-ff03-7d33-94ae-3749ea5011ab", "thread.status": "idle"}
+{"t": 1.292, "side": "A", "dir": "in", "kind": "notification", "method": "thread/settings/updated", "threadId": "01a1eec2-ff03-7d33-94ae-3749ea5011ab"}
+{"t": 1.294, "side": "A", "dir": "in", "method": "turn/start:result", "id": "d36c7d22", "turn.id": "01a1eec3-0400-7602-be5a-7db5afc48c56", "turn.status": "inProgress"}
+{"t": 1.425, "side": "A", "dir": "in", "kind": "notification", "method": "thread/status/changed", "threadId": "01a1eec2-ff03-7d33-94ae-3749ea5011ab", "status": "active"}
+{"t": 1.425, "side": "A", "dir": "in", "kind": "notification", "method": "turn/started", "threadId": "01a1eec2-ff03-7d33-94ae-3749ea5011ab", "turn.id": "01a1eec3-0400-7602-be5a-7db5afc48c56", "turn.status": "inProgress"}
+{"t": 3.255, "side": "A", "dir": "in", "kind": "notification", "method": "item/started", "threadId": "01a1eec2-ff03-7d33-94ae-3749ea5011ab", "turnId": "01a1eec3-0400-7602-be5a-7db5afc48c56", "item.id": "01a1eec3-0bb2-77a1-8d49-566c1add32a7", "item.type": "userMessage", "item.clientId": "e1-a-turn"}
+{"t": 3.257, "side": "A", "dir": "in", "kind": "notification", "method": "item/completed", "threadId": "01a1eec2-ff03-7d33-94ae-3749ea5011ab", "turnId": "01a1eec3-0400-7602-be5a-7db5afc48c56", "item.id": "01a1eec3-0bb2-77a1-8d49-566c1add32a7", "item.type": "userMessage", "item.clientId": "e1-a-turn"}
+{"t": 5.713, "side": "A", "dir": "in", "kind": "notification", "method": "turn/moderationMetadata", "threadId": "01a1eec2-ff03-7d33-94ae-3749ea5011ab", "turnId": "01a1eec3-0400-7602-be5a-7db5afc48c56"}
+{"t": 5.945, "side": "A", "dir": "in", "kind": "notification", "method": "thread/status/changed", "threadId": "01a1eec2-ff03-7d33-94ae-3749ea5011ab", "status": "active"}
+{"t": 5.945, "side": "A", "dir": "in", "kind": "notification", "method": "item/started", "threadId": "01a1eec2-ff03-7d33-94ae-3749ea5011ab", "turnId": "01a1eec3-0400-7602-be5a-7db5afc48c56", "item.id": "exec-f8dfff83-f4d4-48de-ad26-e9b3b8893c59", "item.type": "commandExecution", "item.status": "inProgress"}
+{"t": 5.945, "side": "A", "dir": "in", "kind": "serverRequest", "method": "item/commandExecution/requestApproval", "requestId": 0, "threadId": "01a1eec2-ff03-7d33-94ae-3749ea5011ab", "turnId": "01a1eec3-0400-7602-be5a-7db5afc48c56", "itemId": "exec-f8dfff83-f4d4-48de-ad26-e9b3b8893c59"}
+{"t": 5.945, "side": "harness", "dir": "note", "note": "A got approval request: True"}
+{"t": 5.945, "side": "A", "dir": "local", "method": "close"}
+{"t": 5.945, "side": "A", "dir": "in", "method": "connection_closed", "error": "ConnectionClosedError"}
+{"t": 5.946, "side": "harness", "dir": "note", "note": "A disconnected without answering"}
+{"t": 20.947, "side": "B", "dir": "out", "method": "initialize", "id": "1f607da8"}
+{"t": 20.947, "side": "B", "dir": "in", "kind": "notification", "method": "remoteControl/status/changed"}
+{"t": 20.948, "side": "B", "dir": "in", "method": "initialize:result", "id": "1f607da8"}
+{"t": 20.948, "side": "B", "dir": "out", "method": "thread/read", "id": "9304bc20", "threadId": "01a1eec2-ff03-7d33-94ae-3749ea5011ab"}
+{"t": 20.948, "side": "B", "dir": "in", "kind": "notification", "method": "account/updated"}
+{"t": 20.955, "side": "B", "dir": "in", "kind": "notification", "method": "deprecationNotice"}
+{"t": 20.955, "side": "B", "dir": "in", "method": "thread/read:result", "id": "9304bc20", "thread.id": "01a1eec2-ff03-7d33-94ae-3749ea5011ab", "thread.status": "active"}
+{"t": 20.955, "side": "B", "dir": "local", "method": "thread/read:summary", "turns": [{"id": "01a1eec3-0400-7602-be5a-7db5afc48c56", "status": "inProgress", "items": ["userMessage"]}]}
+{"t": 20.955, "side": "B", "dir": "out", "method": "thread/resume", "id": "5b409b01", "threadId": "01a1eec2-ff03-7d33-94ae-3749ea5011ab"}
+{"t": 20.959, "side": "B", "dir": "in", "kind": "notification", "method": "thread/goal/cleared", "threadId": "01a1eec2-ff03-7d33-94ae-3749ea5011ab"}
+{"t": 20.959, "side": "B", "dir": "in", "method": "thread/resume:result", "id": "5b409b01", "thread.id": "01a1eec2-ff03-7d33-94ae-3749ea5011ab", "thread.status": "active"}
+{"t": 20.959, "side": "B", "dir": "in", "kind": "serverRequest", "method": "item/commandExecution/requestApproval", "requestId": 0, "threadId": "01a1eec2-ff03-7d33-94ae-3749ea5011ab", "turnId": "01a1eec3-0400-7602-be5a-7db5afc48c56", "itemId": "exec-f8dfff83-f4d4-48de-ad26-e9b3b8893c59"}
+{"t": 20.959, "side": "harness", "dir": "note", "note": "B received a (re)sent approval request after resume: True"}
+{"t": 20.959, "side": "B", "dir": "out", "method": "serverRequest:response", "requestId": 0, "decision": "decline"}
+{"t": 20.96, "side": "B", "dir": "in", "kind": "notification", "method": "serverRequest/resolved", "threadId": "01a1eec2-ff03-7d33-94ae-3749ea5011ab", "requestId": 0}
+{"t": 20.961, "side": "B", "dir": "in", "kind": "notification", "method": "thread/status/changed", "threadId": "01a1eec2-ff03-7d33-94ae-3749ea5011ab", "status": "active"}
+{"t": 22.593, "side": "B", "dir": "in", "kind": "notification", "method": "item/started", "threadId": "01a1eec2-ff03-7d33-94ae-3749ea5011ab", "turnId": "01a1eec3-0400-7602-be5a-7db5afc48c56", "item.id": "msg_0bfa12d4998a7c7a016afda2a5942087d1821883e6d783b1bc", "item.type": "agentMessage"}
+{"t": 23.027, "side": "B", "dir": "in", "kind": "notification", "method": "turn/moderationMetadata", "threadId": "01a1eec2-ff03-7d33-94ae-3749ea5011ab", "turnId": "01a1eec3-0400-7602-be5a-7db5afc48c56"}
+{"t": 23.028, "side": "B", "dir": "in", "kind": "notification", "method": "item/completed", "threadId": "01a1eec2-ff03-7d33-94ae-3749ea5011ab", "turnId": "01a1eec3-0400-7602-be5a-7db5afc48c56", "item.id": "msg_0bfa12d4998a7c7a016afda2a5942087d1821883e6d783b1bc", "item.type": "agentMessage"}
+{"t": 23.327, "side": "B", "dir": "in", "kind": "notification", "method": "thread/readState/changed", "threadId": "01a1eec2-ff03-7d33-94ae-3749ea5011ab"}
+{"t": 23.327, "side": "B", "dir": "in", "kind": "notification", "method": "thread/status/changed", "threadId": "01a1eec2-ff03-7d33-94ae-3749ea5011ab", "status": "idle"}
+{"t": 23.327, "side": "B", "dir": "in", "kind": "notification", "method": "turn/completed", "threadId": "01a1eec2-ff03-7d33-94ae-3749ea5011ab", "turn.id": "01a1eec3-0400-7602-be5a-7db5afc48c56", "turn.status": "completed"}
+{"t": 23.327, "side": "B", "dir": "out", "method": "thread/read", "id": "f79c2ae7", "threadId": "01a1eec2-ff03-7d33-94ae-3749ea5011ab"}
+{"t": 23.33, "side": "B", "dir": "in", "kind": "notification", "method": "deprecationNotice"}
+{"t": 23.33, "side": "B", "dir": "in", "method": "thread/read:result", "id": "f79c2ae7", "thread.id": "01a1eec2-ff03-7d33-94ae-3749ea5011ab", "thread.status": "idle"}
+{"t": 23.33, "side": "B", "dir": "local", "method": "thread/read:summary", "turns": [{"id": "01a1eec3-0400-7602-be5a-7db5afc48c56", "status": "completed", "items": ["userMessage", "agentMessage"]}]}
+{"t": 23.33, "side": "B", "dir": "local", "method": "close"}
+{"t": 23.331, "side": "B", "dir": "in", "method": "connection_closed", "error": "ConnectionClosedError"}
+{"t": 23.331, "side": "harness", "dir": "note", "note": "scenario a end"}

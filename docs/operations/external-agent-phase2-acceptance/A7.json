@@ -1,0 +1,890 @@
+{
+  "scenario": "A7",
+  "status": "completed",
+  "facts": {
+    "process_killed": {
+      "parent_work_id": "60983036-0cc4-4d89-81ce-3370c6eb1491",
+      "record_work_id": "4cc0cefa-52d2-49d4-9b21-65cf927b4f9e",
+      "record": {
+        "state": "waiting_external",
+        "reason": "native_sdk_connection_lost"
+      },
+      "operations": [
+        {
+          "operation_id": "delegation:4cc0cefa-52d2-49d4-9b21-65cf927b4f9e:start:8398531b45089c4862298816d7e026f8",
+          "action": "prompt",
+          "run_id": "72c12bc6-d729-52bb-8af5-34e15956b54c",
+          "session_id": "7f2422e9-7bb8-50c5-89ae-8aebd32c7e27",
+          "execution_id": "2ff66a1d-f932-45a2-9ffc-345732aaef08",
+          "actor_person_id": "09317d13-60f6-40c8-a7cd-b0126ee2dd1e",
+          "detached": false,
+          "status": "unknown",
+          "pending": true,
+          "error": null,
+          "state_sequence": null
+        }
+      ],
+      "events": [
+        {
+          "cursor": 1,
+          "event_id": "5f3fcb48-7e0b-4f96-9aa9-e0bdb716d0f0",
+          "operation_id": "delegation:4cc0cefa-52d2-49d4-9b21-65cf927b4f9e:start:8398531b45089c4862298816d7e026f8",
+          "kind": "progress",
+          "status": "running",
+          "reason": null,
+          "tool": null,
+          "observed": null,
+          "answer_at": null,
+          "permission_resolved": false,
+          "native_method": null,
+          "execution_status": null,
+          "received_at": "2026-11-18T16:10:53.526762"
+        },
+        {
+          "cursor": 2,
+          "event_id": "b649b297-3bb3-4686-999c-618666b57ecf",
+          "operation_id": "delegation:4cc0cefa-52d2-49d4-9b21-65cf927b4f9e:start:8398531b45089c4862298816d7e026f8",
+          "kind": "progress",
+          "status": null,
+          "reason": null,
+          "tool": "Bash",
+          "observed": null,
+          "answer_at": null,
+          "permission_resolved": false,
+          "native_method": null,
+          "execution_status": null,
+          "received_at": "2026-11-18T16:10:53.542479"
+        },
+        {
+          "cursor": 3,
+          "event_id": "405f2e03-c2aa-47f3-9cbf-647270b98c94",
+          "operation_id": "delegation:4cc0cefa-52d2-49d4-9b21-65cf927b4f9e:start:8398531b45089c4862298816d7e026f8",
+          "kind": "progress",
+          "status": null,
+          "reason": null,
+          "tool": "Bash",
+          "observed": null,
+          "answer_at": null,
+          "permission_resolved": false,
+          "native_method": null,
+          "execution_status": null,
+          "received_at": "2026-11-18T16:10:53.550921"
+        },
+        {
+          "cursor": 4,
+          "event_id": "4831cfb3-e358-4c0f-a0b3-010d7149c609",
+          "operation_id": "delegation:4cc0cefa-52d2-49d4-9b21-65cf927b4f9e:start:8398531b45089c4862298816d7e026f8",
+          "kind": "progress",
+          "status": "unknown",
+          "reason": "native_sdk_connection_lost",
+          "tool": null,
+          "observed": null,
+          "answer_at": null,
+          "permission_resolved": false,
+          "native_method": null,
+          "execution_status": null,
+          "received_at": "2026-11-18T16:10:57.182366"
+        }
+      ],
+      "parent_inputs": [
+        {
+          "input_id": 1,
+          "kind": "subagent",
+          "source_key": "delegation:4cc0cefa-52d2-49d4-9b21-65cf927b4f9e:lost:delegation:4cc0cefa-52d2-49d4-9b21-65cf927b4f9e:start:8398531b45089c4862298816d7e026f8",
+          "state": "consumed",
+          "event_id": null,
+          "created": 1795018257.1852841
+        }
+      ],
+      "told": 1,
+      "journal_prompts_for_record": 1,
+      "state_sequence": [
+        {
+          "t": 5.954,
+          "work_id": "4cc0cefa-52d2-49d4-9b21-65cf927b4f9e",
+          "state": "waiting_external",
+          "reason": "native_executor"
+        },
+        {
+          "t": 11.724,
+          "work_id": "4cc0cefa-52d2-49d4-9b21-65cf927b4f9e",
+          "state": "waiting_external",
+          "reason": "native_sdk_connection_lost"
+        }
+      ]
+    },
+    "session_deleted": {
+      "parent_work_id": "94e3c021-a69f-4d96-a53a-ebe442c8ef6c",
+      "record_work_id": "04b042ba-b1eb-4f4a-9b3d-d557ddb3d7fb",
+      "record": {
+        "state": "failed",
+        "reason": "native_failed"
+      },
+      "operations": [
+        {
+          "operation_id": "delegation:04b042ba-b1eb-4f4a-9b3d-d557ddb3d7fb:start:5368cd0e9b84890f0297623c3b78fc3e",
+          "action": "prompt",
+          "run_id": "876c9873-e8f0-5b1e-9f9d-dd25b8002a25",
+          "session_id": "87a3f278-e923-58cf-9e41-0e65f092ed2c",
+          "execution_id": null,
+          "actor_person_id": "09317d13-60f6-40c8-a7cd-b0126ee2dd1e",
+          "detached": false,
+          "status": "failed",
+          "pending": false,
+          "error": {
+            "admitted": false,
+            "code": "cwd_unknown",
+            "details": null,
+            "executed": false
+          },
+          "state_sequence": null
+        }
+      ],
+      "events": [],
+      "parent_inputs": [
+        {
+          "input_id": 4,
+          "kind": "subagent",
+          "source_key": "worker-result:04b042ba-b1eb-4f4a-9b3d-d557ddb3d7fb:2",
+          "state": "consumed",
+          "event_id": null,
+          "created": 1795018303.753589
+        },
+        {
+          "input_id": 5,
+          "kind": "control",
+          "source_key": "wait:ef6a7bab-5b59-4761-943b-0612941725ec",
+          "state": "consumed",
+          "event_id": null,
+          "created": 1795018303.98052
+        }
+      ],
+      "told": 1,
+      "journal_prompts_for_record": 1,
+      "state_sequence": [
+        {
+          "t": 57.914,
+          "work_id": "04b042ba-b1eb-4f4a-9b3d-d557ddb3d7fb",
+          "state": "waiting_external",
+          "reason": "native_executor"
+        },
+        {
+          "t": 58.221,
+          "work_id": "04b042ba-b1eb-4f4a-9b3d-d557ddb3d7fb",
+          "state": "failed",
+          "reason": "native_failed"
+        }
+      ]
+    },
+    "device_revoked": {
+      "parent_work_id": "5e6faab5-e07e-4a87-8552-ea5d4f392c3e",
+      "record_work_id": "b197d78e-6ed6-460f-8047-7c10dde5373f",
+      "record": {
+        "state": "waiting_external",
+        "reason": "device_offline"
+      },
+      "operations": [
+        {
+          "operation_id": "delegation:b197d78e-6ed6-460f-8047-7c10dde5373f:start:a39e331cfc29b005c12f9c2ee70f7bb3",
+          "action": "prompt",
+          "run_id": "e6aaa634-17a7-530d-a8e9-b3931759298b",
+          "session_id": "491b61e9-a737-5bde-832f-229b7cee1a65",
+          "execution_id": "96ecbf04-abcb-4f1f-969b-334b000a53ab",
+          "actor_person_id": "09317d13-60f6-40c8-a7cd-b0126ee2dd1e",
+          "detached": false,
+          "status": "running",
+          "pending": true,
+          "error": null,
+          "state_sequence": null
+        }
+      ],
+      "events": [
+        {
+          "cursor": 8,
+          "event_id": "fdd42690-43c0-4c4c-bf78-9cd714f542a1",
+          "operation_id": "delegation:b197d78e-6ed6-460f-8047-7c10dde5373f:start:a39e331cfc29b005c12f9c2ee70f7bb3",
+          "kind": "progress",
+          "status": "running",
+          "reason": null,
+          "tool": null,
+          "observed": null,
+          "answer_at": null,
+          "permission_resolved": false,
+          "native_method": null,
+          "execution_status": null,
+          "received_at": "2026-11-18T16:11:56.788290"
+        },
+        {
+          "cursor": 9,
+          "event_id": "f16ca1ce-2b14-42f0-a69e-9c2ccacfecba",
+          "operation_id": "delegation:b197d78e-6ed6-460f-8047-7c10dde5373f:start:a39e331cfc29b005c12f9c2ee70f7bb3",
+          "kind": "progress",
+          "status": null,
+          "reason": null,
+          "tool": "Bash",
+          "observed": null,
+          "answer_at": null,
+          "permission_resolved": false,
+          "native_method": null,
+          "execution_status": null,
+          "received_at": "2026-11-18T16:11:56.802910"
+        },
+        {
+          "cursor": 10,
+          "event_id": "1c2c800c-5e23-43ee-a8c7-2492cce795b5",
+          "operation_id": "delegation:b197d78e-6ed6-460f-8047-7c10dde5373f:start:a39e331cfc29b005c12f9c2ee70f7bb3",
+          "kind": "progress",
+          "status": null,
+          "reason": null,
+          "tool": "Bash",
+          "observed": null,
+          "answer_at": null,
+          "permission_resolved": false,
+          "native_method": null,
+          "execution_status": null,
+          "received_at": "2026-11-18T16:11:56.814587"
+        }
+      ],
+      "parent_inputs": [
+        {
+          "input_id": 7,
+          "kind": "subagent",
+          "source_key": "delegation:b197d78e-6ed6-460f-8047-7c10dde5373f:transport:c5a768c2-6003-4cab-9d24-3307d25fa281:device_offline",
+          "state": "consumed",
+          "event_id": null,
+          "created": 1795018356.755677
+        }
+      ],
+      "told": 1,
+      "journal_prompts_for_record": 1,
+      "state_sequence": [
+        {
+          "t": 68.956,
+          "work_id": "b197d78e-6ed6-460f-8047-7c10dde5373f",
+          "state": "waiting_external",
+          "reason": "native_executor"
+        },
+        {
+          "t": 111.24,
+          "work_id": "b197d78e-6ed6-460f-8047-7c10dde5373f",
+          "state": "waiting_external",
+          "reason": "device_offline"
+        }
+      ],
+      "new_input_after_revoke": {
+        "refused": "ClientError",
+        "code": "unauthenticated"
+      },
+      "connector_state": "authorization_lost"
+    }
+  },
+  "marks": [
+    {
+      "t": 0.24,
+      "mark": "connector_start",
+      "device": "mac-a"
+    },
+    {
+      "t": 0.507,
+      "mark": "case_start",
+      "case": "killed"
+    },
+    {
+      "t": 0.507,
+      "mark": "group_warmup",
+      "chat": -10201
+    },
+    {
+      "t": 11.619,
+      "mark": "sigkill_own_cli",
+      "case": "killed"
+    },
+    {
+      "t": 12.329,
+      "mark": "told",
+      "case": "killed"
+    },
+    {
+      "t": 32.133,
+      "mark": "case_start",
+      "case": "first"
+    },
+    {
+      "t": 32.133,
+      "mark": "group_warmup",
+      "chat": -10202
+    },
+    {
+      "t": 42.448,
+      "mark": "told",
+      "case": "first"
+    },
+    {
+      "t": 52.598,
+      "mark": "transcript_deleted",
+      "case": "deleted"
+    },
+    {
+      "t": 52.598,
+      "mark": "case_start",
+      "case": "deleted"
+    },
+    {
+      "t": 52.598,
+      "mark": "group_warmup",
+      "chat": -10203
+    },
+    {
+      "t": 58.55,
+      "mark": "told",
+      "case": "deleted"
+    },
+    {
+      "t": 63.529,
+      "mark": "case_start",
+      "case": "revoked"
+    },
+    {
+      "t": 63.529,
+      "mark": "group_warmup",
+      "chat": -10204
+    },
+    {
+      "t": 74.469,
+      "mark": "revoke_device",
+      "case": "revoked"
+    },
+    {
+      "t": 112.847,
+      "mark": "told",
+      "case": "killed"
+    },
+    {
+      "t": 112.854,
+      "mark": "told",
+      "case": "revoked"
+    }
+  ],
+  "model_requests": [
+    {
+      "t": 0.689,
+      "activation": "53233316-40f7-4cec-894e-d02a886bf833:1",
+      "input_ids": [],
+      "work_id": null,
+      "trigger_event_id": 1,
+      "last_role": "user",
+      "tools": [
+        "send"
+      ],
+      "tool_args_keys": [
+        [
+          "text"
+        ]
+      ]
+    },
+    {
+      "t": 0.717,
+      "activation": "53233316-40f7-4cec-894e-d02a886bf833:1",
+      "input_ids": [],
+      "work_id": null,
+      "trigger_event_id": 1,
+      "last_role": "tool",
+      "tools": [],
+      "tool_args_keys": []
+    },
+    {
+      "t": 5.816,
+      "activation": "ef5319fd-b00b-4ce4-a298-80289203701c:2",
+      "input_ids": [],
+      "work_id": null,
+      "trigger_event_id": 3,
+      "last_role": "user",
+      "tools": [
+        "manage_task"
+      ],
+      "tool_args_keys": [
+        [
+          "action",
+          "goal"
+        ]
+      ]
+    },
+    {
+      "t": 5.839,
+      "activation": "ef5319fd-b00b-4ce4-a298-80289203701c:2",
+      "input_ids": [],
+      "work_id": "60983036-0cc4-4d89-81ce-3370c6eb1491",
+      "trigger_event_id": 3,
+      "last_role": "tool",
+      "tools": [
+        "start_subtask"
+      ],
+      "tool_args_keys": [
+        [
+          "cwd",
+          "executor",
+          "goal",
+          "scope"
+        ]
+      ]
+    },
+    {
+      "t": 5.896,
+      "activation": "ef5319fd-b00b-4ce4-a298-80289203701c:2",
+      "input_ids": [],
+      "work_id": "60983036-0cc4-4d89-81ce-3370c6eb1491",
+      "trigger_event_id": 3,
+      "last_role": "tool",
+      "tools": [
+        "wait"
+      ],
+      "tool_args_keys": [
+        [
+          "for"
+        ]
+      ]
+    },
+    {
+      "t": 12.329,
+      "activation": "fb0a2412-dc7d-45b0-94a9-05280793c9fa:3",
+      "input_ids": [
+        1
+      ],
+      "work_id": "60983036-0cc4-4d89-81ce-3370c6eb1491",
+      "trigger_event_id": 3,
+      "last_role": "user",
+      "tools": [
+        "send"
+      ],
+      "tool_args_keys": [
+        [
+          "text"
+        ]
+      ]
+    },
+    {
+      "t": 12.382,
+      "activation": "fb0a2412-dc7d-45b0-94a9-05280793c9fa:3",
+      "input_ids": [
+        1
+      ],
+      "work_id": "60983036-0cc4-4d89-81ce-3370c6eb1491",
+      "trigger_event_id": 3,
+      "last_role": "tool",
+      "tools": [
+        "wait"
+      ],
+      "tool_args_keys": [
+        [
+          "for"
+        ]
+      ]
+    },
+    {
+      "t": 32.227,
+      "activation": "0a26cf8d-67f9-44ab-a285-bef2bfcc0381:1",
+      "input_ids": [],
+      "work_id": null,
+      "trigger_event_id": 5,
+      "last_role": "user",
+      "tools": [
+        "send"
+      ],
+      "tool_args_keys": [
+        [
+          "text"
+        ]
+      ]
+    },
+    {
+      "t": 32.253,
+      "activation": "0a26cf8d-67f9-44ab-a285-bef2bfcc0381:1",
+      "input_ids": [],
+      "work_id": null,
+      "trigger_event_id": 5,
+      "last_role": "tool",
+      "tools": [],
+      "tool_args_keys": []
+    },
+    {
+      "t": 37.353,
+      "activation": "b1c73fc7-c13c-4cf1-bc22-f5a7a1984af7:2",
+      "input_ids": [],
+      "work_id": null,
+      "trigger_event_id": 7,
+      "last_role": "user",
+      "tools": [
+        "manage_task"
+      ],
+      "tool_args_keys": [
+        [
+          "action",
+          "goal"
+        ]
+      ]
+    },
+    {
+      "t": 37.374,
+      "activation": "b1c73fc7-c13c-4cf1-bc22-f5a7a1984af7:2",
+      "input_ids": [],
+      "work_id": "513f569a-ba56-4e35-b2d9-010a936fad15",
+      "trigger_event_id": 7,
+      "last_role": "tool",
+      "tools": [
+        "start_subtask"
+      ],
+      "tool_args_keys": [
+        [
+          "cwd",
+          "executor",
+          "goal",
+          "scope"
+        ]
+      ]
+    },
+    {
+      "t": 37.428,
+      "activation": "b1c73fc7-c13c-4cf1-bc22-f5a7a1984af7:2",
+      "input_ids": [],
+      "work_id": "513f569a-ba56-4e35-b2d9-010a936fad15",
+      "trigger_event_id": 7,
+      "last_role": "tool",
+      "tools": [
+        "wait"
+      ],
+      "tool_args_keys": [
+        [
+          "for"
+        ]
+      ]
+    },
+    {
+      "t": 42.448,
+      "activation": "388ee478-313f-4916-a69f-544e108cf6d7:3",
+      "input_ids": [
+        2,
+        3
+      ],
+      "work_id": "513f569a-ba56-4e35-b2d9-010a936fad15",
+      "trigger_event_id": 7,
+      "last_role": "user",
+      "tools": [
+        "send"
+      ],
+      "tool_args_keys": [
+        [
+          "text"
+        ]
+      ]
+    },
+    {
+      "t": 42.51,
+      "activation": "388ee478-313f-4916-a69f-544e108cf6d7:3",
+      "input_ids": [
+        2,
+        3
+      ],
+      "work_id": "513f569a-ba56-4e35-b2d9-010a936fad15",
+      "trigger_event_id": 7,
+      "last_role": "tool",
+      "tools": [
+        "manage_task"
+      ],
+      "tool_args_keys": [
+        [
+          "action",
+          "id"
+        ]
+      ]
+    },
+    {
+      "t": 42.56,
+      "activation": "388ee478-313f-4916-a69f-544e108cf6d7:3",
+      "input_ids": [
+        2,
+        3
+      ],
+      "work_id": "513f569a-ba56-4e35-b2d9-010a936fad15",
+      "trigger_event_id": 7,
+      "last_role": "tool",
+      "tools": [
+        "manage_task"
+      ],
+      "tool_args_keys": [
+        [
+          "action",
+          "result"
+        ]
+      ]
+    },
+    {
+      "t": 52.694,
+      "activation": "d031859a-853e-4c7f-b56e-76429402a84b:1",
+      "input_ids": [],
+      "work_id": null,
+      "trigger_event_id": 9,
+      "last_role": "user",
+      "tools": [
+        "send"
+      ],
+      "tool_args_keys": [
+        [
+          "text"
+        ]
+      ]
+    },
+    {
+      "t": 52.721,
+      "activation": "d031859a-853e-4c7f-b56e-76429402a84b:1",
+      "input_ids": [],
+      "work_id": null,
+      "trigger_event_id": 9,
+      "last_role": "tool",
+      "tools": [],
+      "tool_args_keys": []
+    },
+    {
+      "t": 57.822,
+      "activation": "64e0991e-5e0d-4c06-ad15-fcb404a41a65:2",
+      "input_ids": [],
+      "work_id": null,
+      "trigger_event_id": 11,
+      "last_role": "user",
+      "tools": [
+        "manage_task"
+      ],
+      "tool_args_keys": [
+        [
+          "action",
+          "goal"
+        ]
+      ]
+    },
+    {
+      "t": 57.846,
+      "activation": "64e0991e-5e0d-4c06-ad15-fcb404a41a65:2",
+      "input_ids": [],
+      "work_id": "94e3c021-a69f-4d96-a53a-ebe442c8ef6c",
+      "trigger_event_id": 11,
+      "last_role": "tool",
+      "tools": [
+        "start_subtask"
+      ],
+      "tool_args_keys": [
+        [
+          "executor",
+          "goal",
+          "scope",
+          "session"
+        ]
+      ]
+    },
+    {
+      "t": 57.897,
+      "activation": "64e0991e-5e0d-4c06-ad15-fcb404a41a65:2",
+      "input_ids": [],
+      "work_id": "94e3c021-a69f-4d96-a53a-ebe442c8ef6c",
+      "trigger_event_id": 11,
+      "last_role": "tool",
+      "tools": [
+        "wait"
+      ],
+      "tool_args_keys": [
+        [
+          "for"
+        ]
+      ]
+    },
+    {
+      "t": 58.549,
+      "activation": "991a0fc1-f702-455b-b9a8-523d42e8719d:3",
+      "input_ids": [
+        4,
+        5
+      ],
+      "work_id": "94e3c021-a69f-4d96-a53a-ebe442c8ef6c",
+      "trigger_event_id": 11,
+      "last_role": "user",
+      "tools": [
+        "send"
+      ],
+      "tool_args_keys": [
+        [
+          "text"
+        ]
+      ]
+    },
+    {
+      "t": 58.626,
+      "activation": "991a0fc1-f702-455b-b9a8-523d42e8719d:3",
+      "input_ids": [
+        4,
+        5
+      ],
+      "work_id": "94e3c021-a69f-4d96-a53a-ebe442c8ef6c",
+      "trigger_event_id": 11,
+      "last_role": "tool",
+      "tools": [
+        "manage_task"
+      ],
+      "tool_args_keys": [
+        [
+          "action",
+          "result"
+        ]
+      ]
+    },
+    {
+      "t": 63.618,
+      "activation": "3fa400be-14e6-4376-826d-5e7f62349c41:1",
+      "input_ids": [],
+      "work_id": null,
+      "trigger_event_id": 13,
+      "last_role": "user",
+      "tools": [
+        "send"
+      ],
+      "tool_args_keys": [
+        [
+          "text"
+        ]
+      ]
+    },
+    {
+      "t": 63.65,
+      "activation": "3fa400be-14e6-4376-826d-5e7f62349c41:1",
+      "input_ids": [],
+      "work_id": null,
+      "trigger_event_id": 13,
+      "last_role": "tool",
+      "tools": [],
+      "tool_args_keys": []
+    },
+    {
+      "t": 68.751,
+      "activation": "8edfeb28-0893-46fb-b379-9f763d16d75a:2",
+      "input_ids": [],
+      "work_id": null,
+      "trigger_event_id": 15,
+      "last_role": "user",
+      "tools": [
+        "manage_task"
+      ],
+      "tool_args_keys": [
+        [
+          "action",
+          "goal"
+        ]
+      ]
+    },
+    {
+      "t": 68.784,
+      "activation": "8edfeb28-0893-46fb-b379-9f763d16d75a:2",
+      "input_ids": [],
+      "work_id": "5e6faab5-e07e-4a87-8552-ea5d4f392c3e",
+      "trigger_event_id": 15,
+      "last_role": "tool",
+      "tools": [
+        "start_subtask"
+      ],
+      "tool_args_keys": [
+        [
+          "cwd",
+          "executor",
+          "goal",
+          "scope"
+        ]
+      ]
+    },
+    {
+      "t": 68.866,
+      "activation": "8edfeb28-0893-46fb-b379-9f763d16d75a:2",
+      "input_ids": [],
+      "work_id": "5e6faab5-e07e-4a87-8552-ea5d4f392c3e",
+      "trigger_event_id": 15,
+      "last_role": "tool",
+      "tools": [
+        "wait"
+      ],
+      "tool_args_keys": [
+        [
+          "for"
+        ]
+      ]
+    },
+    {
+      "t": 112.846,
+      "activation": "ccc98254-67bc-4689-8ee3-92d6226cfdf0:4",
+      "input_ids": [
+        1,
+        6
+      ],
+      "work_id": "60983036-0cc4-4d89-81ce-3370c6eb1491",
+      "trigger_event_id": 3,
+      "last_role": "user",
+      "tools": [
+        "send"
+      ],
+      "tool_args_keys": [
+        [
+          "text"
+        ]
+      ]
+    },
+    {
+      "t": 112.854,
+      "activation": "41b9c416-832a-46d9-8d14-e74c45c78857:3",
+      "input_ids": [
+        7
+      ],
+      "work_id": "5e6faab5-e07e-4a87-8552-ea5d4f392c3e",
+      "trigger_event_id": 15,
+      "last_role": "user",
+      "tools": [
+        "send"
+      ],
+      "tool_args_keys": [
+        [
+          "text"
+        ]
+      ]
+    },
+    {
+      "t": 112.947,
+      "activation": "ccc98254-67bc-4689-8ee3-92d6226cfdf0:4",
+      "input_ids": [
+        1,
+        6
+      ],
+      "work_id": "60983036-0cc4-4d89-81ce-3370c6eb1491",
+      "trigger_event_id": 3,
+      "last_role": "tool",
+      "tools": [
+        "wait"
+      ],
+      "tool_args_keys": [
+        [
+          "for"
+        ]
+      ]
+    },
+    {
+      "t": 112.954,
+      "activation": "41b9c416-832a-46d9-8d14-e74c45c78857:3",
+      "input_ids": [
+        7
+      ],
+      "work_id": "5e6faab5-e07e-4a87-8552-ea5d4f392c3e",
+      "trigger_event_id": 15,
+      "last_role": "tool",
+      "tools": [
+        "wait"
+      ],
+      "tool_args_keys": [
+        [
+          "for"
+        ]
+      ]
+    }
+  ]
+}

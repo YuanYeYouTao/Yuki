@@ -12,6 +12,7 @@ from tests.integration.test_external_agent_bridge import (
     NativeComputer,
     accepted_work,
     directory,
+    settled,
 )
 from tests.integration.test_external_agent_bridge import bridge as bridge
 from tests.integration.test_local_device_transport import actual_connector, python_command
@@ -54,8 +55,9 @@ async def test_native_retirement_is_not_duplicated_by_shell_cancel_scan(bridge, 
                 bridge.source,
             )
             # The prompt is written by the service after registration; this test is
-            # about retiring an actually dispatched native prompt once the Work stops.
-            await bridge.service.drain()
+            # about retiring an actually dispatched native prompt once the Work stops. Its
+            # receipt event (protocol 5) is settled before the facts below are captured.
+            await settled(bridge)
         await stop_work(bridge, control.current["id"])
         if revoked:
             async with bridge.database.immediate_session() as writer:
@@ -71,6 +73,8 @@ async def test_native_retirement_is_not_duplicated_by_shell_cancel_scan(bridge, 
         assert [command["action"] for command in computer.commands] == ["list", "prompt"]
         await bridge.service.reconcile()
         await asyncio.gather(*bridge.service._retiring.values())
+        # The registered cleanup control is written in the background (protocol 5).
+        await settled(bridge)
         actions = [command["action"] for command in computer.commands]
         if revoked:
             assert actions == ["list", "prompt"]
@@ -81,7 +85,11 @@ async def test_native_retirement_is_not_duplicated_by_shell_cancel_scan(bridge, 
             assert actions == ["list", "prompt", "cancel"]
             command = computer.commands[-1]
             assert command["arguments"]["operation_id"] == operation_id
-            assert command["id"] == f"external-retire:{operation_id}:{operation_id}:cancel"
+            # One attempt per connection (a refused-before-writing attempt is retried
+            # on the next connection, never twice on one).
+            assert command["id"].startswith(
+                f"external-retire:{operation_id}:{operation_id}:cancel:"
+            )
             await computer.event(operation_id, "completed", {"status": "cancelled"})
             retained = await bridge.service.tasks.get(operation_id)
             assert retained.status == "completed" and retained.run_id == original.run_id

@@ -1,0 +1,33 @@
+{"t": 0.001, "side": "S@srv1", "dir": "out", "method": "initialize", "id": "83efbea9"}
+{"t": 0.001, "side": "S@srv1", "dir": "in", "kind": "notification", "method": "remoteControl/status/changed"}
+{"t": 0.001, "side": "S@srv1", "dir": "in", "method": "initialize:result", "id": "83efbea9"}
+{"t": 0.001, "side": "S@srv1", "dir": "out", "method": "thread/start", "id": "32a762a1"}
+{"t": 0.002, "side": "S@srv1", "dir": "in", "kind": "notification", "method": "account/updated"}
+{"t": 0.023, "side": "S@srv1", "dir": "in", "kind": "notification", "method": "thread/started", "thread.id": "01a1eedf-096c-7b30-a54d-206f62377f70", "thread.status": "idle"}
+{"t": 0.023, "side": "S@srv1", "dir": "in", "method": "thread/start:result", "id": "32a762a1", "thread.id": "01a1eedf-096c-7b30-a54d-206f62377f70", "thread.status": "idle", "approvalPolicy": "on-request", "sandbox.type": "readOnly", "sandbox.networkAccess": false}
+{"t": 0.024, "side": "S@srv1", "dir": "out", "method": "turn/start", "id": "c1b33aa8", "threadId": "01a1eedf-096c-7b30-a54d-206f62377f70"}
+{"t": 0.031, "side": "S@srv1", "dir": "in", "kind": "notification", "method": "thread/settings/updated", "threadId": "01a1eedf-096c-7b30-a54d-206f62377f70"}
+{"t": 0.032, "side": "S@srv1", "dir": "in", "method": "turn/start:result", "id": "c1b33aa8", "turn.id": "01a1eedf-0981-7791-ba80-ff9d0322fc2e", "turn.status": "inProgress"}
+{"t": 0.035, "side": "S@srv1", "dir": "in", "kind": "notification", "method": "thread/status/changed", "threadId": "01a1eedf-096c-7b30-a54d-206f62377f70", "status": "active"}
+{"t": 0.035, "side": "S@srv1", "dir": "in", "kind": "notification", "method": "turn/started", "threadId": "01a1eedf-096c-7b30-a54d-206f62377f70", "turn.id": "01a1eedf-0981-7791-ba80-ff9d0322fc2e", "turn.status": "inProgress"}
+{"t": 2.159, "side": "S@srv1", "dir": "in", "kind": "notification", "method": "item/started", "threadId": "01a1eedf-096c-7b30-a54d-206f62377f70", "turnId": "01a1eedf-0981-7791-ba80-ff9d0322fc2e", "item.id": "01a1eedf-11d7-7c92-93df-4a8282b8e83a", "item.type": "userMessage"}
+{"t": 2.16, "side": "S@srv1", "dir": "in", "kind": "notification", "method": "item/completed", "threadId": "01a1eedf-096c-7b30-a54d-206f62377f70", "turnId": "01a1eedf-0981-7791-ba80-ff9d0322fc2e", "item.id": "01a1eedf-11d7-7c92-93df-4a8282b8e83a", "item.type": "userMessage"}
+{"t": 3.506, "side": "S@srv1", "dir": "in", "kind": "notification", "method": "item/started", "threadId": "01a1eedf-096c-7b30-a54d-206f62377f70", "turnId": "01a1eedf-0981-7791-ba80-ff9d0322fc2e", "item.id": "msg_069c112e029a4db1016afda9c027c087d19815c7256c2feee1", "item.type": "agentMessage"}
+{"t": 3.542, "side": "S@srv1", "dir": "in", "kind": "notification", "method": "turn/moderationMetadata", "threadId": "01a1eedf-096c-7b30-a54d-206f62377f70", "turnId": "01a1eedf-0981-7791-ba80-ff9d0322fc2e"}
+{"t": 3.543, "side": "S@srv1", "dir": "in", "kind": "notification", "method": "item/completed", "threadId": "01a1eedf-096c-7b30-a54d-206f62377f70", "turnId": "01a1eedf-0981-7791-ba80-ff9d0322fc2e", "item.id": "msg_069c112e029a4db1016afda9c027c087d19815c7256c2feee1", "item.type": "agentMessage"}
+{"t": 3.959, "side": "S@srv1", "dir": "in", "kind": "notification", "method": "thread/readState/changed", "threadId": "01a1eedf-096c-7b30-a54d-206f62377f70"}
+{"t": 3.959, "side": "S@srv1", "dir": "in", "kind": "notification", "method": "thread/status/changed", "threadId": "01a1eedf-096c-7b30-a54d-206f62377f70", "status": "idle"}
+{"t": 3.959, "side": "S@srv1", "dir": "in", "kind": "notification", "method": "turn/completed", "threadId": "01a1eedf-096c-7b30-a54d-206f62377f70", "turn.id": "01a1eedf-0981-7791-ba80-ff9d0322fc2e", "turn.status": "completed"}
+{"t": 3.959, "side": "S@srv1", "dir": "out", "method": "thread/unsubscribe", "id": "17670f5a", "threadId": "01a1eedf-096c-7b30-a54d-206f62377f70"}
+{"t": 3.959, "side": "S@srv1", "dir": "in", "method": "thread/unsubscribe:result", "id": "17670f5a"}
+{"t": 3.959, "side": "S@srv1", "dir": "local", "method": "close"}
+{"t": 3.96, "side": "S@srv1", "dir": "in", "method": "connection_closed", "error": "ConnectionClosedError"}
+{"t": 3.96, "side": "probe@srv1", "dir": "out", "method": "initialize", "id": "a61f9fed"}
+{"t": 3.96, "side": "probe@srv1", "dir": "in", "method": "initialize:result", "id": "a61f9fed"}
+{"t": 3.96, "side": "probe@srv1", "dir": "in", "kind": "notification", "method": "remoteControl/status/changed"}
+{"t": 3.961, "side": "probe@srv1", "dir": "in", "kind": "notification", "method": "account/updated"}
+{"t": 63.968, "side": "probe@srv1", "dir": "in", "kind": "notification", "method": "thread/status/changed", "threadId": "01a1eedf-096c-7b30-a54d-206f62377f70", "status": "notLoaded"}
+{"t": 63.968, "side": "probe@srv1", "dir": "in", "kind": "notification", "method": "thread/closed", "threadId": "01a1eedf-096c-7b30-a54d-206f62377f70"}
+{"t": 63.976, "side": "harness", "dir": "note", "note": "thread unloaded 60 s after the last client unsubscribed"}
+{"t": 63.976, "side": "probe@srv1", "dir": "local", "method": "close"}
+{"t": 63.977, "side": "probe@srv1", "dir": "in", "method": "connection_closed", "error": "ConnectionClosedError"}

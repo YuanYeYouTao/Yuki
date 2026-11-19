@@ -1,0 +1,406 @@
+{
+  "scenario": "A6-acp",
+  "status": "completed",
+  "native_session_id": "83b681ba-afb7-4289-809b-2f8d8a58eb01",
+  "record": {
+    "work_id": "200630ce-5929-49fa-b5bd-9865dd8b007e",
+    "final": {
+      "state": "completed",
+      "reason": null
+    },
+    "operations": [
+      {
+        "operation_id": "delegation:200630ce-5929-49fa-b5bd-9865dd8b007e:start:9b763175b0529ffd8bd30260137cbeb1",
+        "action": "prompt",
+        "run_id": "8e0096f7-f2c5-55cc-a051-cc2e8ae55ade",
+        "session_id": "470af663-172c-5797-aef5-068b41215dea",
+        "execution_id": "35b19629-7878-40d6-ac42-024ff35205be:4",
+        "actor_person_id": "e5adfff0-b985-47e9-8e94-87b5ce95c969",
+        "detached": true,
+        "status": "completed",
+        "pending": false,
+        "error": null,
+        "state_sequence": null
+      },
+      {
+        "operation_id": "delegation:200630ce-5929-49fa-b5bd-9865dd8b007e:release:70d157b213612d5d460097809442f2dc:delegation:200630ce-5929-49fa-b5bd-9865dd8b007e:start:9b763175b0529ffd8bd30260137cbeb1",
+        "action": "detach",
+        "run_id": null,
+        "session_id": "470af663-172c-5797-aef5-068b41215dea",
+        "execution_id": "35b19629-7878-40d6-ac42-024ff35205be:4",
+        "actor_person_id": "e5adfff0-b985-47e9-8e94-87b5ce95c969",
+        "detached": false,
+        "status": "detached",
+        "pending": false,
+        "error": null,
+        "state_sequence": null
+      }
+    ],
+    "events": [
+      {
+        "cursor": 1,
+        "event_id": "83ca0d22-7fca-4c84-a9e7-e4353d10aec5",
+        "operation_id": "delegation:200630ce-5929-49fa-b5bd-9865dd8b007e:start:9b763175b0529ffd8bd30260137cbeb1",
+        "kind": "progress",
+        "status": null,
+        "reason": null,
+        "tool": null,
+        "observed": null,
+        "answer_at": null,
+        "permission_resolved": false,
+        "native_method": null,
+        "execution_status": null,
+        "received_at": "2026-11-18T16:03:27.414555"
+      },
+      {
+        "cursor": 2,
+        "event_id": "27caee03-add9-44a8-a149-92e9197ad338",
+        "operation_id": "delegation:200630ce-5929-49fa-b5bd-9865dd8b007e:start:9b763175b0529ffd8bd30260137cbeb1",
+        "kind": "progress",
+        "status": null,
+        "reason": null,
+        "tool": null,
+        "observed": null,
+        "answer_at": null,
+        "permission_resolved": false,
+        "native_method": null,
+        "execution_status": null,
+        "received_at": "2026-11-18T16:03:27.423910"
+      },
+      {
+        "cursor": 3,
+        "event_id": "ade0ac31-a61c-4cd1-85bd-e554272829d5",
+        "operation_id": "delegation:200630ce-5929-49fa-b5bd-9865dd8b007e:start:9b763175b0529ffd8bd30260137cbeb1",
+        "kind": "progress",
+        "status": null,
+        "reason": null,
+        "tool": null,
+        "observed": null,
+        "answer_at": null,
+        "permission_resolved": false,
+        "native_method": null,
+        "execution_status": null,
+        "received_at": "2026-11-18T16:03:27.936482"
+      },
+      {
+        "cursor": 4,
+        "event_id": "624b4ea2-bcf6-4969-888b-7d7cbc4fa83e",
+        "operation_id": "delegation:200630ce-5929-49fa-b5bd-9865dd8b007e:start:9b763175b0529ffd8bd30260137cbeb1",
+        "kind": "progress",
+        "status": null,
+        "reason": null,
+        "tool": null,
+        "observed": null,
+        "answer_at": null,
+        "permission_resolved": false,
+        "native_method": null,
+        "execution_status": null,
+        "received_at": "2026-11-18T16:03:27.944690"
+      },
+      {
+        "cursor": 5,
+        "event_id": "34676894-babf-46f0-b11e-198739bacc3f",
+        "operation_id": "delegation:200630ce-5929-49fa-b5bd-9865dd8b007e:start:9b763175b0529ffd8bd30260137cbeb1",
+        "kind": "progress",
+        "status": null,
+        "reason": null,
+        "tool": null,
+        "observed": null,
+        "answer_at": null,
+        "permission_resolved": false,
+        "native_method": null,
+        "execution_status": null,
+        "received_at": "2026-11-18T16:03:27.957343"
+      },
+      {
+        "cursor": 6,
+        "event_id": "8caac5eb-dce8-420b-a3cb-67cd097997da",
+        "operation_id": "delegation:200630ce-5929-49fa-b5bd-9865dd8b007e:start:9b763175b0529ffd8bd30260137cbeb1",
+        "kind": "progress",
+        "status": null,
+        "reason": null,
+        "tool": null,
+        "observed": null,
+        "answer_at": null,
+        "permission_resolved": false,
+        "native_method": null,
+        "execution_status": null,
+        "received_at": "2026-11-18T16:03:27.966200"
+      },
+      {
+        "cursor": 7,
+        "event_id": "c5bc8d76-6d0f-4b24-a173-71cccfafea90",
+        "operation_id": "delegation:200630ce-5929-49fa-b5bd-9865dd8b007e:start:9b763175b0529ffd8bd30260137cbeb1",
+        "kind": "progress",
+        "status": null,
+        "reason": null,
+        "tool": null,
+        "observed": null,
+        "answer_at": null,
+        "permission_resolved": false,
+        "native_method": null,
+        "execution_status": null,
+        "received_at": "2026-11-18T16:03:27.976228"
+      },
+      {
+        "cursor": 8,
+        "event_id": "2de18f3a-f485-4916-9d42-b1dabbee2709",
+        "operation_id": "delegation:200630ce-5929-49fa-b5bd-9865dd8b007e:start:9b763175b0529ffd8bd30260137cbeb1",
+        "kind": "progress",
+        "status": null,
+        "reason": null,
+        "tool": null,
+        "observed": null,
+        "answer_at": null,
+        "permission_resolved": false,
+        "native_method": null,
+        "execution_status": null,
+        "received_at": "2026-11-18T16:03:27.984182"
+      },
+      {
+        "cursor": 9,
+        "event_id": "a6193a5f-8b8b-4f30-b147-18eb13238688",
+        "operation_id": "delegation:200630ce-5929-49fa-b5bd-9865dd8b007e:start:9b763175b0529ffd8bd30260137cbeb1",
+        "kind": "progress",
+        "status": null,
+        "reason": null,
+        "tool": null,
+        "observed": null,
+        "answer_at": null,
+        "permission_resolved": false,
+        "native_method": null,
+        "execution_status": null,
+        "received_at": "2026-11-18T16:03:27.992966"
+      },
+      {
+        "cursor": 10,
+        "event_id": "3d6df348-d992-4033-a8c3-4a50c3f20e12",
+        "operation_id": "delegation:200630ce-5929-49fa-b5bd-9865dd8b007e:start:9b763175b0529ffd8bd30260137cbeb1",
+        "kind": "progress",
+        "status": null,
+        "reason": null,
+        "tool": null,
+        "observed": null,
+        "answer_at": null,
+        "permission_resolved": false,
+        "native_method": null,
+        "execution_status": null,
+        "received_at": "2026-11-18T16:03:28.571925"
+      },
+      {
+        "cursor": 11,
+        "event_id": "82824d99-2d35-48d9-bca1-196af9c455b6",
+        "operation_id": "delegation:200630ce-5929-49fa-b5bd-9865dd8b007e:start:9b763175b0529ffd8bd30260137cbeb1",
+        "kind": "progress",
+        "status": null,
+        "reason": null,
+        "tool": null,
+        "observed": null,
+        "answer_at": null,
+        "permission_resolved": false,
+        "native_method": null,
+        "execution_status": null,
+        "received_at": "2026-11-18T16:03:29.894612"
+      },
+      {
+        "cursor": 12,
+        "event_id": "ab5f9c9e-d1d1-4705-b2ce-e52c3f983550",
+        "operation_id": "delegation:200630ce-5929-49fa-b5bd-9865dd8b007e:start:9b763175b0529ffd8bd30260137cbeb1",
+        "kind": "progress",
+        "status": null,
+        "reason": null,
+        "tool": null,
+        "observed": null,
+        "answer_at": null,
+        "permission_resolved": false,
+        "native_method": null,
+        "execution_status": null,
+        "received_at": "2026-11-18T16:03:29.902956"
+      },
+      {
+        "cursor": 13,
+        "event_id": "f9ccb5c4-d621-46a9-a52b-f697c4d90498",
+        "operation_id": "delegation:200630ce-5929-49fa-b5bd-9865dd8b007e:start:9b763175b0529ffd8bd30260137cbeb1",
+        "kind": "completed",
+        "status": "completed",
+        "reason": null,
+        "tool": null,
+        "observed": null,
+        "answer_at": null,
+        "permission_resolved": false,
+        "native_method": null,
+        "execution_status": null,
+        "received_at": "2026-11-18T16:03:29.908422"
+      }
+    ],
+    "state_sequence": [
+      {
+        "t": 5.115,
+        "work_id": "200630ce-5929-49fa-b5bd-9865dd8b007e",
+        "state": "waiting_external",
+        "reason": "native_executor"
+      },
+      {
+        "t": 9.391,
+        "work_id": "200630ce-5929-49fa-b5bd-9865dd8b007e",
+        "state": "completed",
+        "reason": null
+      }
+    ]
+  },
+  "person_load_ok": true,
+  "chain_after_yuki": {
+    "entries": 23,
+    "fork_points": 0,
+    "roots": 1,
+    "takeover_write_tool_uses": 1,
+    "entrypoint_runs": [
+      [
+        "sdk-cli",
+        7
+      ]
+    ]
+  },
+  "chain_after_person_resumed": {
+    "entries": 28,
+    "fork_points": 0,
+    "roots": 1,
+    "takeover_write_tool_uses": 1,
+    "entrypoint_runs": [
+      [
+        "sdk-cli",
+        9
+      ]
+    ]
+  },
+  "takeover_file": true,
+  "journal": [
+    {
+      "operation_id": "delegation:200630ce-5929-49fa-b5bd-9865dd8b007e:start:9b763175b0529ffd8bd30260137cbeb1",
+      "action": "prompt",
+      "instance_id": "acp-1",
+      "session_id": "83b681ba-afb7-4289-809b-2f8d8a58eb01",
+      "observation": null,
+      "receipt_status": "completed"
+    },
+    {
+      "operation_id": "delegation:200630ce-5929-49fa-b5bd-9865dd8b007e:release:70d157b213612d5d460097809442f2dc:delegation:200630ce-5929-49fa-b5bd-9865dd8b007e:start:9b763175b0529ffd8bd30260137cbeb1",
+      "action": "detach",
+      "instance_id": "acp-1",
+      "session_id": "83b681ba-afb7-4289-809b-2f8d8a58eb01",
+      "observation": null,
+      "receipt_status": "detached"
+    }
+  ],
+  "marks": [
+    {
+      "t": 4.016,
+      "mark": "person_stopped"
+    },
+    {
+      "t": 4.04,
+      "mark": "connector_start",
+      "device": "mac-a"
+    },
+    {
+      "t": 12.721,
+      "mark": "release",
+      "work_id": "200630ce-5929-49fa-b5bd-9865dd8b007e"
+    }
+  ],
+  "model_requests": [
+    {
+      "t": 4.939,
+      "activation": "bef7f239-abd6-4876-bb0a-249be927f06e:1",
+      "input_ids": [],
+      "work_id": null,
+      "trigger_event_id": 1,
+      "last_role": "user",
+      "tools": [
+        "manage_task"
+      ],
+      "tool_args_keys": [
+        [
+          "action",
+          "goal"
+        ]
+      ]
+    },
+    {
+      "t": 4.986,
+      "activation": "bef7f239-abd6-4876-bb0a-249be927f06e:1",
+      "input_ids": [],
+      "work_id": "0fe36bc1-35a7-44c6-b2ba-766fc9ea002a",
+      "trigger_event_id": 1,
+      "last_role": "tool",
+      "tools": [
+        "start_subtask"
+      ],
+      "tool_args_keys": [
+        [
+          "executor",
+          "goal",
+          "relationship",
+          "scope",
+          "session"
+        ]
+      ]
+    },
+    {
+      "t": 5.085,
+      "activation": "bef7f239-abd6-4876-bb0a-249be927f06e:1",
+      "input_ids": [],
+      "work_id": "0fe36bc1-35a7-44c6-b2ba-766fc9ea002a",
+      "trigger_event_id": 1,
+      "last_role": "tool",
+      "tools": [
+        "wait"
+      ],
+      "tool_args_keys": [
+        [
+          "for"
+        ]
+      ]
+    },
+    {
+      "t": 12.719,
+      "activation": "359674ba-a9f7-46c1-b042-601a0cae9f83:2",
+      "input_ids": [
+        1,
+        2
+      ],
+      "work_id": "0fe36bc1-35a7-44c6-b2ba-766fc9ea002a",
+      "trigger_event_id": 1,
+      "last_role": "user",
+      "tools": [
+        "manage_task"
+      ],
+      "tool_args_keys": [
+        [
+          "action",
+          "id"
+        ]
+      ]
+    },
+    {
+      "t": 12.889,
+      "activation": "359674ba-a9f7-46c1-b042-601a0cae9f83:2",
+      "input_ids": [
+        1,
+        2
+      ],
+      "work_id": "0fe36bc1-35a7-44c6-b2ba-766fc9ea002a",
+      "trigger_event_id": 1,
+      "last_role": "tool",
+      "tools": [
+        "manage_task"
+      ],
+      "tool_args_keys": [
+        [
+          "action",
+          "result"
+        ]
+      ]
+    }
+  ]
+}

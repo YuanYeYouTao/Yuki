@@ -76,12 +76,6 @@ class Invocation:
             "version": 1,
             **identity,
             "tool_id": self.call.function.name,
-            **(
-                {"action": parsed_arguments.get("action")}
-                if self.call.function.name == "use_coding_agent"
-                and isinstance(parsed_arguments, dict)
-                else {}
-            ),
             "arguments_digest": hashlib.sha256(arguments.encode()).hexdigest(),
             "manifest_revision": self.context.manifest_revision,
             "dispatch_started": False,

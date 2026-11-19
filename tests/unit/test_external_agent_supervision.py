@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy import select
-from tests.unit.test_external_agent_repository import connect, event, prepare
+from tests.unit.test_external_agent_repository import connect, event, prepare, receipt
 from tests.unit.test_external_agent_repository import native as native
 from tests.unit.test_external_agent_work import case as case
 from tests.unit.test_external_agent_writer_contract import owned
@@ -125,55 +125,6 @@ async def test_native_failure_without_transport_error_code_remains_readable(case
     assert view["error"] == error
 
 
-async def test_session_watch_response_uses_original_question_turn_and_connection(case):
-    env, _ = await owned(case)
-    env.service = ExternalAgentService(case.db, case.tasks)
-    observation, _ = await prepare(
-        env,
-        identity="session-watch",
-        action="watch",
-        command={"id": "session-watch", "action": "watch", "observation_scope": "session"},
-        native_execution_id=None,
-        lease=case.control.lease,
-    )
-    question = event(
-        "original-question",
-        operation=observation.id,
-        kind="question",
-        execution_id="question-turn",
-        payload={"native_request_id": "7", "connection_id": "original-native-connection"},
-    )
-    question["operation_state"].pop("execution_id")
-    await env.repository.receive_events(env.device["device_id"], [question])
-    permission = (await env.repository.event_page(observation.id, 0))[0]["permission_id"]
-    sent = []
-
-    class QuestionSocket(Socket):
-        async def send_json(self, value):
-            if value["action"] == "get":
-                # Reconnect reads the unconfirmed original watch back by its own ID only.
-                assert value["arguments"] == {"operation_id": observation.id}
-                connection.respond({"id": value["id"], "result": {"status": "not_found"}})
-                return
-            sent.append(value)
-            assert value["execution_id"] == "question-turn"
-            assert value["arguments"]["connection_id"] == "original-native-connection"
-            connection.respond(
-                {"id": value["id"], "result": {"status": "responded", "pending": False}}
-            )
-
-    connection = DeviceConnection(env.device["device_id"], QuestionSocket())
-    await connect(env, connection)
-    await env.service.execute(
-        {"action": "respond", "operation_id": observation.id, "permission_id": permission},
-        "answer-original-question",
-        env.source,
-    )
-    await env.service.drain()
-    assert len(sent) == 1
-    assert (await env.repository.operation(observation.id, env.actor)).native_execution_id is None
-
-
 @pytest.mark.parametrize("cleanup", [False, True])
 @pytest.mark.parametrize("device_online", [False, True])
 async def test_native_offline_detach_keeps_real_device_receipt_boundary(
@@ -189,28 +140,25 @@ async def test_native_offline_detach_keeps_real_device_receipt_boundary(
         native_execution_id=None,
         lease=case.control.lease,
     )
-    sent = []
+    sent, receipts = [], []
 
     class DetachSocket(Socket):
         async def send_json(self, value):
-            if value["action"] == "get":
-                assert value["arguments"] == {"operation_id": observation.id}
-                connection.respond({"id": value["id"], "result": {"status": "not_found"}})
-                return
+            # Protocol 5: connecting reads nothing back; only the detach is written.
             sent.append(value)
             assert value["action"] == "detach"
             assert value["arguments"]["operation_id"] == observation.id
-            connection.respond(
-                {
-                    "id": value["id"],
-                    "result": {
+            receipts.append(
+                receipt(
+                    value,
+                    {
                         "status": "detached",
                         "pending": False,
                         "detached": True,
                         "admitted": True,
                         "executed": True,
                     },
-                }
+                )
             )
 
     connection = DeviceConnection(env.device["device_id"], DetachSocket())
@@ -219,7 +167,7 @@ async def test_native_offline_detach_keeps_real_device_receipt_boundary(
             env.device["device_id"],
             connection,
             {
-                "protocol_version": 4,
+                "protocol_version": 5,
                 "instances": [
                     {
                         "id": "profile",
@@ -232,22 +180,33 @@ async def test_native_offline_detach_keeps_real_device_receipt_boundary(
         )
         assert not connection.instances
         result = await env.service.execute(
-            {"action": "prompt", "operation_id": observation.id, "prompt": "original"},
+            {"action": "prompt", "session_id": observation.session_id, "prompt": "original"},
             "unavailable-prompt",
             env.source,
         )
         assert result["error"] == "device_offline" and result["executed"] is False
         assert not sent
     if cleanup:
-        result = (await env.service.cleanup_tasks([observation.id], "cleanup-original"))[0]
+        [control] = await env.service.cleanup_tasks([observation.id], "cleanup-original")
+        if device_online:
+            # Registered before it is written; its receipt event settles the target.
+            # One registered attempt per connection.
+            assert (
+                control["operation_id"]
+                == f"cleanup-original:{observation.id}:detach:{connection.id}"
+            )
+            assert control["pending"] is True
+            assert (await env.repository.operation(observation.id, env.actor)).detached_at is None
     else:
         await env.service.execute(
             {"action": "detach", "operation_id": observation.id}, "detach-original", env.source
         )
-        await env.service.drain()
-        result = await env.service.execute(
-            {"action": "get", "operation_id": "detach-original"}, "read-detach", env.source
-        )
+        control = {"operation_id": "detach-original"}
+    await env.service.drain()
+    await env.service.receive_events(env.device["device_id"], receipts)
+    result = await env.service.execute(
+        {"action": "get", "operation_id": control["operation_id"]}, "read-detach", env.source
+    )
     original = await env.repository.operation(observation.id, env.actor)
     # Source cleanup still needs the device; an explicit detach ends the Work
     # relationship without it and says so, never claiming a native detach.
@@ -260,8 +219,8 @@ async def test_native_offline_detach_keeps_real_device_receipt_boundary(
     else:
         assert result["status"] == "released" and result["released_without_device"] is True
         assert result["executed"] is False
-        receipt = json.loads(original.result_json)
-        assert receipt["native_status"] == "unknown" and receipt["admitted"] is False
+        released = json.loads(original.result_json)
+        assert released["native_status"] == "unknown" and released["admitted"] is False
 
 
 async def test_get_persists_unknown_snapshot_instead_of_showing_old_running(native):
@@ -334,7 +293,8 @@ async def test_device_offline_is_view_fact_and_old_socket_cannot_disconnect_repl
     async with case.db.read_session() as reader:
         messages = list(await reader.scalars(select(inputs.c.payload_json)))
     facts = [json.loads(json.loads(value)["text"])["event"] for value in messages]
-    assert facts == ["device_connected", "device_connected", "device_offline"]
+    # Connecting is progress; going offline is the one wake fact.
+    assert facts == ["device_offline"]
     main_inputs = await case.control.take_inputs("transport-facts")
     assert any("device_offline" in message.content for message in main_inputs)
     assert any(operation.id in message.content for message in main_inputs)
@@ -390,10 +350,11 @@ async def test_native_gap_and_recovery_reach_original_main_across_owned_wait(
     ] == "delivered"
     control.current = current
     messages = await control.take_inputs("original-main-resume")
-    native_messages = [message for message in messages if "external_agent_event" in message.content]
-    assert len(native_messages) == 2
+    native_messages = [message for message in messages if "external_agent_card" in message.content]
+    # The lost stream is a wake fact; the recovery that follows is timeline progress.
+    assert len(native_messages) == 1
     facts = [json.loads(message.content.split("\n", 1)[1]) for message in native_messages]
-    assert [fact["payload"]["status"] for fact in facts] == ["unknown", "running"]
+    assert [fact["status"] for fact in facts] == ["unknown"]
     assert all(operation.id in message.content for message in native_messages)
     assert all(
         execution_key(env.session, "native-turn") in message.content for message in native_messages

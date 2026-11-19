@@ -1,0 +1,9 @@
+{"t": 0.002, "side": "gemini-0.68.0", "dir": "local", "method": "spawn", "pid": 20552}
+{"t": 0.002, "side": "gemini-0.68.0", "dir": "out", "method": "initialize", "id": 1, "protocolVersion": 1}
+{"t": 0.895, "side": "gemini-0.68.0", "dir": "in", "method": "initialize:result", "id": 1, "protocolVersion": 1}
+{"t": 0.895, "side": "gemini-0.68.0", "dir": "local", "method": "agentCapabilities", "caps": {"loadSession": true, "promptCapabilities": {"image": true, "audio": true, "embeddedContext": true}, "mcpCapabilities": {"http": true, "sse": true}}, "authMethods": ["oauth-personal", "gemini-api-key", "vertex-ai", "gateway"], "agentInfo": {"name": "gemini-cli", "title": "Gemini CLI", "version": "0.68.0"}}
+{"t": 0.895, "side": "gemini-0.68.0", "dir": "out", "method": "session/new", "id": 2}
+{"t": 1.001, "side": "gemini-0.68.0", "dir": "in", "method": "session/new:error", "id": 2, "code": -32000, "message": "Gemini API key is missing or not configured."}
+{"t": 1.001, "side": "harness", "dir": "note", "note": "session/new failed: session/new: -32000 Gemini API key is missing or not configured."}
+{"t": 1.014, "side": "gemini-0.68.0", "dir": "in", "method": "eof"}
+{"t": 1.014, "side": "gemini-0.68.0", "dir": "local", "method": "process_exit", "returncode": 143}

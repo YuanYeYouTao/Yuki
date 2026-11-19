@@ -81,6 +81,7 @@ class AgentEventModel(Base):
     __table_args__ = (
         UniqueConstraint("device_id", "event_id"),
         Index("ix_external_agent_events_operation", "operation_id", "id"),
+        Index("ix_external_agent_events_session", "instance_id", "native_session_id", "kind", "id"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -92,3 +93,7 @@ class AgentEventModel(Base):
     kind: Mapped[str] = mapped_column(String(32))
     payload_json: Mapped[str] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    # Resolved at receipt (migration 0159 backfilled stored facts): session-level reads
+    # such as unowned waits and observation timelines use the index, not JSON scans.
+    instance_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    native_session_id: Mapped[str | None] = mapped_column(Text, nullable=True)

@@ -2,7 +2,7 @@
 
 Yuki 继续运行在服务器，Codex、Claude Code 或 ACP Agent 留在用户电脑。电脑主动连接原 Yuki HTTP 服务上的 `/agents/v1/connect`，不用开放电脑入站端口，不上传原生登录文件，也不用在服务器安装 Codex。
 
-连接器是同仓独立包 [yuki-agent-connector](../../packages/yuki-agent-connector/pyproject.toml)，当前版本 `0.8.0`，设备协议为 `4`。手动安装需要 Python 3.12，配套桌面安装包随附独立运行时。它不安装 Bot，不运行另一个 Main／Work，不替原生 Agent 重建历史，也不直接发聊天消息。进度与问题进入原 Work，汇报仍通过 Main 的 `send`。
+连接器是同仓独立包 [yuki-agent-connector](../../packages/yuki-agent-connector/pyproject.toml)，当前版本 `0.9.0`，设备协议为 `5`（与 Bot 一次硬切：协议不同的一端在握手时被拒，连接器停在 `protocol_unsupported`，不循环重连；更新较旧的一端）。手动安装需要 Python 3.12，配套桌面安装包随附独立运行时。它不安装 Bot，不运行另一个 Main／Work，不替原生 Agent 重建历史，也不直接发聊天消息。Yuki 经子任务工具委派、观察或接手本机 Agent；只有需要决定的事实以卡片交给发起它的工作，汇报仍通过 Main 的 `send`。
 
 ## 本机完整访问
 
@@ -254,11 +254,11 @@ stdout 新增三种行，不改变状态行的形状：
 
 `list/get` 只查询；`watch` 仅指定 session 时持续监督该会话，指定 execution 时只监督该轮；`prompt/queue` 委托新输入；`steer` 纠偏指定活跃执行；`respond` 回答原问题；`cancel` 定向取消；`detach` 结束监督。detach、Work 完成、聊天重置和断网都不能顺手关闭用户整个 daemon 或其他会话。
 
-确认丢失后按原 operation／run 查询。unknown 不代表未执行，不换 ID 重发。所有改动类动作（prompt／queue／watch 与 steer／answer／cancel／detach）登记后立即返回，写出、设备回复及其结算由服务器承接，设备不读不答也不会占住 Yuki 的工作：prompt／queue／watch 的结果沿原 run 回报；控制动作先结算目标、再写自己的回执（中途重启时回执为空；目标仍未结算或发起它的 Work 仍未结束时，重连后按原 ID 读回并幂等重算，否则保持未知回执。设备 journal 对已开始、尚无结果的控制给出的占位不是回执，这条控制仍按未回复处理），然后作为私有输入告知发起它的 Work，Work 正等待该目标 run 时立即唤醒。设备重连后服务器只按原 ID 查询回执为空的操作，设备答 not_found 只是查证事实，不授权重发。设备离线或确认没有原记录时，显式 detach 只解除 Work 所属关系（回执 `released_without_device`），原生状态保持未知。
+确认丢失后按原 operation／run 查询。unknown 不代表未执行，不换 ID 重发。所有改动类动作登记后立即返回，写出由服务器承接，设备的回执作为可重传事件到达并在结算后 ACK（协议 5，见下文 0.9.0 一节），设备不读不答也不会占住 Yuki 的工作。设备离线或确认没有原记录时，显式释放只解除 Yuki 的所属关系（回执 `released_without_device`），原生状态保持未知。
 
 `list` 与会话级 `get`（不带 operation_id）是在线只读查询：连接器从本机记录读取会话目录和历史，不经过原生 SDK 会话或权限回调，但这次调用会等设备回复，设备连接断开时随之失败。所以“不占住工作”的承诺覆盖所有改动类动作和按原 operation 的查询，不覆盖这两种在线读。查证设备重连后的回执丢失只按原 ID 进行：控制动作只在目标仍未结算或发起它的 Work 仍未结束时读回，之后保持未知回执；设备对原 ID 答 not_found 只作为这条连接上的诊断显示，连接结束即失效。
 
-Claude（连接器 0.8.0 起）每条输入用自己的 UUID 写入并开启 `--replay-user-messages`；CLI 取用这条输入时回放同一 UUID，才算接纳，prompt 返回只表示已写入（`submitted`）。prompt 只接受空闲会话，会话正执行自己发起的回合（例如后台任务完成通知）或已有输入排队时直接返回冲突。`queue` 追加一条输入，落点由 CLI 决定：它在当前回合的下一个工具边界并入（回执 `disposition: merged_into_running_turn`，只告知这条追加的去向，不转交该回合的结果、问题或控制），或在回合结束后开启新回合（`started_new_turn`，归追加它的操作）；挂起的权限请求会让它一直排着。这不是 steer：Claude 不能把输入绑定到指定回合，也不能撤回排队中的单条输入（interrupt 只停止当前回合，排队输入随后仍会执行），对排队输入的 cancel 返回 `queued_input_not_withdrawable`。行为依据 2026-11-18 在隔离目录用 Claude Code 2.1.311 做的实测；连接器启动时读取 CLI 的 `-v`，低于 2.1.311 时不声明 prompt／queue（返回 `cli_outdated` 并说明原因），查询与控制照常。子代理的帧（带 `parent_tool_use_id`）不算 CLI 自行开启的回合。还排在 CLI 里的输入，其操作被 detach 后，它开启或并入的回合不归任何操作；回合的所有接收者被 detach 后，仍挂起的权限请求转为只含元信息的无主等待。写入的 prompt 并入 CLI 自行开启、无主的回合时，该回合余下的结果归这条 prompt 的操作（`disposition: merged_into_unowned_turn`）。
+Claude（连接器 0.8.0 起）每条输入用自己的 UUID 写入并开启 `--replay-user-messages`；CLI 取用这条输入时回放同一 UUID，才算接纳，prompt 返回只表示已写入（`submitted`）。prompt 只接受空闲会话，会话正执行自己发起的回合（例如后台任务完成通知）或已有输入排队时直接返回冲突。`queue` 追加一条输入，落点由 CLI 决定：它在当前回合的下一个工具边界并入（回执 `disposition: merged_into_running_turn`，只告知这条追加的去向，不转交该回合的结果、问题或控制），或在回合结束后开启新回合（`started_new_turn`，归追加它的操作）；挂起的权限请求会让它一直排着。这不是 steer：Claude 不能把输入绑定到指定回合，也不能撤回排队中的单条输入（interrupt 只停止当前回合，排队输入随后仍会执行），对排队输入的 cancel 返回 `queued_input_not_withdrawable`。行为依据 2026-11-18 在隔离目录用 Claude Code 2.1.311 做的实测；连接器启动时读取 CLI 的 `-v`，低于 2.1.311 时不声明 prompt／queue（返回 `cli_outdated` 并说明原因），查询与控制照常。子代理的帧（带 `parent_tool_use_id`）不算 CLI 自行开启的回合。还排在 CLI 里的输入，其操作被 detach 后，它开启或并入的回合不归任何操作；回合的所有接收者被 detach 后，仍挂起的权限请求转为只含元信息的无主等待。写入的 prompt 并入 CLI 自行开启、无主的回合时，该回合余下的结果归这条 prompt 的操作（`disposition: merged_into_unowned_turn`）。0.9.0 起，委派持有 SDK owner 期间 CLI 自行开启的回合归该委派的后续执行，只有 owner 被 detach 或释放之后才是无主（见下文 0.9.0 一节）。
 
 没有任何操作或 watch 接收的原生等待（例如 CLI 为已完成后台任务自行开启的回合请求 Bash 权限）只上传元信息：工具名、请求 ID、SDK owner 连接 ID 与时间，不上传命令、路径或正文。会话查询的 `pending_unowned_requests` 列出仍待处理者，仅该电脑所属人物族可见；只能以 deny 回答（内容未上传，盲目允许等于批准看不见的命令），允许须在本机 Claude 中处理。回答绑定原 SDK owner 与仍挂起的原 callback，只消费一次。重要事件先进入服务器原回执和 Work 私有输入，再确认设备事件；同一事件重传不重复产生输入。高频 token 不作为持久进度洪流，原生完整上下文不灌入 Yuki 的公共历史。
 
@@ -296,7 +296,26 @@ python -m pytest tests/integration/test_local_codex_bridge_live.py -q -s
 2026-10-23 在 Windows 上以 `codex-cli 0.163.0` 和连接器 `0.1.0` 完成一次真实模型全链路验收：原生审批经内部问题 ID 回答，隔离目录写入和读回各有一条成功命令回执，最终标记与文件内容一致，原执行终态进入原 Work 的 continuation；测试通过，耗时 34.98 秒。9 条重要事件中含 3 条工具回执，其中首次沙盒执行失败、随后精确授权后的写入与读回成功，失败事实仍保留。该次缓存字段未提供，记录为 unknown。测试只归档自己的新原生会话，未停止用户 daemon；这份记录不涵盖生产上线、真实 QQ 投递、Claude 付费执行或其他 OS 的实机服务验收。
 
 
-## 协议 4：原回执、持续监督与断流恢复
+## 0.9.0：委派、观察、范围与设备协议 5
+
+依据[第二阶段任务书](../architecture/Yuki-外部Agent委派与协作第二阶段任务书-2026-11-18.md)（§4、§15 的实验事实）。
+
+**回执走事件流（协议 5）**：改动类 Agent 命令（prompt、queue、watch、steer、respond、cancel、detach）不再以 RPC 应答；journal 完成命令时在同一事务写一条回执事件 `{"kind":"receipt","operation_id":<命令 id>,"payload":{"result":…},"sequence","operation_state"}`，随事件流重传到服务器在结算提交后 ACK 为止。重复的命令 ID 不重新执行，只重发已记录的回执。读命令（list、get）与设备资源命令（文件、终端、屏幕、浏览器）仍是 RPC。服务器不再在重连时读回未应答的操作，只在显式查询时按原 ID 查证。
+
+**能力**：实例按实际支持声明 `scope`、`observe`、`release`。
+
+**观察（observe）**：watch 带 `observation:"observe"` 时只看：转给它的权限与提问只上传元信息（`native_request_id`、工具名、`observed:true`），不登记为可由 Yuki 回答；以观察 watch 为目标的回答、输入、steer、cancel 返回 `observe_only`。用户终端里的 Claude 会话读实例自己 `CLAUDE_CONFIG_DIR` 下的会话注册表：等批准时上报一条只含元信息的权限事件，离开等待时 `permission_resolved`，回合结束 `execution_status:"completed"`，进程消失 `status:"unknown", reason:"not_live"`；不读也不答终端里的批准框。
+
+**范围（scope）**：prompt／queue 可带 `scope:{write_paths, network, commands}`，映射只收窄、映射不了就上报：
+- Claude：保留用户的设置来源，`add_dirs=write_paths`，并用 `settings` 的 `permissions.ask` 覆盖 Bash、Edit、Write、MultiEdit、NotebookEdit、WebFetch、WebSearch、SendMessage，让每次副作用调用都经连接器按范围自动批准或上报（用户已 allow 的规则在委派会话里不再越过范围）；SendMessage 从不自动批准；命令只在前缀匹配且不含 shell 控制符时算范围内，路径先解析再判断。MCP 工具不在 ask 清单内。进程开时没带范围、之后来了带范围的输入时返回 `scope_conflict`。
+- Codex：用 `thread/settings/update` 在 Yuki 首次接触线程时收窄为 `on-request`＋`workspaceWrite{writableRoots, networkAccess}`（审批人为用户），Yuki 的回合结束或释放时恢复原设置；接口不可用时返回 `scope_unsupported`，不在无范围的情况下执行。恢复发生在回合结束之后，紧接着开始的回合仍可能沿用收窄后的设置（竞态，见任务书 §16）。
+- ACP：带范围的会话显式 `session/set_mode` 到会询问的模式（`default`、`read-only`，范围覆盖整个 cwd 时才用 `workspace-write`），没有就返回 `scope_unsupported`；按 `request_permission` 的 kind、locations 与 rawInput 判断，范围内只选 Agent 给出的 allow 选项；文件与终端回调在范围外拒绝。
+
+**归属**：Codex 上 Yuki 的输入一律 `thread/queue/add`，按 `clientUserMessageId` 归属回合，不用 `turn/start`；只回答 Yuki 自己开启的回合的请求，用户 TUI 回合的请求只上传元信息（`answer_at:"native_terminal"`），回答返回 `not_owner`。ACP 没有接收者的权限请求只传元信息、只能 deny。Claude／ACP 在委派持有期间自行开启的回合（后台任务通知、ScheduleWakeup）以 `owner_operation_id`＋`followup_execution` 上报，服务器登记为该委派下的后续执行；owner 被 detach 后转为无主。
+
+**活会话与交接**：恢复一个连接器不持有的 Claude 会话前读会话注册表，活着就返回 `session_live_elsewhere`（可选 `fork`、`handoff`）；`fork:true` 以 `fork_session` 得到新会话，原会话不动。检测与打开之间有竞态，不对用户文件加锁。detach 带 `release:true` 时在回合边界关闭 Yuki 持有的原生进程（Claude SDK 客户端；ACP 会话或进程；Codex 只退订自己的客户端，从不动 daemon），用户可以 `claude --resume`／`codex resume` 接回而不分叉。
+
+## 协议 4：原回执、持续监督与断流恢复（历史基线）
 
 Bot 与 Connector 0.4.0 配套升级，WSS hello 使用 `protocol_version=4`。原 device、instance、
 session、execution、operation ID 和 journal 保留。旧 watch 在升级时明确保留单轮范围；新 watch

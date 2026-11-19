@@ -1,0 +1,173 @@
+{
+ "E1": {
+  "a_pending_approval_then_client_disconnects": {
+   "observed": "Turn stays inProgress, thread status active; app-server keeps the approval pending (no auto-decline). A client that later thread/resume's receives the SAME request id again immediately and may answer it; turn then completes.",
+   "verified_with": "codex-cli 0.169.0 own app-server (unix socket), gpt-6-luna low",
+   "artifact": "E1/frames-a.jsonl"
+  },
+  "a2_client_disconnects_before_approval": {
+   "observed": "Turn keeps running with zero clients; approval is raised with no subscriber and waits; delivered to the next client on thread/resume.",
+   "verified_with": "codex-cli 0.169.0 own app-server (unix socket), gpt-6-luna low",
+   "artifact": "E1/frames-a2.jsonl"
+  },
+  "b_queued_item_no_client": {
+   "observed": "thread/queue/add on an idle thread starts a turn at once; queue/add behind a running turn starts its own turn after it even when the queuing client unsubscribed+disconnected first. The queued turn's approval waits unanswered and is delivered to whoever resumes later. userMessage.clientId carries the queue clientUserMessageId.",
+   "verified_with": "codex-cli 0.169.0 own app-server (unix socket), gpt-6-luna low",
+   "artifact": "E1/frames-b.jsonl, E1/frames-b2.jsonl"
+  },
+  "c_two_clients_same_thread": {
+   "observed": "Every subscribed client (TUI via --remote and script) receives the server request, including for turns the OTHER client started. The script answered (decline) a request of a TUI-started turn: accepted, serverRequest/resolved sent, TUI approval prompt disappeared. app-server enforces no turn ownership; first answer wins; serverRequest/resolved reaches all subscribers.",
+   "verified_with": "codex-cli 0.169.0 own app-server (unix socket), gpt-6-luna low + codex TUI 0.169 --remote",
+   "artifact": "E2/frames.jsonl, E1/frames-d.jsonl"
+  },
+  "d_receiver_never_answers": {
+   "observed": "No timeout or reroute in 150 s; turn stays inProgress. A late joiner gets the same request id; answer from either resolves for both.",
+   "verified_with": "codex-cli 0.169.0 own app-server (unix socket), gpt-6-luna low",
+   "artifact": "E1/frames-d.jsonl",
+   "not_verified": "waits longer than 150 s (only 150 s observed)"
+  }
+ },
+ "E2": {
+  "idle_turn_start_by_second_client": {
+   "observed": "Script turn/start on the TUI's thread while idle runs and is shown in the TUI.",
+   "verified_with": "codex-cli 0.169.0 own app-server (unix socket), gpt-6-luna low + TUI",
+   "artifact": "E2/frames.jsonl"
+  },
+  "turn_start_while_turn_running": {
+   "observed": "turn/start while the TUI's turn is active is NOT rejected: it returns the ACTIVE turn id and its input is merged into that running turn (like steer).",
+   "verified_with": "codex-cli 0.169.0 own app-server (unix socket), gpt-6-luna low",
+   "artifact": "E2/frames.jsonl"
+  },
+  "steer": {
+   "observed": "turn/steer with correct expectedTurnId accepted and merged; wrong id rejected -32600 'expected active turn id `X` but found `Y`'.",
+   "verified_with": "codex-cli 0.169.0 own app-server (unix socket), gpt-6-luna low",
+   "artifact": "E2/frames.jsonl"
+  },
+  "queue": {
+   "observed": "thread/queue/add during the TUI turn starts its own turn right after it; TUI shows it.",
+   "verified_with": "codex-cli 0.169.0 own app-server (unix socket), gpt-6-luna low",
+   "artifact": "E2/frames.jsonl"
+  },
+  "both_see_each_other": {
+   "observed": "TUI showed script idle turn, steer and queued turn; script saw all TUI turns as notifications.",
+   "verified_with": "codex-cli 0.169.0 own app-server (unix socket), gpt-6-luna low + TUI",
+   "artifact": "E2/frames.jsonl"
+  },
+  "independent_writer_conflict": {
+   "observed": "--no-daemon TUI: banner 'This conversation is open in another app. Close it there and press R to continue here.' with r retry / f fork. Second app-server thread/resume: JSON-RPC -32600 'thread <id> already has an active writer'.",
+   "verified_with": "codex-cli 0.169.0 own app-server (unix socket), gpt-6-luna low",
+   "artifact": "E2/frames-conflict.jsonl"
+  },
+  "not_verified": "the user's real managed daemon (--managed-daemon) was not used by rule; a second own app-server stood in for it"
+ },
+ "E5": {
+  "capabilities": {
+   "observed": "claude-agent-acp: loadSession, sessionCapabilities list/resume/fork/close/delete/additionalDirectories, modes default/acceptEdits/plan/auto/bypassPermissions, _meta.claudeCode.promptQueueing. codex-acp 2.7.0: loadSession, list/resume/fork/close/delete/additionalDirectories, modes read-only/workspace-write/agent/agent-full-access. Gemini 0.68.0: loadSession only (no list/resume).",
+   "verified_with": [
+    "claude-agent-acp 0.108.0 (claude-agent-sdk 0.3.326, existing Claude login, ANTHROPIC_MODEL=haiku)",
+    "codex-acp 2.7.0 (@agentclientprotocol, existing Codex login, gpt-6-luna low)",
+    "Gemini CLI 0.68.0 --acp (no credentials)"
+   ],
+   "artifact": "E5/frames-init-*.jsonl, E5/frames-codex-acp-*.jsonl"
+  },
+  "mode_inherits_user_settings": {
+   "observed": "claude-agent-acp session/new currentModeId=auto (from the user's Claude settings); in that mode a Bash write OUTSIDE the cwd ran with NO session/request_permission. codex-acp default mode 'agent' approved an outside write through Codex's own guardian auto-review, again with no client permission request. Only after session/set_mode default / workspace-write did the client get request_permission.",
+   "verified_with": [
+    "claude-agent-acp 0.108.0 (claude-agent-sdk 0.3.326, existing Claude login, ANTHROPIC_MODEL=haiku)",
+    "codex-acp 2.7.0 (@agentclientprotocol, existing Codex login, gpt-6-luna low)"
+   ],
+   "artifact": "E5/frames-perm-mode-from-user-settings.jsonl, E5/frames-codex-acp-mode-agent-default.jsonl"
+  },
+  "unanswered_permission": {
+   "observed": "request_permission left unanswered 120 s: agent waits, prompt not finished. session/cancel: agent sends $/cancel_request for the pending request, marks the tool call failed, prompt returns stopReason cancelled at once (does not wait for the client's answer).",
+   "verified_with": "claude-agent-acp 0.108.0 (claude-agent-sdk 0.3.326, existing Claude login, ANTHROPIC_MODEL=haiku)",
+   "artifact": "E5/frames-perm-mode-default.jsonl"
+  },
+  "session_update_without_prompt": {
+   "observed": "After a prompt ends, a background Bash completion starts an agent-initiated turn: tool_call/tool_call_update/agent_message_chunk/usage_update arrive with no prompt in flight; a session/request_permission also arrived with no prompt in flight (bg2).",
+   "verified_with": "claude-agent-acp 0.108.0 (claude-agent-sdk 0.3.326, existing Claude login, ANTHROPIC_MODEL=haiku)",
+   "artifact": "E5/frames-bg-mode-default.jsonl, E5/frames-bg2-mode-default.jsonl"
+  },
+  "client_fs_terminal_callbacks": {
+   "observed": "Although the client advertised fs.read/writeTextFile and terminal, neither claude-agent-acp nor codex-acp ever called fs/write_text_file or terminal/create; files were written and commands run natively. Client-side rejection of those callbacks therefore had no effect (files created).",
+   "verified_with": [
+    "claude-agent-acp 0.108.0 (claude-agent-sdk 0.3.326, existing Claude login, ANTHROPIC_MODEL=haiku)",
+    "codex-acp 2.7.0 (@agentclientprotocol, existing Codex login, gpt-6-luna low)"
+   ],
+   "artifact": "E5/frames-fs-mode-default.jsonl, E5/frames-term-mode-default.jsonl, E5/frames-codex-acp-mode-workspace-write.jsonl",
+   "not_verified": "agent reaction to a rejected fs/terminal callback (no agent issued one); Gemini (which is documented to use client fs) could not run without credentials"
+  },
+  "kind_locations_for_scope": {
+   "observed": "claude-agent-acp: execute/edit tool calls carry 1 location plus rawInput.command or rawInput.file_path. codex-acp: execute permission has NO locations; only rawInput.command and rawInput.cwd. kind+locations alone is not enough for command scope; rawInput is agent-specific.",
+   "verified_with": [
+    "claude-agent-acp 0.108.0 (claude-agent-sdk 0.3.326, existing Claude login, ANTHROPIC_MODEL=haiku)",
+    "codex-acp 2.7.0 (@agentclientprotocol, existing Codex login, gpt-6-luna low)"
+   ],
+   "artifact": "E5/frames-perm-mode-default.jsonl, E5/frames-codex-acp-mode-workspace-write.jsonl"
+  },
+  "reject_option_semantics": {
+   "observed": "codex-acp's reject option is optionId 'cancel' (kind reject_once); choosing it ended the whole prompt with stopReason cancelled.",
+   "verified_with": "codex-acp 2.7.0 (@agentclientprotocol, existing Codex login, gpt-6-luna low)",
+   "artifact": "E5/frames-codex-acp-mode-workspace-write.jsonl"
+  },
+  "single_client_and_live_elsewhere": {
+   "observed": "stdio = one client per process. A second claude-agent-acp process session/load of a session live in the first process was ACCEPTED and could prompt; the first process never saw that turn; a later load showed only the first process's branch (second process's turn missing) = silent fork, same as Claude Code (G8).",
+   "verified_with": "claude-agent-acp 0.108.0 (claude-agent-sdk 0.3.326, existing Claude login, ANTHROPIC_MODEL=haiku)",
+   "artifact": "E5/frames-load-mode-default.jsonl"
+  },
+  "load_vs_resume": {
+   "observed": "After both processes exited: session/resume accepted with no history replay; session/load replayed history (2 user + 2 agent chunks) and the session continued.",
+   "verified_with": "claude-agent-acp 0.108.0 (claude-agent-sdk 0.3.326, existing Claude login, ANTHROPIC_MODEL=haiku)",
+   "artifact": "E5/frames-load-mode-default.jsonl"
+  },
+  "not_verified": "Gemini CLI prompting (session/new: -32000 'Gemini API key is missing or not configured.'); codex-acp unprompted turns and live-elsewhere load; @zed-industries/codex-acp 0.16.0 could not run current models"
+ },
+ "E6_codex_acp": {
+  "per_turn_policy_vs_permissive_config": {
+   "observed": "With app-server config approval_policy=never + sandbox dangerFullAccess (simulated), a turn/start carrying approvalPolicy on-request + sandboxPolicy workspaceWrite produced an approval request for an outside write; nothing written.",
+   "verified_with": "codex-cli 0.169.0 own app-server (unix socket), gpt-6-luna low",
+   "artifact": "E6/frames-codex.jsonl"
+  },
+  "policy_is_sticky_on_thread": {
+   "observed": "The per-turn policy persists as thread settings (thread/settings/updated; thread/resume reports on-request/workspaceWrite); the next turn WITHOUT policy still asked for approval. A later explicit dangerFullAccess turn wrote outside without asking.",
+   "verified_with": "codex-cli 0.169.0 own app-server (unix socket), gpt-6-luna low",
+   "artifact": "E6/frames-codex.jsonl"
+  },
+  "writable_roots": {
+   "observed": "Extra writableRoots entry is writable without approval; resume reports writableRoots excluding the cwd.",
+   "verified_with": "codex-cli 0.169.0 own app-server (unix socket), gpt-6-luna low",
+   "artifact": "E6/frames-codex-roots-and-leak.jsonl"
+  },
+  "scope_leaks_into_user_turns": {
+   "observed": "After the script's scoped turn (extra writable root), the user's TUI turn on the same thread (codex resume --remote, default flags) wrote into that extra root without approval; thread settings stayed the script's. Per-turn scope is NOT confined to Yuki's turns.",
+   "verified_with": "codex-cli 0.169.0 own app-server (unix socket), gpt-6-luna low + TUI",
+   "artifact": "E6/frames-codex-roots-and-leak.jsonl"
+  },
+  "acp": {
+   "observed": "ACP agents apply their own mode (inherited from user settings: claude 'auto'; codex-acp 'agent' with guardian auto-approval) before any client callback; scope must be set by session/set_mode at delegation, client callbacks are not used.",
+   "verified_with": [
+    "claude-agent-acp 0.108.0 (claude-agent-sdk 0.3.326, existing Claude login, ANTHROPIC_MODEL=haiku)",
+    "codex-acp 2.7.0 (@agentclientprotocol, existing Codex login, gpt-6-luna low)"
+   ],
+   "artifact": "E5/*"
+  },
+  "not_verified": "networkAccess=false enforcement; the real user ~/.codex/config.toml (has no approval/sandbox keys) was not modified"
+ },
+ "E8_codex_acp": {
+  "codex_release_and_tui_resume": {
+   "observed": "User TUI exits; script resumes and runs a turn on the same app-server, then unsubscribes+disconnects. TUI codex resume <id> --remote shows full history incl. the script turn, same thread id, no new thread, no conflict banner.",
+   "verified_with": "codex-cli 0.169.0 own app-server (unix socket), gpt-6-luna low + TUI",
+   "artifact": "E8/frames-codex.jsonl"
+  },
+  "codex_independent_writer_after_release": {
+   "observed": "Right after release the thread stays loaded on the daemon and an independent writer is rejected ('already has an active writer'); the daemon emits thread/closed (status notLoaded) 60 s after the last client unsubscribed, after which the thread is free.",
+   "verified_with": "codex-cli 0.169.0 own app-server (unix socket), gpt-6-luna low",
+   "artifact": "E8/frames-codex.jsonl, E8/frames-codex-unload.jsonl"
+  },
+  "acp_after_process_exit": {
+   "observed": "New claude-agent-acp process: session/load replays and continues; session/resume continues without replay. A turn written by a concurrent second process is absent (fork).",
+   "verified_with": "claude-agent-acp 0.108.0 (claude-agent-sdk 0.3.326, existing Claude login, ANTHROPIC_MODEL=haiku)",
+   "artifact": "E5/frames-load-mode-default.jsonl"
+  }
+ }
+}

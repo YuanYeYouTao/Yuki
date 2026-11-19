@@ -1,5 +1,9 @@
 # 架构文档入口
 
+2026-11-18 [外部 Agent 委派与协作第二阶段任务书](Yuki-外部Agent委派与协作第二阶段任务书-2026-11-18.md)：外部 Agent 作为 Yuki 的子 agent；删除 `use_coding_agent`／`get_coding_agents`、并入子任务工具（执行者参数），委派时固定权限范围，observe／delegate／takeover 三种关系，只按唤醒类事件唤醒与有界卡片，Codex 实时共享与 Claude 活会话保护、交接，前缀字节验收，不设并发上限；为待用户批准的计划，产品代码未改。
+
+2026-11-18 [外部 Agent 操作事件化与防卡改造任务书](Yuki-外部Agent操作事件化与防卡改造任务书-2026-11-18.md)（[Codex 复审原文](Codex-事件化任务书独立复审原文.md)）：第一阶段（防卡）已在 #637 交付，bot 先后以 `cf4dc201`、`ad59a686` 上线；连接器 0.8.0 随 Desktop #85 发布；第二阶段范围见上一条。
+
 2026-11-15 [Computer Use 任务书](Computer-Use任务书-2026-11-15.md)：computer 专用截图上限（P0）、可选 scale=1000 与落点回显、zoom、修饰键／三击／中键／按键重复、画出指针、route／hit、按窗口的无障碍元素、device_not_supported 事实原因与连接器 0.7.0 能力事实；用户已批准（§17 已定 1–12，含自己电脑上的 `paste`）；后端实现与 E2E 在 PR #622（合同版本 38、连接器 0.7.0），桌面端另一仓库实施，真机验收待授权。
 
 2026-11-14 [Yuki 自己的电脑任务书](Yuki自己的电脑任务书-2026-11-14.md)：整机快照与回滚、环境级与画面级自启动、闲置休眠；后端实现与 E2E 在 PR #621，Yuki-Desktop 快照面板另一仓库实施。
@@ -18,7 +22,7 @@ Mac 本地迁移、ARM64 Code Mode、完整数据恢复、两端 Connector 与 A
 
 代码删除与清理的固定基线计划见[任务书](Yuki-代码删除与清理任务书-2026-10-23.md)，B1–B6 的源码、验证和交付分别记录于[完整执行记录](../operations/code-deletion-20261023.md)；公开接口和连接器配套升级见[兼容说明](../upgrade-code-deletion-20261023.md)。
 
-本入口跟随 **4.0.0 待发布源码**；当前源码迁移 head 为 `0158`、Plugin API 为 `9.0`、个人 Client API revision 为 `12`、Code API 为 `yuki.codemode.api.v2`；Main 工具声明以当前完整 manifest 为准。#448 的共享读取、唯一索引与停写升级见[聊天记录读取](chat-history.md)，实施和交付分开记录于[实施记录](../operations/chat-history-448-implementation-20261022.md)。4.0.0 正式范围和完整 PR 清单仍见 [4.0.0 发布说明](../releases/v4.0.0.md)，前版迁移见 [4.0 升级指南](../upgrade-4.0.0.md)，两套完整评测见 [benchmark 报告](../benchmarks/2026-10-20-yuki-flash-1017/README.md)。#455 的 ACP 方向 A 复用现有个人身份、Main/Work/Social 和原回执，见[个人 API](client-api.md#acp-方向-a)与[原任务书两轮审查](Yuki-控制面重构与多客户端接入任务书-2026-10-14.md#10-455-两轮审查与实施)。前阶段见[299实施记录](Yuki-299与多平台解耦实施记录-2026-10-16.md)和[453实施与验证](Yuki-453人物解耦实施与验证-2026-10-17.md)。历史发行见[3.9.0 发布说明](../releases/v3.9.0.md)。
+本入口跟随 **4.0.0 待发布源码**；当前源码迁移 head 为 `0159`、Plugin API 为 `9.0`、个人 Client API revision 为 `12`、Code API 为 `yuki.codemode.api.v2`；Main 工具声明以当前完整 manifest 为准。#448 的共享读取、唯一索引与停写升级见[聊天记录读取](chat-history.md)，实施和交付分开记录于[实施记录](../operations/chat-history-448-implementation-20261022.md)。4.0.0 正式范围和完整 PR 清单仍见 [4.0.0 发布说明](../releases/v4.0.0.md)，前版迁移见 [4.0 升级指南](../upgrade-4.0.0.md)，两套完整评测见 [benchmark 报告](../benchmarks/2026-10-20-yuki-flash-1017/README.md)。#455 的 ACP 方向 A 复用现有个人身份、Main/Work/Social 和原回执，见[个人 API](client-api.md#acp-方向-a)与[原任务书两轮审查](Yuki-控制面重构与多客户端接入任务书-2026-10-14.md#10-455-两轮审查与实施)。前阶段见[299实施记录](Yuki-299与多平台解耦实施记录-2026-10-16.md)和[453实施与验证](Yuki-453人物解耦实施与验证-2026-10-17.md)。历史发行见[3.9.0 发布说明](../releases/v3.9.0.md)。
 
 提及定点查询、真实重名默认与迁移验证见[0142 修复记录](../operations/mention-resolution-0142.md)。其他 SQLite 热查询的原扫描证据见[10-20 只读审计](../operations/sqlite-query-scan-audit-20261020.md)，0143 修复、两轮终审与交付见[逐项修复记录](../operations/backend-audit-remediation-20261020.md)。
 

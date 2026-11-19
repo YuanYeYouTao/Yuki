@@ -119,6 +119,9 @@ class SubagentScheduler:
                                 ),
                                 work.c.state.in_(("queued", "running")),
                                 children.c.archived_at.is_(None),
+                                # A native executor runs delegation/observation records;
+                                # Main never starts for them.
+                                children.c.executor_json.is_(None),
                                 children.c.work_id.not_in(tuple(self.running)),
                             )
                             .order_by(work.c.updated)

@@ -24,11 +24,6 @@ from yuki.domain.conversations import ConversationScope, ScopeType
 from yuki.domain.messages import ChatTool, InboundMessage
 from yuki.domain.tool_actor import ToolActor
 from yuki.external_agents.errors import ExternalAgentArgumentError
-from yuki.external_agents.tools import (
-    EXTERNAL_AGENT_TOOLS,
-    coding_agent_arguments,
-    coding_agent_view,
-)
 from yuki.memory.authorized_scope import AuthorizedMemoryScope
 from yuki.memory.context import MemoryContextService
 from yuki.memory.enums import (
@@ -616,7 +611,6 @@ class AgentToolService:
                     ),
                 )
             )
-        from yuki.external_agents.tools import external_agent_tools
         from yuki.sandbox.client import sandbox_tools
         from yuki.social.tools import social_tool_definitions
         from yuki.workspace.service import workspace_tools
@@ -625,7 +619,6 @@ class AgentToolService:
             *tools,
             *social_tool_definitions(),
             *workspace_tools(),
-            *external_agent_tools(),
             *sandbox_tools(),
         )
 
@@ -660,19 +653,14 @@ class AgentToolService:
             try:
                 from yuki.social.tools import SOCIAL_TOOL_NAMES
 
-                if name in SANDBOX_TOOLS or name in EXTERNAL_AGENT_TOOLS:
+                if name in SANDBOX_TOOLS:
                     from yuki.capabilities.invocation import current_invocation
 
                     invocation = current_invocation.get()
                     if runtime.tools_closed:
                         return self._result(error="permission_denied", detail="本轮未授权执行操作")
                     if invocation is None:
-                        return self._result(
-                            error="external_agent_unavailable"
-                            if name in EXTERNAL_AGENT_TOOLS
-                            else "sandbox_unavailable",
-                            detail="执行服务未连接",
-                        )
+                        return self._result(error="sandbox_unavailable", detail="执行服务未连接")
                     from hashlib import sha256
 
                     request_id = sha256(
@@ -711,25 +699,15 @@ class AgentToolService:
                         return await self._screen_action(name, arguments, request_id, source)
                     view: Callable[[dict[str, Any]], dict[str, Any]] | None
                     try:
-                        if name in EXTERNAL_AGENT_TOOLS:
-                            execution_result = await self.external_agent_service.execute(
-                                coding_agent_arguments(name, arguments),
-                                request_id=request_id,
-                                source=source,
-                            )
-                            view = coding_agent_view
-                        else:
-                            from yuki.sandbox.client import MODEL_TOOL_RPC_METHODS
+                        from yuki.sandbox.client import MODEL_TOOL_RPC_METHODS
 
-                            execution_result = await self.sandbox_client.execute(
-                                MODEL_TOOL_RPC_METHODS[name],
-                                command_arguments(name, arguments),
-                                request_id=request_id,
-                                source=source,
-                            )
-                            view = None if name == "get_environment" else command_view
-                    except ExternalAgentArgumentError:
-                        raise
+                        execution_result = await self.sandbox_client.execute(
+                            MODEL_TOOL_RPC_METHODS[name],
+                            command_arguments(name, arguments),
+                            request_id=request_id,
+                            source=source,
+                        )
+                        view = None if name == "get_environment" else command_view
                     except ValueError as exc:
                         from yuki.persistence.database import write_failure_phase
 
@@ -1767,8 +1745,10 @@ class AgentToolService:
         from yuki.sandbox.client import MODEL_TOOL_RPC_METHODS
 
         lifecycle = name == "computer" and arguments["action"] in LIFECYCLE_ACTIONS
-        if "device" in arguments and name == "computer" and (
-            arguments["action"] in OWN_COMPUTER_ACTIONS
+        if (
+            "device" in arguments
+            and name == "computer"
+            and (arguments["action"] in OWN_COMPUTER_ACTIONS)
         ):
             message = "paste、wake、sleep、snapshot、restore 只作用于 Yuki 自己的电脑，省略 device"
             return self._result(

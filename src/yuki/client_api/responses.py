@@ -121,6 +121,35 @@ class WorkWait(BaseModel):
     conditions: list[WaitCondition]
 
 
+class NativeRequest(PublicProjection):
+    permission_id: str
+    kind: str
+    operation_id: str | None = None
+    received_at: str | None = None
+    # "yuki_or_user": the owner (Yuki or the device's person) may answer;
+    # "native_terminal": an observed session's request, handled in the terminal only.
+    answer_at: str
+
+
+class DelegationExecutor(PublicProjection):
+    device_id: str | None = None
+    agent: str | None = None
+    label: str | None = None
+    session: str | None = None
+
+
+class Delegation(PublicProjection):
+    """A Work executed by a native agent on a device (Client API 14)."""
+
+    id: str
+    executor: DelegationExecutor
+    relationship: str
+    state: str
+    status_line: str
+    pending: list[NativeRequest]
+    last_event_at: str | None = None
+
+
 class Work(PublicProjection):
     work_id: str
     conversation_id: str
@@ -143,6 +172,8 @@ class Work(PublicProjection):
     steps_token: str | None = None
     wait: WorkWait | None = None
     help_requested: bool | None = None
+    parent_work_id: str | None = None
+    delegation: Delegation | None = None
 
 
 class Home(PublicProjection):
@@ -390,3 +421,15 @@ class WorkCancelReceipt(PublicProjection):
     state: str
     revision: int
     replay: bool
+
+
+class NativeAnswerReceipt(PublicProjection):
+    work_id: str
+    permission_id: str
+    operation_id: str
+    status: str
+    replay: bool = False
+
+
+class DelegationPage(PublicProjection):
+    delegations: list[Work]

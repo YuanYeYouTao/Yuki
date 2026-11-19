@@ -40,6 +40,7 @@ from yuki.plugin_host.db_models import (
     PluginBackgroundTargetGrantModel,
     PluginInstallationModel,
 )
+from yuki.runtime.subagent_schema import children
 from yuki.runtime.work_repository import WorkConflict, WorkLease, WorkRepository, encode_json
 from yuki.runtime.work_schema_v1 import inputs, work
 from yuki.runtime.work_wait_schema import waits
@@ -294,11 +295,14 @@ class WorkWaitRepository:
                 await self.repository.set_accepted_control(
                     session, lease, work_id, {**accepted, "wait_id": identity}
                 )
+            # Only wake-class facts (requests, terminal, lost executor) that arrived
+            # before this wait are signalled again; progress never was an input.
             pending_runs = await session.scalars(
                 select(func.json_extract(inputs.c.payload_json, "$.external_run_id")).where(
                     inputs.c.work_id == work_id,
                     inputs.c.state == "pending",
                     func.json_extract(inputs.c.payload_json, "$.external_run_id").is_not(None),
+                    func.json_extract(inputs.c.payload_json, "$.wake") == 1,
                 )
             )
             for pending_run in pending_runs:
@@ -390,6 +394,30 @@ class WorkWaitRepository:
             ).mappings()
         )
         return rows == prepared.bindings
+
+    @staticmethod
+    async def wake_for_request(session: AsyncSession, work_id: str) -> None:
+        """A native question or permission is the input a Work waiting for its user needs.
+
+        Same writer effect as a child's question to its parent: the waiting decision
+        is withdrawn and the Work is queued to read the card.
+        """
+        await session.execute(
+            update(waits)
+            .where(waits.c.work_id == work_id, waits.c.status == "active")
+            .values(status="cancelled", updated=time.time())
+        )
+        await session.execute(
+            update(work)
+            .where(work.c.id == work_id, work.c.state == "waiting_user")
+            .values(
+                state="queued",
+                reason="external_agent_requires_action",
+                checkpoint_json=func.json_remove(work.c.checkpoint_json, "$.accepted_control"),
+                revision=work.c.revision + 1,
+                updated=time.time(),
+            )
+        )
 
     async def signal_external_action(
         self, session: AsyncSession, work_id: str, run_id: str, *, prepared: PreparedWaitAction
@@ -865,6 +893,11 @@ class WorkWaitRepository:
                 func.json_extract(work.c.source_json, "$.origin") == "user_message",
                 func.json_type(work.c.source_json, "$.trigger_event_id") == "integer",
                 same_person_condition(actor, event.author_person_id),
+                # A delegation waiting on a native request has no Yuki loop to read a
+                # reply; the person's message belongs to the Work that owns it.
+                ~select(children.c.work_id)
+                .where(children.c.work_id == work.c.id, children.c.executor_json.is_not(None))
+                .exists(),
             )
             if event.reply_to_event_id is not None:
                 query = query.where(

@@ -43,7 +43,7 @@ async def setup_device(database, tmp_path):
         device["device_id"],
         connection,
         {
-            "protocol_version": 4,
+            "protocol_version": 5,
             "instances": [],
             "device_capabilities": {"full_access": True},
         },

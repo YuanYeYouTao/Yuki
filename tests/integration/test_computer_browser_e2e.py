@@ -14,7 +14,7 @@ contract against a local fixture site:
 * C7–C9: a human takes the screen mid-loop, the next input is ``control_held``,
   Yuki waits on the original ``wait-control`` run, the human returns and Yuki
   continues; every input has one durable receipt and no lease is left behind.
-* C1/H1: the frozen manifest is the 29 tools; Work steps project as 操作電腦/使用瀏覽器.
+* C1/H1: the frozen manifest is the 27 tools; Work steps project as 操作電腦/使用瀏覽器.
 
 Artifacts: ``test-results/computer-browser/`` — manifest, every frame, the
 model requests (with replaced-image texts), the site's input log, the lease
@@ -286,7 +286,7 @@ async def test_sandbox_computer_and_browser_drive_real_desktop_end_to_end(tmp_pa
             conversation_proactive_wakeup_enabled=False,
             conversation_autonomous_enabled=False,
             asr_enabled=False,
-            web_mode="tavily",  # declared (29 tools); never called offline
+            web_mode="tavily",  # declared (27 tools); never called offline
             tavily_api_key="offline-fixture",
         ),
         database=database,
@@ -487,7 +487,7 @@ async def test_sandbox_computer_and_browser_drive_real_desktop_end_to_end(tmp_pa
         collected[name] for name in ("receipts", "downloads", "frames", "requests", "steps")
     )
     # C1: the 29-tool contract.
-    assert len(manifest) == 29 and {"computer", "browser"} <= set(manifest)
+    assert len(manifest) == 27 and {"computer", "browser"} <= set(manifest)
     # B3: Enter submitted the multi-step form with the selected option and Unicode text.
     (submit,) = site.posts("/submit")
     assert "Pro" in submit["body"] and "y%40e.test" in submit["body"], submit

@@ -10,6 +10,7 @@ from yuki.domain.messages import ChatResponse, ToolCall, ToolFunction
 from yuki.external_agents.db_models import AgentEventModel, AgentOperationModel
 from yuki.persistence.models import ChatEventModel
 from yuki.runtime.work_activation import current_work_control
+from yuki.runtime.work_repository import TERMINAL
 from yuki.runtime.work_schema_v1 import inputs, work
 from yuki.sandbox.db_models import SandboxTaskRunModel
 from yuki.social.db_models import SocialOperationModel
@@ -23,14 +24,21 @@ def call(name, arguments):
     )
 
 
+def target_call(target, record=None, **extra):
+    """The App's rendered selection, called as the one subtask tool it names."""
+    arguments = tool_arguments(target, record)
+    return call(arguments.pop("tool"), {**arguments, **extra})
+
+
 class DesktopNativeWorkScenario:
-    """Choose tools from the original App input and wait for its actual native run."""
+    """Choose tools from the original App input and wait for its actual delegation."""
 
     def __init__(self, container):
         self.container = container
         self.marker = None
         self.event_id = None
         self.work_id = None
+        self.delegation_id = None
         self.operation_id = None
         self.finish_phase = 0
         self.responded = set()
@@ -86,9 +94,7 @@ class DesktopNativeWorkScenario:
             if target.intent == "respond" and target.operation_id == self.operation_id:
                 if original.id not in self.responded:
                     self.responded.add(original.id)
-                    arguments = tool_arguments(target)
-                    arguments.pop("device", None)
-                    return call("use_coding_agent", arguments)
+                    return target_call(target, self.delegation_id, text=text)
                 if control.current is None:
                     return ChatResponse(content="原問題回覆已提交。", latency_seconds=0)
             elif self.marker not in text or target.intent != "prompt":
@@ -100,31 +106,33 @@ class DesktopNativeWorkScenario:
                 if control.current is None:
                     return call("manage_task", {"action": "start", "goal": self.marker})
                 self.work_id = control.current["id"]
+                self.delegation_id = await reader.scalar(
+                    select(work.c.id).where(work.c.parent_work_id == self.work_id)
+                )
+                if self.delegation_id is None:
+                    return target_call(target, goal=text)
                 operation = (
                     await reader.scalars(
                         select(AgentOperationModel).where(
-                            AgentOperationModel.work_id == self.work_id,
+                            AgentOperationModel.work_id == self.delegation_id,
                             AgentOperationModel.action == "prompt",
                         )
                     )
-                ).one_or_none()
-                if operation is None:
-                    arguments = tool_arguments(target)
-                    arguments.pop("device", None)
-                    return call("use_coding_agent", {**arguments, "prompt": text})
+                ).one()
                 self.operation_id = operation.id
             assert operation is not None and operation.run_id is not None
             task = await reader.get(SandboxTaskRunModel, operation.id)
             assert task is not None
-            if task.status != "completed":
-                return call(
-                    "wait",
-                    {"for": [{"run": task.run_id}]},
-                )
+            record = await reader.scalar(
+                select(work.c.state).where(work.c.id == self.delegation_id)
+            )
+            if record not in TERMINAL:
+                return call("wait", {"for": [{"run": self.delegation_id}]})
+            assert task.status == "completed"
             completion = json.loads(task.completion_json)
         self.finish_phase += 1
         if self.finish_phase == 1:
-            return call("get_coding_agents", {"target": {"operation_id": operation.id}})
+            return call("get_tasks", {"id": self.delegation_id})
         if self.finish_phase == 2:
             assert operation.id in request.messages[-1].content
             return call(
@@ -162,12 +170,21 @@ class DesktopNativeWorkScenario:
                     (
                         await reader.scalars(
                             select(AgentOperationModel).where(
-                                AgentOperationModel.work_id == self.work_id
+                                AgentOperationModel.work_id == self.delegation_id
                             )
                         )
                     ).all()
-                    if self.work_id
+                    if self.delegation_id
                     else []
+                )
+                delegation = (
+                    (
+                        (await reader.execute(select(work).where(work.c.id == self.delegation_id)))
+                        .mappings()
+                        .one()
+                    )
+                    if self.delegation_id
+                    else None
                 )
                 current = (
                     (
@@ -253,6 +270,7 @@ class DesktopNativeWorkScenario:
             return {
                 "event_id": self.event_id,
                 "work": dict(current) if current else None,
+                "delegation": dict(delegation) if delegation else None,
                 "operations": operations,
                 "events": events,
                 "deliveries": deliveries,

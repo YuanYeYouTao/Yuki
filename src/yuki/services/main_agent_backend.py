@@ -783,7 +783,7 @@ class MainAgentBackend(AgentToolBackend):
 _CLIENT_ERROR_MESSAGES = {
     "not_found": (
         "目标不存在或不属于本人（例如设备 ID 有误），没有产生效果；"
-        "需要本人电脑的设备 ID 时，先用 get_coding_agents 列出设备。"
+        "需要本人电脑的设备 ID 时，先用 get_tasks(agents={}) 列出设备。"
     ),
     "unauthenticated": (
         "这台电脑的连接凭据已失效，没有产生效果；需要本人在 Yuki Desktop 中重新连接。"

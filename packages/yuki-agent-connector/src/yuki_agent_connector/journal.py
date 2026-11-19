@@ -7,11 +7,28 @@ import json
 import sqlite3
 from pathlib import Path
 from typing import Any, cast
+from uuid import uuid4
 
 from .config import private_path
 
 OBSERVED_ACTIONS = {"watch", "prompt", "queue", "exec"}
 TERMINAL = {"completed", "succeeded", "failed", "cancelled", "detached"}
+# Protocol 5 (task book §4.10): these agent commands are answered by a receipt event
+# written in the same transaction as their outcome and retransmitted until ACK.
+RECEIPT_ACTIONS = {"prompt", "queue", "watch", "steer", "respond", "cancel", "detach"}
+
+
+def receipted(command: dict[str, Any]) -> bool:
+    return (
+        bool(command.get("instance_id"))
+        and not command.get("resource")
+        and command["action"] in RECEIPT_ACTIONS
+    )
+
+
+def followup_id(owner_operation: str, execution: str) -> str:
+    """The server's ID for a turn the native agent started inside a held owner (§4.8)."""
+    return f"followup:{owner_operation}:{execution}"[:256]
 
 
 def encode(value: Any) -> str:
@@ -240,7 +257,9 @@ class Journal:
             state, result = self.operation(key), self._response_state(response)
             # Reserve from the same durable order as events. Responses need an
             # order too, including admission arriving after an early milestone.
-            sequence = self._next_sequence(key)
+            # A receipted command's outcome takes the sequence of its receipt event.
+            receipt = self._reserve() if receipted(command) else None
+            sequence = receipt[1] if receipt else self._next_sequence(key)
             if state.get("state_sequence", 0) and state.get("reason") != (
                 "original_dispatch_not_confirmed"
             ):
@@ -276,6 +295,52 @@ class Journal:
                         "UPDATE operations SET receipt=?, observing=0 WHERE id=?",
                         (encode(terminal), original),
                     )
+            if receipt is not None:
+                self._write_receipt(receipt, command, self.operation(key))
+
+    def _reserve(self) -> tuple[str, int]:
+        identity = str(uuid4())
+        inserted = self.db.execute("INSERT INTO events(id, event) VALUES (?, '{}')", (identity,))
+        return identity, cast(int, inserted.lastrowid)
+
+    def _write_receipt(
+        self,
+        reserved: tuple[str, int],
+        command: dict[str, Any],
+        result: dict[str, Any],
+        *,
+        projected: bool = True,
+    ) -> None:
+        identity, sequence = reserved
+        event: dict[str, Any] = {
+            "type": "event",
+            "event_id": identity,
+            "instance_id": command["instance_id"],
+            "kind": "receipt",
+            "operation_id": command["id"],
+            "payload": {"result": result},
+            "sequence": sequence,
+        }
+        if projected:
+            event["operation_state"] = result
+        self.db.execute("UPDATE events SET event=? WHERE sequence=?", (encode(event), sequence))
+
+    def resend_receipt(self, key: str) -> None:
+        """A duplicate command: its recorded outcome as a new ordered receipt."""
+        with self.db:
+            self.db.execute("BEGIN IMMEDIATE")
+            command = json.loads(
+                self.db.execute("SELECT command FROM operations WHERE id=?", (key,)).fetchone()[0]
+            )
+            reserved = self._reserve()
+            state = {**self.operation(key), "state_sequence": reserved[1]}
+            self.db.execute("UPDATE operations SET receipt=? WHERE id=?", (encode(state), key))
+            self._write_receipt(reserved, command, state)
+
+    def refuse(self, command: dict[str, Any], result: dict[str, Any]) -> None:
+        """A refusal never recorded as an operation (for example a reused ID)."""
+        with self.db:
+            self._write_receipt(self._reserve(), command, result, projected=False)
 
     def operation(self, key: str) -> dict[str, Any]:
         row = self.db.execute("SELECT receipt FROM operations WHERE id=?", (key,)).fetchone()
@@ -321,6 +386,29 @@ class Journal:
     def _project_event(self, event: dict[str, Any], sequence: int) -> None:
         event["sequence"] = sequence
         key = event.get("operation_id")
+        if key is None and event.get("owner_operation_id") and event.get("followup_execution"):
+            key = followup_id(event["owner_operation_id"], event["followup_execution"])
+            # Its own projection, registered by its first event like the server's.
+            followup = {
+                "id": key,
+                "instance_id": event.get("instance_id"),
+                "action": "followup",
+                "session_id": event.get("session_id"),
+                "execution_id": event["followup_execution"],
+                "arguments": {"owner_operation_id": event["owner_operation_id"]},
+            }
+            initial = {
+                "status": "running",
+                "pending": True,
+                "session_id": event.get("session_id"),
+                "execution_id": event["followup_execution"],
+                "state_sequence": 0,
+            }
+            self.db.execute(
+                "INSERT OR IGNORE INTO operations(id, command, observing, receipt) "
+                "VALUES (?, ?, 0, ?)",
+                (key, encode(followup), encode(initial)),
+            )
         if key is None:
             return
         row = self.db.execute(

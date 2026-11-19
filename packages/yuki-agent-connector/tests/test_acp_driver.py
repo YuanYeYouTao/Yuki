@@ -110,19 +110,39 @@ async def test_real_acp_stdio_permissions_local_files_terminal_and_negotiation(
                 "arguments": {"operation_id": "detached-op"},
             }
         )
+        # No receiver is left: only metadata, and only a denial is accepted (§15 E5).
+        kind, unowned = await asyncio.wait_for(events.get(), 3)
+        assert kind == "permission" and unowned["operation_id"] is None
+        assert unowned["payload"]["unowned"] is True and "tool" not in unowned["payload"]
+        answer = {
+            "action": "respond",
+            "session_id": second["session_id"],
+            "execution_id": second["execution_id"],
+            "arguments": {
+                "connection_id": driver.owner,
+                "permission_id": permission["payload"]["native_request_id"],
+            },
+        }
+        with pytest.raises(DriverError, match="only be denied"):
+            await driver.execute(
+                {
+                    **answer,
+                    "id": "allow-detached",
+                    "arguments": {**answer["arguments"], "option_id": "allow-original"},
+                }
+            )
         await driver.execute(
             {
-                "id": "answer-detached",
-                "action": "respond",
-                "session_id": second["session_id"],
-                "execution_id": second["execution_id"],
+                **answer,
+                "id": "deny-detached",
                 "arguments": {
-                    "connection_id": driver.owner,
-                    "permission_id": permission["payload"]["native_request_id"],
-                    "option_id": "allow-original",
+                    **answer["arguments"],
+                    "response": {"outcome": {"outcome": "cancelled"}},
                 },
             }
         )
+        kind, resolved = await asyncio.wait_for(events.get(), 3)
+        assert kind == "progress" and resolved["payload"]["permission_resolved"]
         kind, finished = await asyncio.wait_for(events.get(), 5)
         assert kind == "work_finished" and finished["operation_id"] == "detached-op"
         with pytest.raises(DriverError, match="precise steer/queue"):

@@ -509,9 +509,10 @@ def test_code_mode_wrappers_and_declarations_keep_current_names():
     # F8: wrapper names stay the deployed tool names.
     assert wrappers == sorted((f"yuki_{tool.name}", tool.name) for tool in declared)
     # F9: the history map only reads originals; none of its names is declared.
-    from yuki.external_agents.tools import external_agent_tools
+    from yuki.runtime.subagent_tools import subagent_tools
+    from yuki.runtime.work_control import work_control_tools
 
-    every = {tool.name for tool in (*declared, *external_agent_tools())}
+    every = {tool.name for tool in (*declared, *work_control_tools(), *subagent_tools())}
     assert not set(RECORDED_TOOL_NAMES) & every
     # Each original name of these tools reads as a declared successor.
     for original in (
@@ -522,7 +523,10 @@ def test_code_mode_wrappers_and_declarations_keep_current_names():
         "workspace_inspect",
         "inspect_conversation_attachment",
         "save_conversation_attachment_to_workspace",
-        "external_agent",
     ):
         assert RECORDED_TOOL_NAMES[original] in every
+    # ``external_agent`` reads as the retired ``use_coding_agent`` (no successor):
+    # native agents are now subtask executors, so neither name is declared.
+    assert RECORDED_TOOL_NAMES["external_agent"] == "use_coding_agent"
+    assert not {"use_coding_agent", "get_coding_agents"} & every
     assert "environment_service" not in {*RECORDED_TOOL_NAMES, *every}
