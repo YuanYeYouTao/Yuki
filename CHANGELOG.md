@@ -2,6 +2,9 @@
 
 ## 未发布
 
+- 本机连接器 **0.9.1**：委派范围的 `commands` 含 `*` 时表示所有命令，带 `&&`、管道等 shell 控制符的命令也在范围内，不再逐条上报；不放宽 `write_paths` 与 `network`。此前 `*` 被当作字面前缀，导致授予“所有命令”的委派每条 Bash 都回到父任务确认。
+- Local connector **0.9.1**: `*` in a delegation scope's `commands` now grants every command, including ones with shell control such as `&&` or pipes, instead of being read as a literal prefix that matched nothing; `write_paths` and `network` are unchanged.
+
 - 提示里的 Yuki 自己按当前角色名显示：群友原生 @ 她时正文渲染为 `@Yuki`，提及字段保留原显示名（如 `Yuki(显示为Agent)`），她自己发出的消息署名也用角色名，不再是群名片或兜底的 “Agent”。修复上下文压缩后自己的发言所剩无几时，她认不出 “@Agent” 是在叫自己而连续不回复的问题。其他成员、同名成员与普通 `@文字` 照原快照；入账数据不变。
 - Yuki herself now reads under the current character name in prompts: a native @ of her renders as `@Yuki` with the original display name kept in the mention field (e.g. `Yuki(显示为Agent)`), and her own lines are signed with that name instead of the group card or the fallback "Agent". This fixes her going silent after a compaction left few of her own lines, when she no longer recognised "@Agent" as herself. Other members, same-named members and literal `@text` keep their snapshots; stored events are unchanged.
 

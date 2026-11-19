@@ -40,7 +40,12 @@ class Scope:
     def runs(self, command: str | list[str]) -> bool:
         text = command if isinstance(command, str) else shlex.join(command)
         text = text.strip()
-        if not text or _SHELL_CONTROL & set(text):
+        if not text:
+            return False
+        # "*" is the owner granting every command, shell control included.
+        if "*" in self.commands:
+            return True
+        if _SHELL_CONTROL & set(text):
             return False
         return any(text == prefix or text.startswith(f"{prefix} ") for prefix in self.commands)
 
