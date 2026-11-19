@@ -472,8 +472,8 @@ Bot 在自动化运行中途重启，该次运行丢失（协调者转述的运�
 | P5 观察通知 | 路由者的通知激活：system、tools 与之前的请求相同 |
 | P6 并发 | 两个委派交错完成：两次唤醒的卡片分别只出现在各自新增部分，且两次运行的卡片编码字节确定（同输入同字节） |
 
-- 编码器：生产的 Claude Messages 与 Chat Completions 编码器（沿第一阶段 §21.8）。OpenAI Responses 由 runner 生成 continuation 形态，第一阶段没覆盖；本阶段尝试用能产生该形态的模型替身补上，做不到就如实写明。
-- 产物：`test-results/external-agent-prompt-prefix/<protocol>.json`，逐条哈希与共同前缀长度。
+- 编码器：P1–P6 均采集实际 Main 请求，分别用生产 Claude Messages、Chat Completions、OpenAI Responses 编码器比较。Responses 使用独立的 Responses profile，模型替身通过生产解析器返回原生 function_call，runner 在后续请求中携带 continuation 和 function_call_output。
+- 产物：`test-results/external-agent-prompt-prefix/` 下，`<protocol>.json` 记录 P1–P4 的请求哈希与唤醒共同前缀长度；`observation/<protocol>.json` 对照 P5 路由与通知请求；`concurrent/<protocol>.json` 记录 P6 两次完成的操作 ID、卡片哈希、唤醒位置、共同前缀长度及逐项哈希。
 - **命中率**：上线前后各记录一次生产 chat_agent 的上游真实 usage 命中率，只作记录，不作门槛（D4、`development-contract.md` 第 81 行"缓存使用上游真实 usage 核对"）。
 
 ---
@@ -746,7 +746,7 @@ Bot 在自动化运行中途重启，该次运行丢失（协调者转述的运�
 - **协议 5 与跨版本**：见 §7.2 实施注。
 - **E9／Q6**：前提不成立，不改准入排序（§15.2 第 10 条），交用户决定。
 - **E4／Q5**：只记录。
-- **前缀字节**：§5.2 的 P1–P4 进 E2E（`tests/integration/test_external_agent_prompt_prefix_e2e.py`，Claude Messages 与 Chat Completions）；P5（观察通知）、P6（两个委派交错完成）与 OpenAI Responses 没有覆盖。P6 中"同输入同字节"由单元级 F17 覆盖。
+- **前缀字节**：§5.2 的 P1–P6 已纳入 `tests/integration/test_external_agent_prompt_prefix_e2e.py` 的三协议矩阵。P5 从观察会话的权限事件触发通知，对照原路由请求的 system 与 tools。P6 在同一父 Work 下派发两个委派，后派发的先完成，父 Work 再次等待后接收另一个结果；逐次核对新增部分与持久回执卡片，并用原输入重跑生产卡片编码器核对字节。
 - **Desktop**：DT5 的 `plugin`／`retired` 分类没有做（服务端 kind 列举里没有这两个值）。
 - **Codex 共享回合（已知限制，验收 P1）**：用户在 TUI 里 steer 进 Yuki 的回合、或排队项与 Yuki 的排队项被 Codex 合并成一轮时，这一轮整体归 Yuki，其中由用户输入引出的审批也会作为 Yuki 回合的请求出现（范围内由连接器按范围裁决，范围外交给 Yuki 或用户）。app-server 不按输入区分请求来源，连接器无法逐个请求归属；记录为风险，不另建机制。
 
@@ -829,7 +829,6 @@ Bot 在自动化运行中途重启，该次运行丢失（协调者转述的运�
 
 ### 16.8 没有完成的部分
 
-- §5.2 P5、P6 与 OpenAI Responses 的前缀字节场景（§16.2）。
 - A4 的 `not_owner` 没有用真实 Agent 触发（§16.5）；Gemini CLI 无凭据，ACP 用 claude-agent-acp。
 - Q6（准入排序）按 E9 结论未实施，待用户决定；Q5 只有 E4 记录。
 - Codex 范围的 `thread/settings/update` 只在替身中验证；MCP 工具不在 Claude 的 ask 清单；ACP `default` 模式仍加载用户 allow 规则（§16.4 S1–S3）。
