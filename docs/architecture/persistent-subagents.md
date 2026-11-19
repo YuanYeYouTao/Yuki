@@ -6,7 +6,7 @@
 主 Yuki 用 `start_subtask(goal, context?, acceptance?, files?)` 登记并派出子任务，继续处理聊天；
 通过 `message_task(id, text)` 补充要求，通过 `get_tasks(id=…)` 查询状态与结果（`result`），用
 `manage_task(action=cancel|resume, id)` 取消或恢复同一目标（resume 可在 `text` 附新要求）。子任务就是子 Work，
-返回的 `id` 即 Work ID。派生本身已经登记工作，工作者无需再次 `manage_task(action=start)`。
+返回的 `id` 即 Work ID。给 `executor` 时执行者是本人电脑上的编码 Agent：这类委派记录（与观察记录）在 `runtime_subagents.executor_json` 保存执行者资料，`SubagentScheduler` 不为它们启动 Main，状态由原生事实结算，见[主 Agent · 外部 Agent 委派](main-agent-runtime.md#预算等待与异常)。派生本身已经登记工作，工作者无需再次 `manage_task(action=start)`。
 原目标需要子结果时用 `wait(for=[{"run": id}])`；
 同时等会话输入的组合和一次命中后的剩余依赖接续见[主 Agent 等待合同](main-agent-runtime.md#预算等待与异常)。
 

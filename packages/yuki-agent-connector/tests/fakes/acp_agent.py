@@ -96,7 +96,10 @@ for line in sys.stdin:
                 ],
             },
         )
-        assert permission["outcome"]["optionId"] == "allow-original"
+        if permission["outcome"].get("optionId") != "allow-original":
+            # Denied (for example deny-only after its receiver was detached).
+            send({"id": message["id"], "result": {"stopReason": "cancelled"}})
+            continue
         target = str(Path.cwd() / "written-by-actual-client.txt")
         request(
             "fs/write_text_file",

@@ -171,9 +171,37 @@ def test_declarations_are_the_new_work_and_schedule_tools():
         "text",
     ]
     assert "version" not in tools["manage_task"].parameters["properties"]["note"]["properties"]
-    assert manifest["get_tasks"]["parameters"] == ["cursor", "id", "limit", "parent", "status"]
-    assert manifest["message_task"]["parameters"] == ["ask", "id", "reply_to", "text"]
-    assert manifest["start_subtask"]["parameters"] == ["acceptance", "context", "files", "goal"]
+    # Contract 40: native agents are executors of the same subtask tools (taskbook §4.2).
+    assert manifest["get_tasks"]["parameters"] == [
+        "agents",
+        "cursor",
+        "history",
+        "id",
+        "limit",
+        "parent",
+        "status",
+    ]
+    assert manifest["message_task"]["parameters"] == [
+        "answer",
+        "ask",
+        "id",
+        "mode",
+        "reply_to",
+        "text",
+    ]
+    assert manifest["start_subtask"]["parameters"] == [
+        "acceptance",
+        "context",
+        "cwd",
+        "executor",
+        "files",
+        "fork",
+        "goal",
+        "notify_turn_end",
+        "relationship",
+        "scope",
+        "session",
+    ]
     _write("declarations", manifest)
 
 

@@ -8,7 +8,7 @@ from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, FastAPI, Header, Query, Request, WebSocket
 from fastapi.responses import Response, StreamingResponse
-from pydantic import UUID4, BaseModel, ConfigDict, Field, SecretStr
+from pydantic import UUID4, BaseModel, ConfigDict, Field, JsonValue, SecretStr
 from starlette.background import BackgroundTask
 
 from yuki.character.avatar import CharacterAvatars
@@ -60,12 +60,14 @@ from yuki.client_api.prompts import ClientPrompts
 from yuki.client_api.requests import ClientRequests
 from yuki.client_api.responses import (
     Activity,
+    DelegationPage,
     Events,
     Home,
     InputReceipt,
     LinkCodeReceipt,
     Me,
     MessageReceipt,
+    NativeAnswerReceipt,
     PairReceipt,
     RequestReceipt,
     UploadReceipt,
@@ -131,6 +133,15 @@ class WorkCancelBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     request_id: UUID4
     expected_revision: int = Field(strict=True, ge=1)
+
+
+class NativeAnswerBody(BaseModel):
+    """One option from the original native request, or its native answer object."""
+
+    model_config = ConfigDict(extra="forbid")
+    request_id: UUID4
+    option_id: str | None = None
+    response: dict[str, JsonValue] | None = None
 
 
 class ComputerRequest(PersonalRequest):
@@ -564,6 +575,29 @@ def attach_client_api(app: FastAPI, resolve: Callable[[], ClientApi]) -> None:
         return {
             "data": await works().submit(
                 actor, str(identity), str(body.request_id), body.text, body.agent_target
+            )
+        }
+
+    @router.get("/delegations", response_model=Envelope[DelegationPage])
+    async def delegations_page(actor: Actor, group: Literal["active", "ended"] = "active") -> Any:
+        return {"data": await works().delegations(actor, group)}
+
+    @router.post(
+        "/works/{identity}/native-requests/{permission_id}/answer",
+        response_model=Envelope[NativeAnswerReceipt],
+        response_model_exclude_unset=True,
+    )
+    async def native_answer(
+        identity: UUID4, permission_id: str, body: NativeAnswerBody, actor: Actor
+    ) -> Any:
+        return {
+            "data": await works().answer(
+                actor,
+                str(identity),
+                permission_id,
+                str(body.request_id),
+                body.option_id,
+                body.response,
             )
         }
 

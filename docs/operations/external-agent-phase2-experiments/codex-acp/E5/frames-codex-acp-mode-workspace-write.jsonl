@@ -1,0 +1,47 @@
+{"t": 0.0, "side": "harness", "dir": "note", "note": "codex-acp 2.7.0 (@agentclientprotocol, existing Codex login), model gpt-6-luna low"}
+{"t": 0.002, "side": "codex-acp", "dir": "local", "method": "spawn", "pid": 26577}
+{"t": 0.002, "side": "codex-acp", "dir": "out", "method": "initialize", "id": 1, "protocolVersion": 1}
+{"t": 0.148, "side": "codex-acp", "dir": "in", "method": "initialize:result", "id": 1, "protocolVersion": 1}
+{"t": 0.148, "side": "codex-acp", "dir": "local", "method": "agentCapabilities", "caps": {"auth": {"logout": {}}, "providers": {}, "loadSession": true, "promptCapabilities": {"embeddedContext": true, "image": true}, "sessionCapabilities": {"resume": {}, "list": {}, "close": {}, "delete": {}, "fork": {}, "title": {}, "additionalDirectories": {}, "systemPrompt": {}}, "mcpCapabilities": {"acp": false, "http": true, "sse": false}, "_meta": {"authStatus": {}}}, "authMethods": ["api-key", "chat-gpt"], "agentInfo": {"name": "@agentclientprotocol/codex-acp", "title": "Codex", "version": "2.7.0"}}
+{"t": 0.148, "side": "codex-acp", "dir": "out", "method": "session/new", "id": 2}
+{"t": 1.122, "side": "codex-acp", "dir": "in", "kind": "notification", "method": "_auth/status_update", "id": null}
+{"t": 2.97, "side": "codex-acp", "dir": "in", "method": "session/new:result", "id": 2, "sessionId": "01a1eede-3cdc-7230-a0cf-30f06b7e9efe"}
+{"t": 2.97, "side": "codex-acp", "dir": "out", "method": "session/set_mode", "id": 3, "sessionId": "01a1eede-3cdc-7230-a0cf-30f06b7e9efe"}
+{"t": 2.971, "side": "codex-acp", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "01a1eede-3cdc-7230-a0cf-30f06b7e9efe", "update": "config_option_update"}
+{"t": 2.971, "side": "codex-acp", "dir": "in", "method": "session/set_mode:result", "id": 3}
+{"t": 2.971, "side": "harness", "dir": "note", "note": "modes=['read-only', 'workspace-write', 'agent', 'agent-full-access'] current=agent"}
+{"t": 2.971, "side": "codex-acp", "dir": "out", "method": "session/prompt", "id": 4, "sessionId": "01a1eede-3cdc-7230-a0cf-30f06b7e9efe"}
+{"t": 2.984, "side": "codex-acp", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "01a1eede-3cdc-7230-a0cf-30f06b7e9efe", "update": "available_commands_update"}
+{"t": 2.992, "side": "codex-acp", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "01a1eede-3cdc-7230-a0cf-30f06b7e9efe", "update": "session_info_update"}
+{"t": 11.673, "side": "codex-acp", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "01a1eede-3cdc-7230-a0cf-30f06b7e9efe", "update": "tool_call", "update.toolCallId": "exec-95ca9013-dd50-40c3-9dfb-ef6bac8b49e3", "update.kind": "execute", "update.status": "in_progress", "update.rawInput.keys": ["command", "cwd"]}
+{"t": 11.673, "side": "codex-acp", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "01a1eede-3cdc-7230-a0cf-30f06b7e9efe", "update": "tool_call_update", "update.toolCallId": "exec-95ca9013-dd50-40c3-9dfb-ef6bac8b49e3", "update.status": "completed"}
+{"t": 11.675, "side": "codex-acp", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "01a1eede-3cdc-7230-a0cf-30f06b7e9efe", "update": "usage_update"}
+{"t": 14.818, "side": "codex-acp", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "01a1eede-3cdc-7230-a0cf-30f06b7e9efe", "update": "usage_update"}
+{"t": 14.82, "side": "codex-acp", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "01a1eede-3cdc-7230-a0cf-30f06b7e9efe", "update": "session_info_update"}
+{"t": 14.821, "side": "codex-acp", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "01a1eede-3cdc-7230-a0cf-30f06b7e9efe", "update": "session_info_update"}
+{"t": 14.821, "side": "codex-acp", "dir": "in", "method": "session/prompt:result", "id": 4, "stopReason": "end_turn"}
+{"t": 14.821, "side": "harness", "dir": "local", "method": "step_result", "step": "fs", "stopReason": "end_turn", "fs_write_requests": 0, "terminal_create_requests": 0, "permission_requests": 0, "ws_file_exists": true, "outside_exists": false}
+{"t": 14.821, "side": "codex-acp", "dir": "out", "method": "session/prompt", "id": 5, "sessionId": "01a1eede-3cdc-7230-a0cf-30f06b7e9efe"}
+{"t": 14.832, "side": "codex-acp", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "01a1eede-3cdc-7230-a0cf-30f06b7e9efe", "update": "session_info_update"}
+{"t": 18.25, "side": "codex-acp", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "01a1eede-3cdc-7230-a0cf-30f06b7e9efe", "update": "session_info_update"}
+{"t": 18.837, "side": "codex-acp", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "01a1eede-3cdc-7230-a0cf-30f06b7e9efe", "update": "tool_call", "update.toolCallId": "exec-d8b12850-9f87-4652-ba5f-d5ab8463c75c", "update.kind": "execute", "update.status": "in_progress", "update.rawInput.keys": ["command", "cwd"]}
+{"t": 18.838, "side": "codex-acp", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "01a1eede-3cdc-7230-a0cf-30f06b7e9efe", "update": "tool_call_update", "update.toolCallId": "exec-d8b12850-9f87-4652-ba5f-d5ab8463c75c", "update.status": "completed"}
+{"t": 18.839, "side": "codex-acp", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "01a1eede-3cdc-7230-a0cf-30f06b7e9efe", "update": "usage_update"}
+{"t": 24.364, "side": "codex-acp", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "01a1eede-3cdc-7230-a0cf-30f06b7e9efe", "update": "usage_update"}
+{"t": 24.367, "side": "codex-acp", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "01a1eede-3cdc-7230-a0cf-30f06b7e9efe", "update": "session_info_update"}
+{"t": 24.368, "side": "codex-acp", "dir": "in", "method": "session/prompt:result", "id": 5, "stopReason": "end_turn"}
+{"t": 24.368, "side": "harness", "dir": "local", "method": "step_result", "step": "term", "stopReason": "end_turn", "fs_write_requests": 0, "terminal_create_requests": 0, "permission_requests": 0, "ws_file_exists": true, "outside_exists": false}
+{"t": 24.368, "side": "codex-acp", "dir": "out", "method": "session/prompt", "id": 6, "sessionId": "01a1eede-3cdc-7230-a0cf-30f06b7e9efe"}
+{"t": 24.379, "side": "codex-acp", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "01a1eede-3cdc-7230-a0cf-30f06b7e9efe", "update": "session_info_update"}
+{"t": 30.515, "side": "codex-acp", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "01a1eede-3cdc-7230-a0cf-30f06b7e9efe", "update": "session_info_update"}
+{"t": 30.515, "side": "codex-acp", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "01a1eede-3cdc-7230-a0cf-30f06b7e9efe", "update": "tool_call", "update.toolCallId": "exec-10966241-3ae1-433c-a766-b0d059d9aaf3", "update.kind": "execute", "update.status": "in_progress", "update.rawInput.keys": ["command", "cwd"]}
+{"t": 30.516, "side": "codex-acp", "dir": "in", "kind": "request", "method": "session/request_permission", "id": 0, "sessionId": "01a1eede-3cdc-7230-a0cf-30f06b7e9efe", "toolCall.toolCallId": "exec-10966241-3ae1-433c-a766-b0d059d9aaf3", "toolCall.kind": "execute", "toolCall.status": "pending", "toolCall.rawInput.keys": ["command", "cwd"], "options": [{"optionId": "allow_once", "kind": "allow_once"}, {"optionId": "accept_execpolicy_amendment", "kind": "allow_always"}, {"optionId": "cancel", "kind": "reject_once"}]}
+{"t": 30.516, "side": "codex-acp", "dir": "out", "method": "response", "id": 0, "error": false, "decision": "reject_once"}
+{"t": 30.517, "side": "codex-acp", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "01a1eede-3cdc-7230-a0cf-30f06b7e9efe", "update": "tool_call_update", "update.toolCallId": "exec-10966241-3ae1-433c-a766-b0d059d9aaf3", "update.status": "failed"}
+{"t": 30.517, "side": "codex-acp", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "01a1eede-3cdc-7230-a0cf-30f06b7e9efe", "update": "session_info_update"}
+{"t": 30.518, "side": "codex-acp", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "01a1eede-3cdc-7230-a0cf-30f06b7e9efe", "update": "usage_update"}
+{"t": 30.52, "side": "codex-acp", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "01a1eede-3cdc-7230-a0cf-30f06b7e9efe", "update": "session_info_update"}
+{"t": 30.521, "side": "codex-acp", "dir": "in", "method": "session/prompt:result", "id": 6, "stopReason": "cancelled"}
+{"t": 30.521, "side": "harness", "dir": "local", "method": "step_result", "step": "outside", "stopReason": "cancelled", "fs_write_requests": 0, "terminal_create_requests": 0, "permission_requests": 1, "ws_file_exists": false, "outside_exists": false}
+{"t": 30.522, "side": "codex-acp", "dir": "in", "method": "eof"}
+{"t": 30.523, "side": "codex-acp", "dir": "local", "method": "process_exit", "returncode": -15}

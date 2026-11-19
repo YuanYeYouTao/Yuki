@@ -517,7 +517,13 @@ async def test_turn_started_by_the_cli_itself_makes_a_new_prompt_conflict_not_qu
             3,
         )
         assert third["status"] == "submitted" and third["session_id"] == session_id
-        kind, taken = await asyncio.wait_for(events.get(), 3)
+        # The self-started turn belonged to the operation this owner is held for (§4.8).
+        followup = []
+        while (item := await asyncio.wait_for(events.get(), 3))[1]["operation_id"] != "third":
+            followup.append(item)
+        assert {value["owner_operation_id"] for _, value in followup} == {"first"}
+        assert followup[-1][0] == "completed"
+        kind, taken = item
         assert kind == "progress" and taken["operation_id"] == "third"
         assert taken["payload"]["disposition"] == "started_new_turn"
     finally:
@@ -661,7 +667,11 @@ async def test_a_still_queued_input_is_never_withdrawn_by_interrupting_another_t
 async def test_unowned_permission_leaves_only_metadata_and_accepts_only_deny(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The incident: a self-started turn's Bash permission had no receiver at all."""
+    """The incident: a self-started turn's Bash permission had no receiver at all.
+
+    Since 0.9.0 such a turn belongs to the operation holding the SDK owner (§4.8);
+    once that operation is detached it has no receiver again.
+    """
     driver, transports, events = await _driver(tmp_path, monkeypatch)
     try:
         started = await driver.execute(
@@ -673,6 +683,14 @@ async def test_unowned_permission_leaves_only_metadata_and_accepts_only_deny(
         await transport.incoming.put(_result(session_id, "done"))
         while (await asyncio.wait_for(events.get(), 3))[0] != "work_finished":
             pass
+        await driver.execute(
+            {
+                "id": "detach-owner",
+                "action": "detach",
+                "session_id": session_id,
+                "arguments": {"operation_id": "owner"},
+            }
+        )
         await transport.incoming.put(
             {
                 "type": "assistant",

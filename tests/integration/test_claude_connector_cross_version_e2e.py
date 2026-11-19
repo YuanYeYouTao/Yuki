@@ -1,15 +1,19 @@
 # ruff: noqa: E402
 """Real Bot + real Connector + Claude driver (real SDK, controlled CLI wire), across versions.
 
-Three pairings, selected by pytest's ``pythonpath`` (CI job ``claude-cross-version``):
-- this Bot with this connector (0.8.0);
-- this Bot with the released 0.7.0 connector ``src``;
-- the production Bot ``src`` (before non-blocking dispatch) with this connector.
-The production Bot with 0.7.0 is today's deployment and the stall itself; it is skipped.
+Device protocol 5 is one hard switch (user decision Q4): a Bot and a connector speaking
+different protocol versions never pair. Three pairings, selected by pytest's
+``pythonpath`` (CI job ``claude-cross-version``):
+- this Bot with this connector (0.9.0, protocol 5): the silent CLI never holds the Work;
+  receipts arrive as events; queue and unowned waits as before;
+- this Bot with the released 0.8.0 connector (``ad59a686`` src, protocol 4): refused at
+  the handshake, the connector parks with ``protocol_unsupported`` and the device stays
+  offline (no reconnect loop);
+- the production Bot (``ad59a686`` src, protocol 4) with this connector: same refusal.
 No model, no paid call: the CLI side is a deterministic stream-json peer.
 The Claude SDK belongs to the connector's environment, not the Bot's, so run it with
 ``uv run --with claude-agent-sdk==<connector pin> pytest <this file>``.
-Artifact: ``test-results/claude-connector-cross-version/bot-<kind>-connector-<version>.json``.
+Artifact: ``test-results/claude-connector-cross-version/bot-<protocol>-connector-<version>.json``.
 """
 
 import asyncio
@@ -29,6 +33,7 @@ from sqlalchemy import select
 from tests.integration.test_external_agent_bridge import accepted_work
 from tests.integration.test_external_agent_bridge import bridge as bridge
 from websockets.asyncio.client import connect
+from yuki_agent_connector import PROTOCOL_VERSION as CONNECTOR_PROTOCOL
 from yuki_agent_connector import __version__ as connector_version
 from yuki_agent_connector import connector as connector_module
 from yuki_agent_connector.config import Config, Instance
@@ -37,24 +42,16 @@ from yuki_agent_connector.drivers import claude as claude_module
 from yuki_agent_connector.journal import Journal
 
 from yuki.external_agents import service as service_module
-from yuki.external_agents.db_models import AgentEventModel, AgentOperationModel
+from yuki.external_agents.db_models import AgentOperationModel
 from yuki.external_agents.errors import ExternalAgentArgumentError
 
-# Feature facts of the code actually loaded, not version strings.
-# A connector that admits by replayed input UUID also declares Claude `queue`
-# (0.8.0 declares per instance from CAPABILITIES; 0.7.0 on the class).
+# Facts of the code actually loaded, not version strings.
 REPLAYS_INPUT = "queue" in getattr(
     claude_module, "CAPABILITIES", getattr(claude_module.ClaudeDriver, "capabilities", ())
 )
-# A Bot whose device RPCs belong to the service (not the activation) can drain them.
-NON_BLOCKING_BOT = hasattr(service_module.ExternalAgentService, "drain")
-BOT = "non-blocking" if NON_BLOCKING_BOT else "production"
+BOT = f"protocol{service_module.CONNECTOR_PROTOCOL}"
+PAIRED = service_module.CONNECTOR_PROTOCOL == CONNECTOR_PROTOCOL
 ARTIFACT = Path(__file__).resolve().parents[2] / "test-results" / "claude-connector-cross-version"
-
-pytestmark = pytest.mark.skipif(
-    not NON_BLOCKING_BOT and not REPLAYS_INPUT,
-    reason="production Bot with the 0.7.0 connector is the deployment that stalls",
-)
 
 
 def record(**facts: Any) -> None:
@@ -124,11 +121,7 @@ async def until(predicate):
             await asyncio.sleep(0.02)
 
 
-async def test_silent_claude_cli_never_holds_the_work_on_any_connector_version(
-    bridge, tmp_path, monkeypatch
-):
-    wires: list[CliWire] = []
-
+def _connector(bridge, tmp_path, monkeypatch, wires):
     def factory(*, options: ClaudeAgentOptions) -> ClaudeSDKClient:
         wire = CliWire()
         wires.append(wire)
@@ -143,7 +136,7 @@ async def test_silent_claude_cli_never_holds_the_work_on_any_connector_version(
     journal = Journal(
         tmp_path / "connector" / "journal.sqlite3", namespace=bridge.device["device_id"]
     )
-    connector = Connector(
+    return Connector(
         Config(
             bridge.websocket_url,
             bridge.device["device_id"],
@@ -154,6 +147,40 @@ async def test_silent_claude_cli_never_holds_the_work_on_any_connector_version(
         ),
         journal,
     )
+
+
+@pytest.mark.skipif(PAIRED, reason="same protocol: the pairing works (next test)")
+async def test_different_protocols_never_pair_and_the_connector_parks(
+    bridge, tmp_path, monkeypatch
+):
+    connector = _connector(bridge, tmp_path, monkeypatch, [])
+    running = asyncio.create_task(connector.run())
+    try:
+
+        async def parked():
+            return connector.state == "protocol_unsupported"
+
+        await until(parked)
+        assert not bridge.service.connections.online(bridge.device["device_id"])
+        assert not running.done()
+        record(
+            paired=False,
+            bot_protocol=service_module.CONNECTOR_PROTOCOL,
+            connector_protocol=CONNECTOR_PROTOCOL,
+            connector_state=connector.state,
+            device_online=False,
+        )
+    finally:
+        connector.stopped.set()
+        await asyncio.wait_for(running, 10)
+
+
+@pytest.mark.skipif(not PAIRED, reason="Q4 hard switch: different protocols never pair")
+async def test_silent_claude_cli_never_holds_the_work_on_any_connector_version(
+    bridge, tmp_path, monkeypatch
+):
+    wires: list[CliWire] = []
+    connector = _connector(bridge, tmp_path, monkeypatch, wires)
     running = asyncio.create_task(connector.run())
     try:
 
@@ -264,43 +291,6 @@ async def test_silent_claude_cli_never_holds_the_work_on_any_connector_version(
             )
             return view if view["pending_unowned_requests"] else None
 
-        if not NON_BLOCKING_BOT:
-            # The production Bot stores the metadata-only wait without projecting it and
-            # keeps the connection; it has no deny path, so the CLI keeps waiting.
-            async def stored():
-                async with bridge.database.read_session() as reader:
-                    return list(
-                        await reader.scalars(
-                            select(AgentEventModel).where(
-                                AgentEventModel.operation_id.is_(None),
-                                AgentEventModel.kind == "permission",
-                            )
-                        )
-                    )
-
-            await until(stored)
-            [event] = await stored()
-            payload = json.loads(event.payload_json)["payload"]
-            assert payload["unowned"] is True and payload["tool"] == "Bash"
-            assert "private.txt" not in event.payload_json
-            assert bridge.service.connections.online(bridge.device["device_id"])
-            view = await bridge.service.execute(
-                {"action": "get", "session_id": session_id}, str(uuid4()), bridge.source
-            )
-            assert "pending_unowned_requests" not in view
-            assert not any(
-                item["type"] == "control_response"
-                and item["response"].get("request_id") == "self-started"
-                for item in wire.writes
-            )
-            record(
-                capabilities=instance["capabilities"],
-                prompt_returned_pending=True,
-                queue="written_to_cli",
-                unowned_wait="stored_metadata_only_not_projected_no_deny_path",
-                connection_online=True,
-            )
-            return
         if not REPLAYS_INPUT:
             # 0.7.0 never surfaces a wait nobody owns; nothing new reaches the server.
             await asyncio.sleep(0.5)
@@ -364,4 +354,4 @@ async def test_silent_claude_cli_never_holds_the_work_on_any_connector_version(
         if connector.stream is not None:
             await connector.stream.close()
         await asyncio.gather(running, return_exceptions=True)
-        journal.close()
+        connector.journal.close()

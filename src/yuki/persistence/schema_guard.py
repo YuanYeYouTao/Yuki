@@ -121,6 +121,7 @@ _REQUIRED_COLUMNS: Mapping[str, frozenset[str]] = {
             "fence",
             "lease_until",
             "archived_at",
+            "executor_json",
         }
     ),
     "runtime_work_budgets": frozenset({"root_id", "models", "tools", "model_limit", "tool_limit"}),
@@ -236,7 +237,17 @@ _REQUIRED_COLUMNS: Mapping[str, frozenset[str]] = {
         }
     ),
     "external_agent_events": frozenset(
-        {"id", "device_id", "event_id", "operation_id", "kind", "payload_json", "created_at"}
+        {
+            "id",
+            "device_id",
+            "event_id",
+            "operation_id",
+            "kind",
+            "payload_json",
+            "created_at",
+            "instance_id",
+            "native_session_id",
+        }
     ),
     "spaces": frozenset({"id", "enabled", "autonomous_enabled", "require_mention", "revision"}),
     "space_bindings": frozenset(

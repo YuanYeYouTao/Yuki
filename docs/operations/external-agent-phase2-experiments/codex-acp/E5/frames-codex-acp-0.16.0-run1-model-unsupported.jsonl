@@ -1,0 +1,11 @@
+{"t": 0.0, "side": "harness", "dir": "note", "note": "codex-acp 0.16.0 (codex 0.169 login), model gpt-6-luna low"}
+{"t": 0.002, "side": "codex-acp", "dir": "local", "method": "spawn", "pid": 25784}
+{"t": 0.002, "side": "codex-acp", "dir": "out", "method": "initialize", "id": 1, "protocolVersion": 1}
+{"t": 0.075, "side": "codex-acp", "dir": "in", "method": "initialize:result", "id": 1, "protocolVersion": 1}
+{"t": 0.075, "side": "codex-acp", "dir": "local", "method": "agentCapabilities", "caps": {"loadSession": true, "promptCapabilities": {"image": true, "audio": false, "embeddedContext": true}, "mcpCapabilities": {"http": true, "sse": false, "acp": false}, "sessionCapabilities": {"list": {}, "resume": {}, "close": {}}, "auth": {"logout": {}}}, "authMethods": ["chatgpt", "codex-api-key", "openai-api-key"], "agentInfo": {"name": "codex-acp", "title": "Codex", "version": "0.16.0"}}
+{"t": 0.075, "side": "codex-acp", "dir": "out", "method": "session/new", "id": 2}
+{"t": 3.29, "side": "codex-acp", "dir": "in", "method": "session/new:result", "id": 2, "sessionId": "01a1eedc-49f8-7da1-9f03-32ab2ee8feba"}
+{"t": 3.29, "side": "harness", "dir": "note", "note": "modes=['read-only', 'auto', 'full-access'] current=read-only"}
+{"t": 3.29, "side": "codex-acp", "dir": "out", "method": "session/prompt", "id": 3, "sessionId": "01a1eedc-49f8-7da1-9f03-32ab2ee8feba"}
+{"t": 3.493, "side": "codex-acp", "dir": "in", "kind": "notification", "method": "session/update", "id": null, "sessionId": "01a1eedc-49f8-7da1-9f03-32ab2ee8feba", "update": "available_commands_update"}
+{"t": 9.606, "side": "codex-acp", "dir": "in", "method": "session/prompt:error", "id": 3, "code": -32603, "message": "Internal error"}

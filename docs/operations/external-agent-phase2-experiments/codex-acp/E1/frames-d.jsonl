@@ -1,0 +1,65 @@
+{"t": 0.0, "side": "harness", "dir": "note", "note": "scenario d start"}
+{"t": 0.001, "side": "A", "dir": "out", "method": "initialize", "id": "85d118f7"}
+{"t": 0.001, "side": "A", "dir": "in", "method": "initialize:result", "id": "85d118f7"}
+{"t": 0.001, "side": "A", "dir": "out", "method": "thread/start", "id": "c748eb4d"}
+{"t": 0.001, "side": "A", "dir": "in", "kind": "notification", "method": "remoteControl/status/changed"}
+{"t": 0.001, "side": "A", "dir": "in", "kind": "notification", "method": "account/updated"}
+{"t": 1.691, "side": "A", "dir": "in", "kind": "notification", "method": "thread/started", "thread.id": "01a1eec5-059a-7182-9dd5-fac9aabe55ff", "thread.status": "idle"}
+{"t": 1.692, "side": "A", "dir": "in", "method": "thread/start:result", "id": "c748eb4d", "thread.id": "01a1eec5-059a-7182-9dd5-fac9aabe55ff", "thread.status": "idle"}
+{"t": 1.692, "side": "A", "dir": "out", "method": "turn/start", "id": "29ff7c28", "threadId": "01a1eec5-059a-7182-9dd5-fac9aabe55ff"}
+{"t": 1.699, "side": "A", "dir": "in", "kind": "notification", "method": "thread/settings/updated", "threadId": "01a1eec5-059a-7182-9dd5-fac9aabe55ff"}
+{"t": 1.699, "side": "A", "dir": "in", "method": "turn/start:result", "id": "29ff7c28", "turn.id": "01a1eec5-0c36-7e01-81c0-140d60debe1a", "turn.status": "inProgress"}
+{"t": 1.701, "side": "A", "dir": "in", "kind": "notification", "method": "thread/status/changed", "threadId": "01a1eec5-059a-7182-9dd5-fac9aabe55ff", "status": "active"}
+{"t": 1.701, "side": "A", "dir": "in", "kind": "notification", "method": "turn/started", "threadId": "01a1eec5-059a-7182-9dd5-fac9aabe55ff", "turn.id": "01a1eec5-0c36-7e01-81c0-140d60debe1a", "turn.status": "inProgress"}
+{"t": 3.646, "side": "A", "dir": "in", "kind": "notification", "method": "item/started", "threadId": "01a1eec5-059a-7182-9dd5-fac9aabe55ff", "turnId": "01a1eec5-0c36-7e01-81c0-140d60debe1a", "item.id": "01a1eec5-13d6-7e92-a49f-f024480a95aa", "item.type": "userMessage"}
+{"t": 3.647, "side": "A", "dir": "in", "kind": "notification", "method": "item/completed", "threadId": "01a1eec5-059a-7182-9dd5-fac9aabe55ff", "turnId": "01a1eec5-0c36-7e01-81c0-140d60debe1a", "item.id": "01a1eec5-13d6-7e92-a49f-f024480a95aa", "item.type": "userMessage"}
+{"t": 6.839, "side": "A", "dir": "in", "kind": "notification", "method": "turn/moderationMetadata", "threadId": "01a1eec5-059a-7182-9dd5-fac9aabe55ff", "turnId": "01a1eec5-0c36-7e01-81c0-140d60debe1a"}
+{"t": 6.851, "side": "A", "dir": "in", "kind": "notification", "method": "thread/status/changed", "threadId": "01a1eec5-059a-7182-9dd5-fac9aabe55ff", "status": "active"}
+{"t": 6.851, "side": "A", "dir": "in", "kind": "notification", "method": "item/started", "threadId": "01a1eec5-059a-7182-9dd5-fac9aabe55ff", "turnId": "01a1eec5-0c36-7e01-81c0-140d60debe1a", "item.id": "exec-bcc72c32-d8a8-48e3-9cff-02b62c284491", "item.type": "commandExecution", "item.status": "inProgress"}
+{"t": 6.851, "side": "A", "dir": "in", "kind": "serverRequest", "method": "item/commandExecution/requestApproval", "requestId": 4, "threadId": "01a1eec5-059a-7182-9dd5-fac9aabe55ff", "turnId": "01a1eec5-0c36-7e01-81c0-140d60debe1a", "itemId": "exec-bcc72c32-d8a8-48e3-9cff-02b62c284491"}
+{"t": 6.851, "side": "harness", "dir": "note", "note": "A got approval: True; staying silent 150s"}
+{"t": 11.049, "side": "A", "dir": "in", "kind": "notification", "method": "thread/status/changed", "threadId": "01a1eec3-c868-7921-965b-e799e1b96d2a", "status": "notLoaded"}
+{"t": 11.049, "side": "A", "dir": "in", "kind": "notification", "method": "thread/closed", "threadId": "01a1eec3-c868-7921-965b-e799e1b96d2a"}
+{"t": 55.773, "side": "A", "dir": "in", "kind": "notification", "method": "thread/status/changed", "threadId": "01a1eec4-7975-7b92-b668-4ef40a28e1e1", "status": "notLoaded"}
+{"t": 55.774, "side": "A", "dir": "in", "kind": "notification", "method": "thread/closed", "threadId": "01a1eec4-7975-7b92-b668-4ef40a28e1e1"}
+{"t": 156.852, "side": "harness", "dir": "note", "note": "anything resolved while A silent: None"}
+{"t": 156.852, "side": "A", "dir": "out", "method": "thread/read", "id": "3d816430", "threadId": "01a1eec5-059a-7182-9dd5-fac9aabe55ff"}
+{"t": 156.854, "side": "A", "dir": "in", "kind": "notification", "method": "deprecationNotice"}
+{"t": 156.854, "side": "A", "dir": "in", "method": "thread/read:result", "id": "3d816430", "thread.id": "01a1eec5-059a-7182-9dd5-fac9aabe55ff", "thread.status": "active"}
+{"t": 156.854, "side": "A", "dir": "local", "method": "thread/read:summary", "turns": [{"id": "01a1eec5-0c36-7e01-81c0-140d60debe1a", "status": "inProgress", "items": ["userMessage"]}]}
+{"t": 156.855, "side": "B", "dir": "out", "method": "initialize", "id": "6857021a"}
+{"t": 156.855, "side": "B", "dir": "in", "method": "initialize:result", "id": "6857021a"}
+{"t": 156.855, "side": "B", "dir": "out", "method": "thread/resume", "id": "a625c86d", "threadId": "01a1eec5-059a-7182-9dd5-fac9aabe55ff"}
+{"t": 156.855, "side": "B", "dir": "in", "kind": "notification", "method": "remoteControl/status/changed"}
+{"t": 156.856, "side": "B", "dir": "in", "kind": "notification", "method": "account/updated"}
+{"t": 156.857, "side": "B", "dir": "in", "method": "thread/resume:result", "id": "a625c86d", "thread.id": "01a1eec5-059a-7182-9dd5-fac9aabe55ff", "thread.status": "active"}
+{"t": 156.858, "side": "B", "dir": "in", "kind": "notification", "method": "thread/goal/cleared", "threadId": "01a1eec5-059a-7182-9dd5-fac9aabe55ff"}
+{"t": 156.858, "side": "B", "dir": "in", "kind": "serverRequest", "method": "item/commandExecution/requestApproval", "requestId": 4, "threadId": "01a1eec5-059a-7182-9dd5-fac9aabe55ff", "turnId": "01a1eec5-0c36-7e01-81c0-140d60debe1a", "itemId": "exec-bcc72c32-d8a8-48e3-9cff-02b62c284491"}
+{"t": 156.858, "side": "A", "dir": "in", "kind": "notification", "method": "thread/goal/cleared", "threadId": "01a1eec5-059a-7182-9dd5-fac9aabe55ff"}
+{"t": 156.858, "side": "harness", "dir": "note", "note": "late joiner B received pending request: True"}
+{"t": 156.858, "side": "harness", "dir": "note", "note": "same request id as A's: True"}
+{"t": 156.858, "side": "A", "dir": "out", "method": "serverRequest:response", "requestId": 4, "decision": "decline"}
+{"t": 156.858, "side": "B", "dir": "in", "kind": "notification", "method": "serverRequest/resolved", "threadId": "01a1eec5-059a-7182-9dd5-fac9aabe55ff", "requestId": 4}
+{"t": 156.858, "side": "A", "dir": "in", "kind": "notification", "method": "serverRequest/resolved", "threadId": "01a1eec5-059a-7182-9dd5-fac9aabe55ff", "requestId": 4}
+{"t": 156.858, "side": "A", "dir": "in", "kind": "notification", "method": "item/completed", "threadId": "01a1eec5-059a-7182-9dd5-fac9aabe55ff", "turnId": "01a1eec5-0c36-7e01-81c0-140d60debe1a", "item.id": "exec-bcc72c32-d8a8-48e3-9cff-02b62c284491", "item.type": "commandExecution", "item.status": "declined"}
+{"t": 156.858, "side": "A", "dir": "in", "kind": "notification", "method": "thread/status/changed", "threadId": "01a1eec5-059a-7182-9dd5-fac9aabe55ff", "status": "active"}
+{"t": 156.858, "side": "B", "dir": "in", "kind": "notification", "method": "thread/status/changed", "threadId": "01a1eec5-059a-7182-9dd5-fac9aabe55ff", "status": "active"}
+{"t": 158.797, "side": "B", "dir": "in", "kind": "notification", "method": "turn/moderationMetadata", "threadId": "01a1eec5-059a-7182-9dd5-fac9aabe55ff", "turnId": "01a1eec5-0c36-7e01-81c0-140d60debe1a"}
+{"t": 158.797, "side": "A", "dir": "in", "kind": "notification", "method": "turn/moderationMetadata", "threadId": "01a1eec5-059a-7182-9dd5-fac9aabe55ff", "turnId": "01a1eec5-0c36-7e01-81c0-140d60debe1a"}
+{"t": 159.726, "side": "B", "dir": "in", "kind": "notification", "method": "item/started", "threadId": "01a1eec5-059a-7182-9dd5-fac9aabe55ff", "turnId": "01a1eec5-0c36-7e01-81c0-140d60debe1a", "item.id": "msg_0a7cd6e4a5f1dbd0016afda3b37b2887d1bd48a479d7295c63", "item.type": "agentMessage"}
+{"t": 159.726, "side": "A", "dir": "in", "kind": "notification", "method": "item/started", "threadId": "01a1eec5-059a-7182-9dd5-fac9aabe55ff", "turnId": "01a1eec5-0c36-7e01-81c0-140d60debe1a", "item.id": "msg_0a7cd6e4a5f1dbd0016afda3b37b2887d1bd48a479d7295c63", "item.type": "agentMessage"}
+{"t": 159.956, "side": "B", "dir": "in", "kind": "notification", "method": "turn/moderationMetadata", "threadId": "01a1eec5-059a-7182-9dd5-fac9aabe55ff", "turnId": "01a1eec5-0c36-7e01-81c0-140d60debe1a"}
+{"t": 159.956, "side": "A", "dir": "in", "kind": "notification", "method": "turn/moderationMetadata", "threadId": "01a1eec5-059a-7182-9dd5-fac9aabe55ff", "turnId": "01a1eec5-0c36-7e01-81c0-140d60debe1a"}
+{"t": 159.961, "side": "A", "dir": "in", "kind": "notification", "method": "item/completed", "threadId": "01a1eec5-059a-7182-9dd5-fac9aabe55ff", "turnId": "01a1eec5-0c36-7e01-81c0-140d60debe1a", "item.id": "msg_0a7cd6e4a5f1dbd0016afda3b37b2887d1bd48a479d7295c63", "item.type": "agentMessage"}
+{"t": 159.961, "side": "B", "dir": "in", "kind": "notification", "method": "item/completed", "threadId": "01a1eec5-059a-7182-9dd5-fac9aabe55ff", "turnId": "01a1eec5-0c36-7e01-81c0-140d60debe1a", "item.id": "msg_0a7cd6e4a5f1dbd0016afda3b37b2887d1bd48a479d7295c63", "item.type": "agentMessage"}
+{"t": 160.144, "side": "B", "dir": "in", "kind": "notification", "method": "thread/readState/changed", "threadId": "01a1eec5-059a-7182-9dd5-fac9aabe55ff"}
+{"t": 160.144, "side": "B", "dir": "in", "kind": "notification", "method": "thread/status/changed", "threadId": "01a1eec5-059a-7182-9dd5-fac9aabe55ff", "status": "idle"}
+{"t": 160.144, "side": "A", "dir": "in", "kind": "notification", "method": "thread/readState/changed", "threadId": "01a1eec5-059a-7182-9dd5-fac9aabe55ff"}
+{"t": 160.144, "side": "A", "dir": "in", "kind": "notification", "method": "thread/status/changed", "threadId": "01a1eec5-059a-7182-9dd5-fac9aabe55ff", "status": "idle"}
+{"t": 160.145, "side": "B", "dir": "in", "kind": "notification", "method": "turn/completed", "threadId": "01a1eec5-059a-7182-9dd5-fac9aabe55ff", "turn.id": "01a1eec5-0c36-7e01-81c0-140d60debe1a", "turn.status": "completed"}
+{"t": 160.146, "side": "A", "dir": "in", "kind": "notification", "method": "turn/completed", "threadId": "01a1eec5-059a-7182-9dd5-fac9aabe55ff", "turn.id": "01a1eec5-0c36-7e01-81c0-140d60debe1a", "turn.status": "completed"}
+{"t": 160.146, "side": "A", "dir": "local", "method": "close"}
+{"t": 160.146, "side": "A", "dir": "in", "method": "connection_closed", "error": "ConnectionClosedError"}
+{"t": 160.146, "side": "B", "dir": "local", "method": "close"}
+{"t": 160.146, "side": "B", "dir": "in", "method": "connection_closed", "error": "ConnectionClosedError"}
+{"t": 160.146, "side": "harness", "dir": "note", "note": "scenario d end"}

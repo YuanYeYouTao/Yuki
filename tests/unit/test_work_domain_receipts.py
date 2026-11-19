@@ -26,7 +26,8 @@ from yuki.sandbox.db_models import SandboxTaskRunModel
 case = work_case
 
 
-async def admitted(control, tool, arguments, call_id="original-call"):
+async def admitted(control, tool, arguments, call_id="original-call", recorded=None):
+    """Admit one call; ``recorded`` adds fields a historical receipt carried."""
     invocation = direct_invocations(
         (ToolCall(call_id, ToolFunction(tool, json.dumps(arguments))),),
         SimpleNamespace(work_control=control),
@@ -38,7 +39,7 @@ async def admitted(control, tool, arguments, call_id="original-call"):
         control.current["id"],
         key,
         "tool",
-        invocation=invocation.durable_metadata(),
+        invocation={**invocation.durable_metadata(), **(recorded or {})},
     )
     assert await control.repository.admit_dispatch(control.lease, control.current["id"], key)
     return key
@@ -149,9 +150,10 @@ async def test_native_control_original_result_without_run(
         "work_id": control.current["id"],
         "conversation_id": control.lease.conversation_id,
     }
-    # The model calls ``answer``; the service keeps its original ``respond`` action.
+    # A receipt recorded under the retired tool name: its metadata carried the called
+    # action (``answer`` for the service's ``respond``) and is still read by that name.
     called = {"action": "answer" if action == "respond" else action}
-    key = await admitted(control, "use_coding_agent", called)
+    key = await admitted(control, "use_coding_agent", called, recorded=called)
     request_id = sha256(key.encode()).hexdigest()
     arguments = {"action": action}
     await prepare(
@@ -187,7 +189,9 @@ async def test_native_control_does_not_borrow_another_receipt(case, mismatch):
         "work_id": case.control.current["id"],
         "conversation_id": case.control.lease.conversation_id,
     }
-    key = await admitted(case.control, "external_agent", {"action": "steer"})
+    key = await admitted(
+        case.control, "external_agent", {"action": "steer"}, recorded={"action": "steer"}
+    )
     request_id = sha256(key.encode()).hexdigest()
     if mismatch != "missing":
         await prepare(native, identity=request_id, lease=case.control.lease)

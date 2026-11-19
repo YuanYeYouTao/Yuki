@@ -1,6 +1,5 @@
 """Explicit progress identity and native facts survive the cloud projection."""
 
-import json
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
@@ -154,20 +153,15 @@ async def test_late_native_completion_keeps_native_received_and_main_observation
     )
     await native.repository.receive_events(native.device["device_id"], [fact])
     page = await native.repository.event_page(operation.id, 0)
+    # Progress stays on the timeline (taskbook §4.5): Main reads nothing of it, and
+    # the timeline keeps the native times without inventing an occurrence time.
     messages = await case.control.take_inputs("actual-main-observation")
-    observed_at = datetime.now(UTC)
-    material = next(
-        json.loads(message.content.split("\n", 1)[1])
-        for message in messages
-        if "external_agent_event" in message.content
-    )
-    received_at = datetime.fromisoformat(material["received_at"])
-    assert received_at <= observed_at
-    assert material["received_at"] == page[0]["received_at"]
-    assert material["sequence"] == 7
-    assert material["operation_id"] == operation.id
+    assert not any("external_agent" in message.content for message in messages)
+    assert datetime.fromisoformat(page[0]["received_at"]) <= datetime.now(UTC)
+    assert page[0]["sequence"] == 7
+    assert page[0]["operation_id"] == operation.id
     for name in ("startedAt", "completedAt"):
-        assert (name in material["payload"]) is (name in native_times)
+        assert (name in page[0]["payload"]) is (name in native_times)
         if name in native_times:
-            assert material["payload"][name] == native_times[name] == page[0]["payload"][name]
+            assert page[0]["payload"][name] == native_times[name]
     assert case.control.current["id"] == operation.work_id

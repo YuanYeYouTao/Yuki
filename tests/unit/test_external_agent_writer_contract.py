@@ -70,8 +70,12 @@ async def test_large_native_payload_preserves_null_arrays_booleans_and_internal_
     payload = json.loads(raw)
     assert isinstance(payload["text"], str) and payload["signal"] is True
     question = json.loads(payload["text"])
+    assert question["kind"] == "external_agent_card"
     assert question["permission_id"] == str(internal)
-    assert question["payload"] == {"native_request_id": "native-q", **detail}
+    # The Work reads a bounded card; the original payload stays on the timeline.
+    page = await env.repository.event_page(operation.id, 0)
+    stored_question = next(item for item in page if item["kind"] == "permission")
+    assert stored_question["payload"] == {"native_request_id": "native-q", **detail}
     await env.repository.receive_events(
         env.device["device_id"],
         [

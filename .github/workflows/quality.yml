@@ -162,16 +162,19 @@ jobs:
           path: test-results/
           retention-days: 7
 
-  # Real Bot + real connector + Claude driver (real SDK, controlled CLI wire) across the
-  # released units: this Bot with this and the released 0.7.0 connector (Desktop's pin
-  # df133fbc), and the production Bot (8e6594cf) with this connector.
+  # Real Bot + real connector across the released units. Device protocol 5 is one hard
+  # switch (Q4): this Bot with this connector (0.9.0) pairs (Claude and Codex drivers);
+  # this Bot with the released 0.8.0 connector and the production Bot with this
+  # connector are both refused at the handshake and the connector parks (no loop).
+  # Production Bot and released connector are both ad59a686 (currently deployed).
   claude-cross-version:
-    name: Claude connector across Bot and connector versions
+    name: Connector across Bot and connector versions
     runs-on: ubuntu-24.04
     env:
-      RELEASED_CONNECTOR: df133fbcb638c508041554a083c42c9aaee390b1
-      PRODUCTION_BOT: 8e6594cf10c7cb97688ce0e9bac9e80e8733539a
+      RELEASED_CONNECTOR: ad59a686f31efba804643dfe922d1dc28016f7d5
+      PRODUCTION_BOT: ad59a686f31efba804643dfe922d1dc28016f7d5
       TEST: tests/integration/test_claude_connector_cross_version_e2e.py
+      CODEX_TEST: tests/integration/test_codex_connector_delegation_e2e.py
     steps:
       - uses: actions/checkout@v4
         with:
@@ -194,19 +197,22 @@ jobs:
         run: |
           set -e
           run() {
-            uv run --no-sync --with claude-agent-sdk==0.2.172 pytest "$TEST" -q \
-              --strict-markers -o pythonpath="$1"
+            uv run --no-sync --with claude-agent-sdk==0.2.172 pytest "$@" -q \
+              --strict-markers -o pythonpath="$PYTHONPATH_PAIR"
           }
-          run "src packages/yuki-agent-connector/src"
-          run "src $RUNNER_TEMP/released/packages/yuki-agent-connector/src"
-          run "$RUNNER_TEMP/production/src packages/yuki-agent-connector/src"
-          ls test-results/claude-connector-cross-version/
+          PYTHONPATH_PAIR="src packages/yuki-agent-connector/src" run "$TEST" "$CODEX_TEST"
+          PYTHONPATH_PAIR="src $RUNNER_TEMP/released/packages/yuki-agent-connector/src" run "$TEST"
+          PYTHONPATH_PAIR="$RUNNER_TEMP/production/src packages/yuki-agent-connector/src" run "$TEST"
+          ls test-results/claude-connector-cross-version/ test-results/codex-connector-delegation/
           test "$(ls test-results/claude-connector-cross-version/ | wc -l)" -eq 3
+          test -f test-results/codex-connector-delegation/run.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: claude-cross-version
-          path: test-results/claude-connector-cross-version/
+          path: |
+            test-results/claude-connector-cross-version/
+            test-results/codex-connector-delegation/
           retention-days: 7
 
   desktop-headed:

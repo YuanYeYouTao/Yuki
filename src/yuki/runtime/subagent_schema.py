@@ -18,6 +18,9 @@ children = sa.Table(
     sa.Column("cancel_epoch", sa.Integer, nullable=False, server_default="0"),
     sa.Column("notified_revision", sa.Integer, nullable=False, server_default="0"),
     sa.Column("archived_at", sa.Float),
+    # Null: Yuki's own worker. Set: a native agent on a device executes (delegation)
+    # or is observed; no Yuki model loop runs for this Work (migration 0159).
+    sa.Column("executor_json", sa.Text),
 )
 
 sa.Index(

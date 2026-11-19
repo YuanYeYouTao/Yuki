@@ -529,6 +529,9 @@ class WorkRepository:
                     or_(
                         func.json_extract(inputs.c.payload_json, "$.child_id") == inputs.c.work_id,
                         child_kind == "subagent_question",
+                        # A delegation's request or lost executor needs the parent's
+                        # decision exactly like a child's question (taskbook §4.6).
+                        child_kind == "external_agent_card",
                     ),
                 ),
             ),
@@ -1678,6 +1681,19 @@ class WorkRepository:
             )
             if parent is None or parent["state"] in TERMINAL:
                 receipt.state, receipt.reason = "blocked", "work_terminal_or_deleted"
+                return
+            from yuki.runtime.subagent_schema import children
+
+            if (
+                await session.scalar(
+                    select(children.c.executor_json).where(children.c.work_id == parent["id"])
+                )
+                is not None
+            ):
+                # A delegation or observation record owns this run: its settlement is
+                # the record's own (no Yuki loop reads a completion input there).
+                receipt.state, receipt.reason = "observed", "settled_by_native_executor_record"
+                receipt.updated_at = datetime.now(UTC)
                 return
             if (
                 task.source_conversation_id != parent["conversation_id"]
