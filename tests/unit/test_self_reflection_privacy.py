@@ -140,7 +140,9 @@ async def test_forget_clears_only_related_group_checkpoint_and_preserves_paid_fa
         }
         raw["payload"]["self_candidates"] = [{"ref": "candidate_1", "content": "旧候选原正文"}]
     elif copy_kind == "context":
-        rendered = ChatEventPromptRenderer((erased, retained)).render_event(erased)
+        rendered = ChatEventPromptRenderer((erased, retained), self_name="Yuki").render_event(
+            erased
+        )
         raw["payload"]["context_events"] = [
             {
                 "ref": "context_1",
@@ -220,7 +222,9 @@ async def test_forget_clears_only_related_group_checkpoint_and_preserves_paid_fa
                 "payload": {
                     "context_events": [
                         {
-                            "rendered": ChatEventPromptRenderer((retained,)).render_event(retained)
+                            "rendered": ChatEventPromptRenderer(
+                                (retained,), self_name="Yuki"
+                            ).render_event(retained)
                             + f" |事件:#{erased.id}]"
                         }
                     ]

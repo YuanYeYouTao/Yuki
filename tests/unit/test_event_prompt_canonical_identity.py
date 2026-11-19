@@ -43,7 +43,7 @@ def _event(event_id: int, **changes: object) -> EventRecord:
 def test_rebound_native_account_does_not_relabel_or_group_old_person() -> None:
     old = _event(1)
     new = _event(2, author_person_id=PERSON_B)
-    renderer = ChatEventPromptRenderer((old, new))
+    renderer = ChatEventPromptRenderer((old, new), self_name="Yuki")
 
     assert renderer.render_reference_event(old).startswith(f"[同名成员|person:{PERSON_A}]\n")
     assert f"|person:{PERSON_A}|事件:#1" in renderer.render_event(old)
@@ -54,7 +54,7 @@ def test_rebound_native_account_does_not_relabel_or_group_old_person() -> None:
 def test_one_person_across_real_bindings_keeps_one_immutable_sender_group() -> None:
     first = _event(1)
     other_binding = _event(2, sender_user_id="7744556", platform="telegram")
-    renderer = ChatEventPromptRenderer((first, other_binding))
+    renderer = ChatEventPromptRenderer((first, other_binding), self_name="Yuki")
 
     history = renderer.main_agent_history((first, other_binding))
 
@@ -79,10 +79,10 @@ def test_human_and_yuki_with_same_native_number_keep_their_original_authors() ->
         author_presence_id=PRESENCE_A,
         direction="outbound",
     )
-    renderer = ChatEventPromptRenderer((human, yuki))
+    renderer = ChatEventPromptRenderer((human, yuki), self_name="Yuki")
 
     assert renderer.render_reference_event(human).startswith(f"[成员|person:{PERSON_A}]\n")
-    assert renderer.render_reference_event(yuki).startswith(f"[Agent|presence:{PRESENCE_A}]\n")
+    assert renderer.render_reference_event(yuki).startswith(f"[Yuki|presence:{PRESENCE_A}]\n")
 
 
 def test_different_yuki_presences_are_not_collapsed_by_the_same_native_number() -> None:
@@ -94,9 +94,9 @@ def test_different_yuki_presences_are_not_collapsed_by_the_same_native_number() 
         direction="outbound",
     )
     second = replace(first, id=2, author_presence_id=PRESENCE_B)
-    renderer = ChatEventPromptRenderer((first, second))
+    renderer = ChatEventPromptRenderer((first, second), self_name="Yuki")
 
-    assert renderer.render_reference_event(first).startswith(f"[同名成员|presence:{PRESENCE_A}]\n")
+    assert renderer.render_reference_event(first).startswith(f"[Yuki|presence:{PRESENCE_A}]\n")
     assert [ids for _, ids, _ in renderer.main_agent_history((first, second))] == [(1,), (2,)]
 
 
@@ -104,7 +104,7 @@ def test_internal_reply_uses_the_referenced_event_not_the_latest_native_owner() 
     old = _event(1, sender_group_card="原发言人")
     new = _event(2, author_person_id=PERSON_B, sender_group_card="新绑定人")
     reply = _event(3, sender_user_id="7733221", author_person_id=PERSON_C, reply_to_event_id=1)
-    renderer = ChatEventPromptRenderer((old, new, reply))
+    renderer = ChatEventPromptRenderer((old, new, reply), self_name="Yuki")
 
     for rendered in (renderer.render_reference_event(reply), renderer.render_event(reply)):
         assert f"回复:#1/原发言人/person:{PERSON_A}" in rendered
@@ -128,7 +128,7 @@ def test_recorded_mentioned_people_win_without_guessing_a_native_owner() -> None
             },
         ),
     )
-    renderer = ChatEventPromptRenderer((old, new, mention))
+    renderer = ChatEventPromptRenderer((old, new, mention), self_name="Yuki")
 
     for rendered in (renderer.render_reference_event(mention), renderer.render_event(mention)):
         assert f"提及:原发言人/@{{account:{PERSON_A}}}" in rendered
@@ -148,7 +148,7 @@ def test_canonical_mention_segments_remain_visible_without_rebinding(
             {"type": "mention", "data": {"account_id": PERSON_B, "display_name": "原账号名"}},
         ),
     )
-    rendered = ChatEventPromptRenderer((event,)).render_reference_event(event)
+    rendered = ChatEventPromptRenderer((event,), self_name="Yuki").render_reference_event(event)
 
     assert f"提及:原账号名/@{{account:{PERSON_B}}}" in rendered
     assert f"提及:person:{PERSON_A}" not in rendered
@@ -164,7 +164,9 @@ def test_plain_at_text_is_not_rebound_by_history_metadata():
         mentioned_user_ids=("9912345",),
     )
     future = _event(3, author_person_id=PERSON_B, sender_group_card="新绑定人")
-    rendered = ChatEventPromptRenderer((old, mention, future)).render_reference_event(mention)
+    rendered = ChatEventPromptRenderer(
+        (old, mention, future), self_name="Yuki"
+    ).render_reference_event(mention)
     assert "|提及:" not in rendered and "新绑定人" not in rendered
     assert rendered.endswith(">[提及9912345] 看这里")
 
@@ -182,7 +184,7 @@ def test_old_frozen_paid_fragment_is_not_rewritten_after_rebinding() -> None:
             }
         ]
     )
-    renderer = ChatEventPromptRenderer((old, new))
+    renderer = ChatEventPromptRenderer((old, new), self_name="Yuki")
     grouped, individual = renderer.main_agent_history_views((old, new))
 
     extended = frozen.extend_history(

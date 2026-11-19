@@ -62,6 +62,7 @@ class AssembledContext:
     history_messages: Sequence[ChatMessage]
     current_message: ChatMessage
     metrics: ContextMetrics
+    history_self_name: str
     visible_event_ids: Set[int] = frozenset()
     history_anchor_event_id: int | None = None
     checkpoint_text: str = ""
@@ -168,6 +169,7 @@ class ContextAssembler:
         prepared = frozen.extend_history(grouped, individual)
         renderer = ChatEventPromptRenderer(
             references=references,
+            self_name=self._settings.character_identity.display_name,
             timezone=self._settings.default_timezone,
         )
         current = current_override or (
@@ -202,6 +204,7 @@ class ContextAssembler:
             history_event_fragments=individual,
             current_event_id=current_id,
             projection_scope=projection_scope,
+            history_self_name=self._settings.character_identity.display_name,
             history_timezone=self._settings.default_timezone,
             projection_snapshot=snapshot.projection,
             history_incremental=True,
@@ -233,6 +236,7 @@ class ContextAssembler:
         if read_history:
             loaded = await self._scopes.prepare_prompt_snapshot(
                 scope,
+                self_name=self._settings.character_identity.display_name,
                 timezone=self._settings.default_timezone,
             )
             snapshot = self._history_window(scope, loaded)
@@ -253,6 +257,7 @@ class ContextAssembler:
                 len(json.dumps(metadata, ensure_ascii=False)), 0, 0, len(content), False
             ),
             read_version=version,
+            history_self_name=self._settings.character_identity.display_name,
             history_timezone=self._settings.default_timezone,
         )
 
@@ -423,6 +428,7 @@ class ContextAssembler:
             scope,
             before_event_id=before_event_id,
             expected_turn=turn,
+            self_name=self._settings.character_identity.display_name,
             timezone=self._settings.default_timezone,
             trigger_event_id=trigger_event_id,
         )

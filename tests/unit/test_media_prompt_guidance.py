@@ -29,6 +29,7 @@ def test_media_guidance_preserves_casual_and_explicit_image_tasks(code_enabled):
         history_messages=history,
         current_message=current,
         metrics=ContextMetrics(0, 0, 1, len(current.content), False),
+        history_self_name="Yuki",
     )
     composer = PromptComposer(
         make_settings("sqlite+aiosqlite:///:memory:", code_mode_enabled=code_enabled)

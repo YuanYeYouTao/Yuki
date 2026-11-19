@@ -48,7 +48,7 @@ def test_canonical_mentions_keep_original_names_and_positions_in_every_prompt_vi
         author_person_id="speaker",
     )
     renamed = replace(event, id=10, sender_user_id="1002", sender_group_card="后来改名")
-    renderer = ChatEventPromptRenderer((event, renamed))
+    renderer = ChatEventPromptRenderer((event, renamed), self_name="Yuki")
 
     for text in (
         renderer.render_event(event),
@@ -83,7 +83,7 @@ def test_canonical_current_text_does_not_rewrite_quoted_or_literal_markers() -> 
         occurred_at=datetime.now(UTC),
     )
     current = "[回复的消息]\n@远野 引用正文 [提及1002]\n\n@油桃 当前正文"
-    rendered = ChatEventPromptRenderer((event,)).render_reference_event(
+    rendered = ChatEventPromptRenderer((event,), self_name="Yuki").render_reference_event(
         event, current_event_id=event.id, current_content=current
     )
 
@@ -109,7 +109,7 @@ def test_account_author_is_displayed_without_a_fabricated_person():
         author_kind="account",
         author_account_id=account_id,
     )
-    text = ChatEventPromptRenderer((event,)).render_reference_event(event)
+    text = ChatEventPromptRenderer((event,), self_name="Yuki").render_reference_event(event)
     assert f"account:{account_id}" in text and "person:" not in text
     assert text.endswith(">hello")
 
@@ -131,7 +131,7 @@ def test_outbound_text_is_not_hidden_by_media_like_wording(content: str) -> None
         segments=({"type": "text", "data": {"text": content}},),
         occurred_at=datetime.now(UTC),
     )
-    renderer = ChatEventPromptRenderer((event,))
+    renderer = ChatEventPromptRenderer((event,), self_name="Yuki")
 
     assert renderer.render_event(event).endswith(content)
     assert renderer.render_reference_event(event).endswith(content)

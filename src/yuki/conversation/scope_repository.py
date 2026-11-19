@@ -177,6 +177,7 @@ class ConversationScopeRepository:
         *,
         before_event_id: int | None = None,
         expected_turn: ConversationTurnSnapshot | None = None,
+        self_name: str,
         timezone: str = "Asia/Shanghai",
         trigger_event_id: int | None = None,
     ) -> ConversationPromptSnapshot:
@@ -218,6 +219,7 @@ class ConversationScopeRepository:
                 projection.selected_summary_renderer
                 if projection is not None and projection.selected_summary_text
                 else None,
+                self_name,
                 timezone,
                 before_event_id,
             )
@@ -226,6 +228,7 @@ class ConversationScopeRepository:
                 source = PromptHistorySource(
                     stamp,
                     projection=reusable,
+                    self_name=self_name,
                     timezone=timezone,
                     after_event_id=coverage,
                 )

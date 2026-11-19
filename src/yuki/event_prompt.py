@@ -6,7 +6,7 @@ import re
 import sys
 from bisect import bisect_right
 from collections.abc import Iterable, Iterator, Set
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta
 
 from yuki.domain.audio import transcript_context
@@ -190,6 +190,26 @@ class _ReferenceIds(Set[int]):
         return frozenset(values)
 
 
+def self_mention_content(row: EventRecord, content: str, self_name: str) -> str:
+    """Return ``content`` with Yuki's native mention spans under her character name."""
+
+    # Native spans index the stored body, so only that exact text is rewritten.
+    if content != row.content:
+        return content
+    parts: list[str] = []
+    cursor = 0
+    for segment in row.segments:
+        data = segment.get("data")
+        if segment.get("type") != "mention" or not isinstance(data, dict):
+            continue
+        if data.get("kind") != "yuki" or "text_start" not in data:
+            continue
+        start, end = int(data["text_start"]), int(data["text_end"])
+        parts.extend((content[cursor:start], f"@{self_name}"))
+        cursor = end
+    return "".join(parts) + content[cursor:] if parts else content
+
+
 class ChatEventPromptRenderer:
     """Render one canonical prompt envelope for the main Agent."""
 
@@ -197,9 +217,11 @@ class ChatEventPromptRenderer:
         self,
         events: Iterable[EventRecord] = (),
         *,
+        self_name: str,
         timezone: str = "Asia/Shanghai",
         references: EventPromptReferences | None = None,
     ) -> None:
+        self._self_name = sanitize_display_name(self_name)
         self._timezone = timezone
         self._references = (
             EventPromptIndex(events).capture()
@@ -342,9 +364,9 @@ class ChatEventPromptRenderer:
         """Render content plus immutable sender, reply, and mention relationships."""
 
         content = self.event_content(
-            row,
+            self._with_self_mentions(row),
             current_event_id,
-            current_content,
+            self._self_mentions_in(row, current_content),
         )
         if not content:
             return ""
@@ -367,9 +389,9 @@ class ChatEventPromptRenderer:
         """Render one main-Agent event with a stable local event reference."""
 
         content = self.event_content(
-            row,
+            self._with_self_mentions(row),
             current_event_id,
-            current_content,
+            self._self_mentions_in(row, current_content),
         )
         if not content:
             return ""
@@ -399,7 +421,7 @@ class ChatEventPromptRenderer:
         mention_field = self._mention_field(row)
         if mention_field:
             fields.append(mention_field)
-        envelope = f"[{row.sender_display_name}|{self._principal_ref(row)}]"
+        envelope = f"[{self._display_name(row)}|{self._principal_ref(row)}]"
         if proactive_label is not None:
             envelope = proactive_label
         return f"{envelope}\n{'|'.join(fields)}>{content}"
@@ -452,7 +474,7 @@ class ChatEventPromptRenderer:
 
     def _event_envelope(self, row: EventRecord) -> str:
         fields = [
-            f"发送者:{row.sender_display_name}",
+            f"发送者:{self._display_name(row)}",
             self._principal_ref(row),
             f"事件:#{row.id}",
         ]
@@ -491,12 +513,20 @@ class ChatEventPromptRenderer:
         )
         labels = []
         for data in snapshots:
-            name = sanitize_display_name(
-                str(
-                    data.get("display_name")
-                    or ("全体成员" if data.get("kind") == "all" else "未识别成员")
+            if data.get("kind") == "yuki":
+                shown = sanitize_display_name(str(data.get("display_name") or ""))
+                name = (
+                    f"{self._self_name}(显示为{shown})"
+                    if shown and shown != self._self_name
+                    else self._self_name
                 )
-            )
+            else:
+                name = sanitize_display_name(
+                    str(
+                        data.get("display_name")
+                        or ("全体成员" if data.get("kind") == "all" else "未识别成员")
+                    )
+                )
             account = data.get("account_id")
             labels.append(f"{name}/@{{account:{account}}}" if account else name)
         return f"提及:{','.join(labels)}" if labels else ""
@@ -517,4 +547,16 @@ class ChatEventPromptRenderer:
         return (row.author_kind or "unknown", row.platform, row.sender_user_id)
 
     def _row_identity_label(self, row: EventRecord) -> str:
-        return f"{row.sender_display_name}/{self._principal_ref(row)}"
+        return f"{self._display_name(row)}/{self._principal_ref(row)}"
+
+    def _display_name(self, row: EventRecord) -> str:
+        # Yuki's lines read under the current character name; an event-time card or the
+        # transport fallback would hide from her that these lines are her own.
+        return self._self_name if row.author_kind == "yuki" else row.sender_display_name
+
+    def _self_mentions_in(self, row: EventRecord, content: str) -> str:
+        return self_mention_content(row, content, self._self_name)
+
+    def _with_self_mentions(self, row: EventRecord) -> EventRecord:
+        content = self._self_mentions_in(row, row.content)
+        return row if content == row.content else replace(row, content=content)

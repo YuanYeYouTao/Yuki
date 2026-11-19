@@ -124,6 +124,7 @@ async def test_real_foreground_delta_preserves_full_render_bytes_and_dispatch(
             renderer = ChatEventPromptRenderer(
                 raw.raw_events,
                 timezone=harness.settings.default_timezone,
+                self_name="Yuki",
             )
             grouped, individual = renderer.main_agent_history_views(
                 row for row in raw.raw_events if row.id != context.current_event_id
@@ -176,7 +177,9 @@ async def test_real_foreground_delta_preserves_full_render_bytes_and_dispatch(
             assert cost == ((context.current_event_id,), (context.current_event_id,))
         # Raw history API keeps its full-tail contract while foreground preparation
         # fetches only pending bodies. Re-read the stable epoch without rendering.
-        snapshot = await chat._conversation_scopes.prepare_prompt_snapshot(message.scope())
+        snapshot = await chat._conversation_scopes.prepare_prompt_snapshot(
+            message.scope(), self_name="Yuki"
+        )
         assert snapshot.raw_events == ()
         assert (
             len((await chat._conversation_scopes.load_prompt_snapshot(message.scope())).raw_events)
@@ -260,7 +263,7 @@ async def test_concurrent_admission_cannot_remove_an_older_candidates_captured_h
     scopes = chat._conversation_scopes
     raw = await scopes.load_prompt_snapshot(message.scope())
     repository = scopes.projections
-    renderer = ChatEventPromptRenderer(raw.raw_events)
+    renderer = ChatEventPromptRenderer(raw.raw_events, self_name="Yuki")
     first, *holes = raw.raw_events
     initial = FrozenFragments.load([]).append_current(first.id, renderer.reference_message(first))
 
@@ -282,7 +285,7 @@ async def test_concurrent_admission_cannot_remove_an_older_candidates_captured_h
             return await publication(writer)
 
     await publish(initial)
-    warm = await scopes.prepare_prompt_snapshot(message.scope())
+    warm = await scopes.prepare_prompt_snapshot(message.scope(), self_name="Yuki")
     base = warm.projection
     expected_ids = tuple(row.id for row in holes)
     assert tuple(row.id for row in warm.raw_events) == expected_ids
@@ -303,14 +306,16 @@ async def test_concurrent_admission_cannot_remove_an_older_candidates_captured_h
         return await scalars(reader, statement, *args, **kwargs)
 
     monkeypatch.setattr(AsyncSession, "scalars", paused)
-    candidate_task = asyncio.create_task(scopes.prepare_prompt_snapshot(message.scope()))
+    candidate_task = asyncio.create_task(
+        scopes.prepare_prompt_snapshot(message.scope(), self_name="Yuki")
+    )
     try:
         await asyncio.wait_for(query_started.wait(), 5)
         later = base.fragments.extend_history(
             tuple(((row.id,), renderer.reference_message(row)) for row in holes), ()
         )
         await publish(later, base)
-        accepted = await scopes.prepare_prompt_snapshot(message.scope())
+        accepted = await scopes.prepare_prompt_snapshot(message.scope(), self_name="Yuki")
         assert accepted.raw_events == () and warm.source.pending(raw.scope.last_event_id) == ()
     finally:
         release.set()
@@ -321,3 +326,25 @@ async def test_concurrent_admission_cannot_remove_an_older_candidates_captured_h
     assert tuple(row.id for row in candidate.raw_events) == expected_ids
     assert candidate.frozen_prefix.event_ids == {first.id}
     assert accepted.projection.fragments.event_ids == {row.id for row in raw.raw_events}
+
+
+async def test_character_rename_rebuilds_the_cached_history_source(database, tmp_path):
+    from yuki.llm.fake import FakeLLMProvider
+
+    env, _, chat, _, message = await _scene(database, tmp_path, FakeLLMProvider())
+    await seed_scoped_event(
+        env.service.writer,
+        scope=message.scope(),
+        origin_key="own-line",
+        sender_user_id="10001",
+        direction="inbound",
+        content="叫一下",
+    )
+    scopes = chat._conversation_scopes
+
+    first = await scopes.prepare_prompt_snapshot(message.scope(), self_name="Yuki")
+    again = await scopes.prepare_prompt_snapshot(message.scope(), self_name="Yuki")
+    renamed = await scopes.prepare_prompt_snapshot(message.scope(), self_name="ゆき")
+
+    assert again.source is first.source
+    assert renamed.source is not first.source

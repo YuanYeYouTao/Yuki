@@ -69,6 +69,7 @@ async def test_reflection_checkpoint_finishes_after_the_original_daily_request_i
         max_events=10,
         max_characters=16000,
         force=True,
+        self_name="Yuki",
     )
     provider = FakeLLMProvider(lambda _: (_ for _ in ()).throw(AssertionError("replayed model")))
     service = SelfReflectionService(

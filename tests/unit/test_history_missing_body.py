@@ -101,6 +101,7 @@ async def scene(database, count):
         visible_event_ids=frozenset(row.id for row in rows),
         current_event_id=current,
         prompt_raw_tail_end_event_id=current,
+        history_self_name="Yuki",
     )
     return ledger, context, seed
 

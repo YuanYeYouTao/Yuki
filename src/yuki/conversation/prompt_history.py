@@ -78,10 +78,12 @@ class PromptHistorySource:
         stamp: tuple[object, ...],
         *,
         projection: ProjectionSnapshot | None,
+        self_name: str,
         timezone: str,
         after_event_id: int,
     ) -> None:
         self.stamp = stamp
+        self._self_name = self_name
         self.scanned_through = after_event_id
         self._after_event_id = after_event_id
         self.references = EventPromptIndex()
@@ -148,7 +150,7 @@ class PromptHistorySource:
         return True
 
     def extend(self, rows: tuple[EventRecord, ...], *, through_event_id: int) -> None:
-        renderer = ChatEventPromptRenderer(rows, timezone=self._timezone)
+        renderer = ChatEventPromptRenderer(rows, self_name=self._self_name, timezone=self._timezone)
         metadata = []
         for row in rows:
             if row.id in self._positions:
@@ -277,6 +279,7 @@ class PromptHistorySource:
     ) -> tuple[tuple[EventFragment, ...], tuple[EventFragment, ...]]:
         renderer = ChatEventPromptRenderer(
             references=references,
+            self_name=self._self_name,
             timezone=self._timezone,
         )
         fresh = {row.id: row for row in rows if row.id != current_event_id}

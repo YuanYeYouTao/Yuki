@@ -37,7 +37,7 @@ async def test_scan_keeps_legacy_owner_cursor_and_retries_original_gap(database,
         max_characters=16000,
         force=True,
     )
-    (original,) = await repository.claim_due(scheduled_slot="original", **claim)
+    (original,) = await repository.claim_due(scheduled_slot="original", **claim, self_name="Yuki")
     await repository.recover_interrupted(original.run_id, "preempted")
     async with database.read_session() as reader:
         original_run = (await reader.execute(select(Run.__table__))).one()
@@ -58,7 +58,7 @@ async def test_scan_keeps_legacy_owner_cursor_and_retries_original_gap(database,
         assert [gap.id for gap in await reader.execute(repository._gap_query(state))] == [
             original.run_id
         ]
-    (retry,) = await repository.claim_due(scheduled_slot="retry", **claim)
+    (retry,) = await repository.claim_due(scheduled_slot="retry", **claim, self_name="Yuki")
     assert retry.run_id == original.run_id
     assert [event.id for event in retry.events] == [first.id]
     await repository.complete(retry, proposals=0, committed=0)

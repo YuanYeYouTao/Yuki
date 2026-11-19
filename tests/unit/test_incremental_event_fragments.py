@@ -85,7 +85,7 @@ def test_linear_groups_match_original_bytes_across_mixed_boundaries():
                     event_kind=rng.choice(("message", "message", "external_event")),
                 )
             )
-        renderer = ChatEventPromptRenderer(rows)
+        renderer = ChatEventPromptRenderer(rows, self_name="Yuki")
         assert renderer.main_agent_history_views(rows) == _original_grouping(renderer, rows)
 
 
@@ -107,7 +107,7 @@ def test_reference_capture_keeps_original_rendering_and_excludes_later_events():
     )
     owner = EventPromptIndex((foreign, old, quoted))
     captured = owner.capture(through_event_id=5)
-    renderer = ChatEventPromptRenderer(references=captured)
+    renderer = ChatEventPromptRenderer(references=captured, self_name="Yuki")
     original = renderer.render_reference_event(quoted)
     assert "原名/person:person-1" in original and "@原名 @Yuki" in original
     owner.extend((later, replace(old, id=3, sender_group_card="晚补旧洞")))
@@ -118,7 +118,9 @@ def test_reference_capture_keeps_original_rendering_and_excludes_later_events():
     overlay = owner.capture(
         through_event_id=5, extra_events=(replace(old, id=3, sender_group_card="晚补旧洞"),)
     )
-    updated = ChatEventPromptRenderer(references=overlay).render_reference_event(quoted)
+    updated = ChatEventPromptRenderer(references=overlay, self_name="Yuki").render_reference_event(
+        quoted
+    )
     assert "@原名 @Yuki" in updated and "@晚补旧洞" not in updated
     assert renderer.render_reference_event(quoted) == original
 
@@ -139,7 +141,9 @@ def test_duplicate_reference_ids_keep_last_metadata_and_original_mention_snapsho
             {"type": "mention", "data": {"display_name": "新Yuki", "account_id": "new-account"}},
         ),
     )
-    rendered = ChatEventPromptRenderer((first, last, focus)).render_reference_event(focus)
+    rendered = ChatEventPromptRenderer(
+        (first, last, focus), self_name="Yuki"
+    ).render_reference_event(focus)
     assert "提及:原Yuki/@{account:old-account},新Yuki/@{account:new-account}" in rendered
     assert rendered.endswith(">@原Yuki @新Yuki")
 

@@ -150,6 +150,7 @@ async def test_app_only_self_reflection_claim_and_write_do_not_require_qq_bindin
         max_events=10,
         max_characters=16000,
         force=True,
+        self_name="Yuki",
     )
     assert batch.state.canonical_person_id == person
     assert batch.state.external_person_id is None

@@ -173,6 +173,7 @@ async def test_one_private_entry_reset_preserves_other_entry_self_reflection(dat
         max_events=100,
         max_characters=16000,
         context_events=0,
+        self_name="Yuki",
     )
     assert len(claimed) == 1
     assert [item.id for item in claimed[0].events] == [live.id]

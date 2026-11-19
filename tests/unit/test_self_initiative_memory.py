@@ -137,6 +137,7 @@ async def claim(database, cycle="cycle-1", *, max_characters=16000):
         max_events=100,
         max_characters=max_characters,
         cycle_id=cycle,
+        self_name="Yuki",
     )
 
 
@@ -296,7 +297,7 @@ async def test_concurrent_reflection_claims_keep_one_original_run(
         await repository.scan_new_events()
     original_id = original_fingerprint = checkpoint = None
     if run_state == "retry":
-        (previous,) = await repository.claim_due(**options)
+        (previous,) = await repository.claim_due(**options, self_name="Yuki")
         original_id = previous.run_id
         await repository.fail(original_id, "provider_unavailable")
         checkpoint = '{"output":{"proposals":[],"episodes":[]}}'
@@ -340,14 +341,16 @@ async def test_concurrent_reflection_claims_keep_one_original_run(
 
             patch.setattr(database, "immediate_session", prepared_state)
         outcomes = await asyncio.gather(
-            repository.claim_due(**options),
-            SelfReflectionRepository(database).claim_due(**options),
+            repository.claim_due(**options, self_name="Yuki"),
+            SelfReflectionRepository(database).claim_due(**options, self_name="Yuki"),
             return_exceptions=True,
         )
     accepted = [batch for result in outcomes if isinstance(result, tuple) for batch in result]
     assert len(accepted) == 1 and sum(result == () for result in outcomes) == 1, outcomes
     original = accepted[0]
-    assert await repository.claim_due(**{**options, "cycle_id": "next-cycle"}) == ()
+    assert (
+        await repository.claim_due(**{**options, "cycle_id": "next-cycle"}, self_name="Yuki") == ()
+    )
     async with database.read_session() as session:
         stored = tuple(await session.scalars(select(MemorySelfReflectionRunModel)))
     assert len(stored) == 1 and stored[0].id == original.run_id
@@ -453,7 +456,7 @@ async def test_reflection_transition_keeps_original_source_after_unrelated_wal_c
         cycle_id="original-cycle",
     )
     if operation != "claim":
-        (batch,) = await repository.claim_due(**options)
+        (batch,) = await repository.claim_due(**options, self_name="Yuki")
         if operation.startswith("recover"):
             await repository.save_checkpoint(batch.run_id, '{"completed_counts":[0,0]}')
     tail = await _event(
@@ -466,7 +469,7 @@ async def test_reflection_transition_keeps_original_source_after_unrelated_wal_c
     await repository.scan_new_events()
     with unrelated_wal_commit_before_write(database, initiative_id):
         if operation == "claim":
-            (batch,) = await repository.claim_due(**options)
+            (batch,) = await repository.claim_due(**options, self_name="Yuki")
         elif operation == "complete":
             await repository.complete(batch, proposals=0, committed=0)
         elif operation == "recover_interrupted":
@@ -503,7 +506,7 @@ async def test_reflection_transition_keeps_original_source_after_unrelated_wal_c
         assert await repository.recover_interrupted(batch.run_id, "duplicate-recovery") is None
         assert await repository.recover_stale_runs(started_before=datetime.now(UTC)) == 0
         (next_batch,) = await repository.claim_due(
-            **{**options, "scheduled_slot": "tail-only", "cycle_id": "tail-cycle"}
+            **{**options, "scheduled_slot": "tail-only", "cycle_id": "tail-cycle"}, self_name="Yuki"
         )
         assert [item.id for item in next_batch.events] == [tail.id]
 
@@ -585,6 +588,7 @@ async def test_reflection_health_uses_original_oldest_recent_cycle_baseline(data
         max_wait_seconds=0,
         max_events=1,
         max_characters=16000,
+        self_name="Yuki",
     )
     now = datetime.now(UTC)
     async with database.immediate_session() as session:
@@ -667,6 +671,7 @@ async def test_mixed_recovery_prepares_full_tail_before_cursor_write_and_sees_st
         max_wait_seconds=0,
         max_events=1,
         max_characters=16000,
+        self_name="Yuki",
     )
     tail = []
     for index in range(105):
@@ -1293,6 +1298,7 @@ async def test_incoming_reflection_keeps_complete_source_without_own_reply(datab
         max_events=100,
         max_characters=100,
         cycle_id="incoming",
+        self_name="Yuki",
     )
     assert [item.id for item in batch.events] == [source.id]
     provider = FakeLLMProvider(responder=lambda _: '{"proposals":[],"episodes":[]}')
@@ -1349,7 +1355,9 @@ async def test_reflection_only_live_source_ranges_block_claim_and_cursor(databas
         max_events=100,
         max_characters=16000,
     )
-    (original,) = await repository.claim_due(**options, cycle_id="before-boundary")
+    (original,) = await repository.claim_due(
+        **options, cycle_id="before-boundary", self_name="Yuki"
+    )
     await repository.fail(original.run_id, "provider_unavailable")
     async with database.immediate_session() as session:
         run = await session.get(MemorySelfReflectionRunModel, original.run_id)
@@ -1372,14 +1380,17 @@ async def test_reflection_only_live_source_ranges_block_claim_and_cursor(databas
     )
     await repository.scan_new_events()
     options["scheduled_slot"] = "after-boundary"
-    claimed = await repository.claim_due(**options, cycle_id="after-boundary")
+    claimed = await repository.claim_due(**options, cycle_id="after-boundary", self_name="Yuki")
     if crossing is not None:
         assert claimed == ()
     else:
         (batch,) = claimed
         assert [item.id for item in batch.events] == [current.id]
         await repository.complete(batch, proposals=0, committed=0)
-        assert await repository.claim_due(**options, cycle_id="after-completion") == ()
+        assert (
+            await repository.claim_due(**options, cycle_id="after-completion", self_name="Yuki")
+            == ()
+        )
     async with database.read_session() as session:
         run = await session.get(MemorySelfReflectionRunModel, original.run_id)
         state = await session.get(MemorySelfReflectionStateModel, original.state.id)

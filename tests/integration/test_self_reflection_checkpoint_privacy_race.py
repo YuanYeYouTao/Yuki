@@ -228,6 +228,7 @@ async def test_empty_output_finishes_without_snapshotting_unreferenced_forgotten
         max_events=10,
         max_characters=16000,
         force=True,
+        self_name="Yuki",
     )
 
     class ErasingProvider(FakeLLMProvider):

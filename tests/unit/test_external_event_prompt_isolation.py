@@ -119,6 +119,7 @@ def _snapshot(current, recent=(), **checkpoint):
         projection=None,
         timezone="Asia/Shanghai",
         after_event_id=coverage,
+        self_name="Yuki",
     )
     source.extend(rows, through_event_id=through)
     references = source.capture(through)
@@ -161,11 +162,12 @@ def _assembled(
         checkpoint_text=checkpoint_text,
         prompt_effective_coverage=0,
         prompt_raw_tail_end_event_id=3,
+        history_self_name="Yuki",
     )
 
 
 def test_main_history_omits_external_source_rows_and_does_not_use_system_role() -> None:
-    renderer = ChatEventPromptRenderer()
+    renderer = ChatEventPromptRenderer(self_name="Yuki")
     rows = (_message(1, "hello"), _external(2, "opened a pull request"), _message(3, "thanks"))
     rendered = renderer.main_agent_history(rows)
     contents = [item.content or "" for _, _, item in rendered]
@@ -208,7 +210,8 @@ def test_proactive_history_groups_by_origin_and_cause_without_changing_body() ->
         origin="plugin_background",
     )
     renderer = ChatEventPromptRenderer(
-        (ordinary, first_cause, first_part, second_part, second_cause, other_episode, legacy)
+        (ordinary, first_cause, first_part, second_part, second_cause, other_episode, legacy),
+        self_name="Yuki",
     )
 
     rendered = renderer.main_agent_history(
@@ -243,7 +246,7 @@ def test_public_source_projection_preserves_proactive_cause_label() -> None:
         caused_by_external_event_type="ReleaseEvent",
     )
 
-    projected = ChatEventPromptRenderer((event,)).render_reference_event(event)
+    projected = ChatEventPromptRenderer((event,), self_name="Yuki").render_reference_event(event)
 
     assert "由外部事件 #8 触发" in projected
     assert "source=github" in projected
@@ -253,7 +256,7 @@ def test_public_source_projection_preserves_proactive_cause_label() -> None:
 
 def test_current_external_carrier_keeps_its_source_and_user_role_once() -> None:
     current = _external(9, "external summary", payload={"body": "payload body"})
-    renderer = ChatEventPromptRenderer((current,))
+    renderer = ChatEventPromptRenderer((current,), self_name="Yuki")
     message = renderer.reference_message(current)
     assert message.role == "user"
     assert "external summary" in (message.content or "")

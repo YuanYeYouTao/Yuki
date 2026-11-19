@@ -106,9 +106,9 @@ async def test_native_mention_reaches_first_reply_without_remote_profile_reads(
             assert receipt.status == "succeeded" and receipt.presence_id == env.presence
             assert receipt.event_id is not None and receipt.platform_reference
         first = provider.requests[0]
-        assert any(
-            original.content in item.content for item in first.messages if item.role == "user"
-        )
+        # The native @ of Yuki reaches the model under the current character name.
+        rendered = f"@{app.settings.character_identity.display_name} 请回复这条消息"
+        assert any(rendered in item.content for item in first.messages if item.role == "user")
     finally:
         assert not await app.lifecycle._close_entries(app.lifecycle._entries)
 
