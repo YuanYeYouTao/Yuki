@@ -6,7 +6,7 @@ from uuid import uuid4
 from sqlalchemy import select
 
 from yuki.client_api.agent_target import stored_target, tool_arguments
-from yuki.domain.messages import ChatResponse, ToolCall, ToolFunction
+from yuki.domain.messages import ChatResponse, FunctionCallOutput, ToolCall, ToolFunction
 from yuki.external_agents.db_models import AgentEventModel, AgentOperationModel
 from yuki.persistence.models import ChatEventModel
 from yuki.runtime.work_activation import current_work_control
@@ -134,7 +134,10 @@ class DesktopNativeWorkScenario:
         if self.finish_phase == 1:
             return call("get_tasks", {"id": self.delegation_id})
         if self.finish_phase == 2:
-            assert operation.id in request.messages[-1].content
+            assert operation.id in (request.messages[-1].content or "") or any(
+                isinstance(item, FunctionCallOutput) and operation.id in item.output
+                for item in request.continuation_items
+            )
             return call(
                 "send",
                 {
