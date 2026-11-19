@@ -65,11 +65,17 @@ PROTOCOLS = {
         "system",
         "messages",
     ),
+    # Production OpenAI profiles declare explicit breakpoints, which move the
+    # leading instructions into the first developer input item.
     "openai_responses": (
         lambda: OpenAIResponsesProvider(
-            base_url="https://wire.invalid", api_key="synthetic", timeout_seconds=1, max_retries=0
+            base_url="https://wire.invalid",
+            api_key="synthetic",
+            timeout_seconds=1,
+            max_retries=0,
+            prompt_cache_breakpoints=True,
         ),
-        "instructions",
+        None,
         "input",
     ),
     "chat_completions": (
