@@ -76,7 +76,7 @@ def _claim(**overrides: object) -> ExtractedMemoryClaim:
 
 def test_validator_owns_event_and_speaker_identity() -> None:
     event = _event(event_id=42, sender_user_id="1001")
-    validated = MemoryClaimValidator().validate(_claim(), event)
+    validated = MemoryClaimValidator().validate(_claim(), event, self_name="Yuki")
     assert validated is not None
     fact, evidence = validated
     assert fact.subject_user_id == "1001"
@@ -88,11 +88,12 @@ def test_validator_owns_event_and_speaker_identity() -> None:
 def test_validator_rejects_unknown_subject_and_private_group_claims() -> None:
     event = _event()
     validator = MemoryClaimValidator()
-    assert validator.validate(_claim(subject_ref="other_person"), event) is None
+    assert validator.validate(_claim(subject_ref="other_person"), event, self_name="Yuki") is None
     assert (
         validator.validate(
             _claim(subject_ref="group", scope_type="group"),
             event,
+            self_name="Yuki",
         )
         is None
     )
@@ -101,11 +102,15 @@ def test_validator_rejects_unknown_subject_and_private_group_claims() -> None:
 def test_validator_rejects_non_event_evidence_but_trusts_model_paraphrase() -> None:
     event = _event()
     validator = MemoryClaimValidator()
-    assert validator.validate(_claim(evidence_quote="上下文里有人准备考研"), event) is None
+    assert (
+        validator.validate(_claim(evidence_quote="上下文里有人准备考研"), event, self_name="Yuki")
+        is None
+    )
     assert (
         validator.validate(
             _claim(content="准备出国", evidence_quote="我准备考研"),
             event,
+            self_name="Yuki",
         )
         is not None
     )

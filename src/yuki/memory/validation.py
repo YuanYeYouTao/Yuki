@@ -6,6 +6,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime
 
+from yuki.event_prompt import self_mention_evidence
 from yuki.memory.enums import (
     MemoryAuthority,
     MemoryClaimOperation,
@@ -77,8 +78,11 @@ class MemoryClaimValidator:
         event: EventRecord,
         *,
         subject_context: SubjectResolutionContext | None = None,
+        self_name: str,
     ) -> tuple[MemoryFactCreate, MemoryEvidenceCreate] | None:
-        validated = self.validate_claim(claim, event, subject_context=subject_context)
+        validated = self.validate_claim(
+            claim, event, subject_context=subject_context, self_name=self_name
+        )
         if validated is None:
             return None
         return validated.fact, validated.evidence
@@ -89,11 +93,13 @@ class MemoryClaimValidator:
         event: EventRecord,
         *,
         subject_context: SubjectResolutionContext | None = None,
+        self_name: str,
     ) -> ValidatedMemoryClaim | None:
         return self.validate_claim_result(
             claim,
             event,
             subject_context=subject_context,
+            self_name=self_name,
         ).claim
 
     def validate_claim_result(
@@ -102,6 +108,7 @@ class MemoryClaimValidator:
         event: EventRecord,
         *,
         subject_context: SubjectResolutionContext | None = None,
+        self_name: str,
     ) -> MemoryClaimValidationResult:
         """Validate one claim while preserving why a rejected claim was dropped."""
 
@@ -110,6 +117,7 @@ class MemoryClaimValidator:
                 claim,
                 event,
                 subject_context=subject_context,
+                self_name=self_name,
             )
         except _MemoryClaimRejected as exc:
             return MemoryClaimValidationResult(None, exc.reason_code)
@@ -121,11 +129,16 @@ class MemoryClaimValidator:
         event: EventRecord,
         *,
         subject_context: SubjectResolutionContext | None = None,
+        self_name: str,
     ) -> ValidatedMemoryClaim:
         if not event.evidence_content.strip():
             raise _MemoryClaimRejected("empty_event")
         raw_quote = claim.evidence_quote.strip()
-        if not raw_quote or raw_quote not in event.evidence_content:
+        # The extractor read Yuki's own mentions under her character name; either form counts.
+        if not raw_quote or (
+            raw_quote not in event.evidence_content
+            and raw_quote not in self_mention_evidence(event, self_name)
+        ):
             raise _MemoryClaimRejected("evidence_quote_not_in_event")
         quote = normalize_memory_text(raw_quote)
         resolved = self._resolver.resolve(

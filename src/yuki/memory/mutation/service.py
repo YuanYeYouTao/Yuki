@@ -19,7 +19,11 @@ from yuki.config import Settings
 from yuki.conversation.canonical_db_models import CanonicalConversationModel
 from yuki.domain.conversations import ScopeType
 from yuki.domain.memory_config import MemoryConfigScope
-from yuki.event_prompt import ChatEventPromptRenderer, self_mention_content
+from yuki.event_prompt import (
+    ChatEventPromptRenderer,
+    self_mention_content,
+    self_mention_evidence,
+)
 from yuki.identity.authority import person_is_superuser
 from yuki.identity.person_identity import (
     current_person_ids,
@@ -2904,8 +2908,7 @@ class MemoryMutationService:
         if request.evidence_quote is None:
             return source
         # The model read Yuki's own mentions under her character name; either form is this event.
-        shown = self_mention_content(event, event.content, self_name)
-        rendered = normalize_memory_text(shown + event.evidence_content[len(event.content) :])
+        rendered = normalize_memory_text(self_mention_evidence(event, self_name))
         quote = normalize_memory_text(request.evidence_quote)
         if not quote or (quote not in source and quote not in rendered):
             raise MemoryMutationRejected("evidence_quote_not_in_current_event")

@@ -210,6 +210,13 @@ def self_mention_content(row: EventRecord, content: str, self_name: str) -> str:
     return "".join(parts) + content[cursor:] if parts else content
 
 
+def self_mention_evidence(row: EventRecord, self_name: str) -> str:
+    """Return the event's evidence text as models read it, Yuki's own mentions renamed."""
+
+    shown = self_mention_content(row, row.content, self_name)
+    return shown + row.evidence_content[len(row.content) :]
+
+
 class ChatEventPromptRenderer:
     """Render one canonical prompt envelope for the main Agent."""
 

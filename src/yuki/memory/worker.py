@@ -184,6 +184,7 @@ class MemoryWorker:
                 tuple(job.event for job in jobs),
                 context=context,
                 max_output_tokens=self._settings.memory_batch_max_output_tokens,
+                self_name=self._settings.character_identity.display_name,
             )
         except asyncio.CancelledError:
             raise

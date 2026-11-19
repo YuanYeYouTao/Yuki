@@ -52,6 +52,7 @@ class AvailableSubject(_ExtractionModel):
 
 
 class MemoryExtractionInput(_ExtractionModel):
+    bot_name: str = Field(min_length=1)
     primary_event: PrimaryEvent
     available_subjects: tuple[AvailableSubject, ...]
     conversation_context: tuple[ConversationContextEvent, ...] = ()
@@ -97,6 +98,7 @@ class BatchConversationContextEvent(_ExtractionModel):
 
 
 class BatchMemoryExtractionInput(_ExtractionModel):
+    bot_name: str = Field(min_length=1)
     events: tuple[BatchPrimaryEvent, ...] = Field(min_length=1)
     conversation_context: tuple[BatchConversationContextEvent, ...] = Field(
         default=(),
