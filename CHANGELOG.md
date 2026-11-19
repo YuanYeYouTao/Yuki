@@ -2,6 +2,9 @@
 
 ## 未发布
 
+- 委派与浏览可以用原生会话 ID：`start_subtask(executor={agent}, session=…)` 与 `get_tasks(agents={agent, session})` 在给出 Agent 时也接受该 Agent 下的原生会话 ID（如 Claude 的会话 ID），记录仍保存内部 ID；不给 Agent 时仍只认内部 ID。此前用户直接给出原生会话 ID 时会报 `external_agent_not_found`。
+- Delegation and browsing accept native session IDs: with an `agent` given, `start_subtask(session=…)` and `get_tasks(agents={agent, session})` also resolve that agent's native session ID (such as a Claude session ID) and keep storing the internal ID; without an agent only the internal ID is accepted. Previously a native ID handed over by the user failed with `external_agent_not_found`.
+
 - 本机连接器 **0.9.1**：委派范围的 `commands` 含 `*` 时表示所有命令，带 `&&`、管道等 shell 控制符的命令也在范围内，不再逐条上报；不放宽 `write_paths` 与 `network`。此前 `*` 被当作字面前缀，导致授予“所有命令”的委派每条 Bash 都回到父任务确认。
 - Local connector **0.9.1**: `*` in a delegation scope's `commands` now grants every command, including ones with shell control such as `&&` or pipes, instead of being read as a literal prefix that matched nothing; `write_paths` and `network` are unchanged.
 

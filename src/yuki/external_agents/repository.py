@@ -238,9 +238,19 @@ class AgentRepository:
                 pending.pop(payload["permission_resolved"], None)
         return list(pending.values())
 
-    async def native_session(self, identity: str, actor: str) -> AgentSessionModel:
+    async def native_session(
+        self, identity: str, actor: str, instance_id: str | None = None
+    ) -> AgentSessionModel:
         async with self.database.read_session() as session:
             resource = await session.get(AgentSessionModel, identity)
+            if resource is None and instance_id is not None:
+                # Under a named agent, the native session ID users see names it too.
+                resource = await session.scalar(
+                    select(AgentSessionModel).where(
+                        AgentSessionModel.instance_id == instance_id,
+                        AgentSessionModel.native_id == identity,
+                    )
+                )
             if resource is None:
                 raise ValueError("external_agent_not_found")
             await self.authorize(session, resource.instance_id, actor)

@@ -507,9 +507,13 @@ class ExternalAgentService:
                 "external_agent_resource_required",
                 "target 给 operation_id、session_id 或 execution_id；查看设备与实例时省略 target。",
             )
-        resource = await self.repository.native_session(session_id, actor)
+        named = args.get("instance_id")
+        resource = await self.repository.native_session(
+            session_id, actor, named if isinstance(named, str) else None
+        )
         if args.get("instance_id") not in (None, resource.instance_id):
             raise ValueError("external_agent_target_mismatch")
+        session_id = resource.id
         instance = await self._instance(resource.instance_id, actor, args.get("device_id"))
         connection = await self._connection(instance)
         result = await connection.request(
