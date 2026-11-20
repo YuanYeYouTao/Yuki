@@ -1067,13 +1067,6 @@ def card_text(card: dict[str, Any]) -> str:
     return encode_card(card)
 
 
-def receipt_final(receipt: dict[str, Any] | None) -> bool:
-    """No later result will come: ``pending`` false or a refusal (``admitted`` false)."""
-    return receipt is not None and (
-        receipt.get("pending") is False or receipt.get("admitted") is False
-    )
-
-
 def tool_name(tool: Any) -> str | None:
     """Only a tool's name: an ACP tool is a whole ToolCallUpdate (title, rawInput)."""
     name = tool.get("kind") or tool.get("name") if isinstance(tool, dict) else tool
@@ -1121,7 +1114,7 @@ async def watch_records(reader: AsyncSession) -> list[dict[str, Any]]:
                     "id": operation.id,
                     "action": operation.action,
                     "created": _epoch(operation.created_at),
-                    "final": receipt_final(receipt),
+                    "final": receipt is not None and final_receipt(receipt),
                     "unknown": receipt is None or receipt.get("status", "unknown") == "unknown",
                 }
             )
