@@ -19,10 +19,10 @@ from contextlib import asynccontextmanager
 from dataclasses import asdict, dataclass
 from itertools import islice
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 from weakref import WeakKeyDictionary
 
-from sqlalchemy import and_, delete, or_, select, tuple_, update
+from sqlalchemy import and_, delete, or_, select, update
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -57,7 +57,7 @@ class CodeSnapshotBinding:
 
 
 _IDENTITY_CACHE_ENTRIES = 1024
-_GC_BRANCH_ROWS = 64  # Two indexed branches visit at most 128 metadata rows per pass.
+_GC_BRANCH_ROWS = 64  # Each of the two branches selects at most this many candidates per pass.
 _GC_FILE_SECONDS = 0.1  # Yield after the current filesystem operation completes.
 FileIdentity = tuple[int, int, int, int, int]
 
@@ -83,13 +83,6 @@ async def _finish_thread[T](call: Callable[..., T], *args: Any) -> T:
         raise
 
 
-@dataclass
-class _GCScan:
-    cutoff: float
-    high_water: tuple[float, str]
-    cursor: tuple[float, str] | None = None
-
-
 class ProtocolStore:
     def __init__(
         self, database: Database, *, policy: WorkStorageRuntimeConfig | None = None
@@ -111,7 +104,6 @@ class ProtocolStore:
             database._protocol_gc_lock = asyncio.Lock()
         assert database._protocol_gc_lock is not None
         self._gc_lock = database._protocol_gc_lock
-        self._scans = cast(dict[bool, _GCScan], database._protocol_gc_scans)
         database_path = make_url(database.url).database
         if not database_path or database_path == ":memory:":
             root = getattr(database, "_protocol_store_path", None)
@@ -474,34 +466,22 @@ class ProtocolStore:
                 continue
         return result
 
-    async def _gc_page(self, deleting: bool, cutoff: float) -> list[dict[str, Any]]:
-        """Page metadata before examining ownership, even when every row is owned."""
-        scan = self._scans.get(deleting)
+    async def _gc_page(
+        self, deleting: bool, cutoff: float, unowned: ColumnElement[bool]
+    ) -> list[dict[str, Any]]:
+        """Select unowned candidates directly; owned rows never fill a page.
+
+        Owned rows of resumable Work can sort before every unowned one, so a page
+        of all metadata could stay owned forever. Each pass starts from the oldest
+        candidate again; nothing in memory has to survive a restart.
+        """
+        conditions = [objects.c.deleting.is_(deleting), unowned]
+        if not deleting:
+            conditions.append(objects.c.prepared_at < cutoff)
         async with self.database.read_session() as reader:
-            if scan is None:
-                conditions: list[ColumnElement[bool]] = [objects.c.deleting.is_(deleting)]
-                if not deleting:
-                    conditions.append(objects.c.prepared_at < cutoff)
-                high = (
-                    await reader.execute(
-                        select(objects.c.prepared_at, objects.c.sha256)
-                        .where(*conditions)
-                        .order_by(objects.c.prepared_at.desc(), objects.c.sha256.desc())
-                        .limit(1)
-                    )
-                ).first()
-                if high is None:
-                    return []
-                scan = _GCScan(cutoff, (high.prepared_at, high.sha256))
-                self._scans[deleting] = scan
-            key = tuple_(objects.c.prepared_at, objects.c.sha256)
-            conditions = [objects.c.deleting.is_(deleting), key <= scan.high_water]
-            if not deleting:
-                conditions.append(objects.c.prepared_at < scan.cutoff)
-            if scan.cursor is not None:
-                conditions.append(key > scan.cursor)
-            page = list(
-                (
+            return [
+                dict(row)
+                for row in (
                     await reader.execute(
                         select(objects)
                         .where(*conditions)
@@ -509,20 +489,7 @@ class ProtocolStore:
                         .limit(_GC_BRANCH_ROWS)
                     )
                 ).mappings()
-            )
-            if page:
-                last = page[-1]
-                scan.cursor = (last["prepared_at"], last["sha256"])
-            if len(page) < _GC_BRANCH_ROWS or scan.cursor == scan.high_water:
-                self._scans.pop(deleting, None)
-            if not page:
-                return []
-            owned = set(
-                await reader.scalars(
-                    select(refs.c.sha256).where(refs.c.sha256.in_([row["sha256"] for row in page]))
-                )
-            )
-            return [dict(row) for row in page if row["sha256"] not in owned]
+            ]
 
     def _unlink_objects(self, selected: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """The caller holds only the file fence; finish a current unlink before yielding."""
@@ -574,7 +541,10 @@ class ProtocolStore:
                                 insert(objects).on_conflict_do_nothing(), still_expired
                             )
             unowned = ~select(refs.c.sha256).where(refs.c.sha256 == objects.c.sha256).exists()
-            candidates = [*await self._gc_page(True, cutoff), *await self._gc_page(False, cutoff)]
+            candidates = [
+                *await self._gc_page(True, cutoff, unowned),
+                *await self._gc_page(False, cutoff, unowned),
+            ]
             if not candidates:
                 return 0
             frozen = or_(

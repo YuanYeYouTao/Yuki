@@ -125,7 +125,6 @@ class Database:
         self._protocol_storage_lock: asyncio.Lock | None = None
         self._protocol_gc_iterator: Iterator[Path] | None = None
         self._protocol_gc_lock: asyncio.Lock | None = None
-        self._protocol_gc_scans: dict[bool, Any] = {}
         self._writer = asyncio.Lock()
         self._writer_failure: BaseException | None = None
         self._closed = False
