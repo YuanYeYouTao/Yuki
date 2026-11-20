@@ -1210,8 +1210,8 @@ class AgentRepository:
                     else None
                 )
                 prepared = {row.work_id: await waits.prepare_external_action(reader, row.work_id)}
-                # A release's own answer is the record's fact: failures are retried and
-                # alerted to operators by the settlement, never handed to the parent.
+                # A release's own answer is the record's fact: the settlement retries a
+                # failure at the next fact; it is never handed to the parent.
                 settling = await release_reference(reader, row)
             result = json.loads(row.result_json)
             input_json = encode_card(

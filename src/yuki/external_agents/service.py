@@ -20,7 +20,7 @@ from yuki.external_agents.db_models import (
     AgentOperationModel,
     AgentSessionModel,
 )
-from yuki.external_agents.delegation import last_holder, release_operation
+from yuki.external_agents.delegation import release_in_effect
 from yuki.external_agents.errors import ExternalAgentArgumentError
 from yuki.external_agents.identity import ConnectorIdentityService
 from yuki.external_agents.repository import (
@@ -116,12 +116,12 @@ class ExternalAgentService:
         self._retiring: dict[str, asyncio.Task[None]] = {}
         self._dispatches: dict[str, asyncio.Task[None]] = {}
         self._queries: dict[str, asyncio.Task[None]] = {}
-        # #645: one settlement pass per device at a time (asked again during a pass, it
-        # reruns; True also writes unconfirmed answers again), and one lock per native
-        # session for check-then-write against new input. The stored attempts are the
-        # only other state, so a restart loses nothing.
+        # #645: one settlement pass per device at a time; a request during a pass
+        # reruns it with (write unconfirmed answers again, sessions or None for all).
+        # One lock per native session for check-then-write against new input. The
+        # stored attempts are the only other state, so a restart loses nothing.
         self._settling: dict[str, asyncio.Task[None]] = {}
-        self._settle_requested: dict[str, bool] = {}
+        self._settle_requested: dict[str, tuple[bool, set[tuple[str, str]] | None]] = {}
         self._session_locks: dict[tuple[str, str, str], asyncio.Lock] = {}
 
     async def close(self) -> None:
@@ -185,7 +185,7 @@ class ExternalAgentService:
         await self.repository.connection_event(device_id, connection.id, True)
         # A connection may follow a lost write or a restart: settle released sessions
         # and write unconfirmed answers again under their own IDs (#645), in background.
-        self._kick_settlement(device_id, resend=True)
+        self._kick_settlement(device_id, None, resend=True)
 
     async def disconnect(self, connection: DeviceConnection) -> None:
         if self.connections.detach(connection):
@@ -279,7 +279,12 @@ class ExternalAgentService:
             await self._write(identity, connection, command)
 
     async def _write(
-        self, identity: str, connection: DeviceConnection, command: dict[str, Any]
+        self,
+        identity: str,
+        connection: DeviceConnection,
+        command: dict[str, Any],
+        *,
+        unconfirmed: bool = False,
     ) -> None:
         try:
             async with self.database.read_session() as session:
@@ -289,6 +294,10 @@ class ExternalAgentService:
             allowed = False
         # The connection is checked last, with no await before the write.
         if not allowed or not self.connections.current(connection):
+            if unconfirmed:
+                # An earlier write of this ID may have run on the device; not writing
+                # it again now proves nothing about that (#645).
+                return
             # Nothing was written: the source, connection or grant ended first.
             operation = await self.repository.response(
                 identity,
@@ -1247,16 +1256,18 @@ class ExternalAgentService:
         facts = [event for event in events if event.get("kind") != "receipt"]
         if facts:
             await self.repository.receive_events(device_id, facts)
-        if any(
-            fact.get("kind") in {"permission", "question"}
+        unowned = {
+            (str(fact.get("instance_id")), str(fact.get("session_id")))
+            for fact in facts
+            if fact.get("kind") in {"permission", "question"}
             and fact.get("operation_id") is None
             and isinstance(fact.get("payload"), dict)
             and fact["payload"].get("unowned") is True
-            for fact in facts
-        ):
-            # Its settlement row (if released) was opened with the fact; settle it in
-            # the background, never on the ACK path (#645).
-            self._kick_settlement(device_id)
+        }
+        if unowned:
+            # A released session's wait is settled by its release, in the background,
+            # never on the ACK path (#645).
+            self._kick_settlement(device_id, unowned)
         for receipt in (event for event in events if event.get("kind") == "receipt"):
             identity = receipt.get("operation_id")
             result = (receipt.get("payload") or {}).get("result")
@@ -1283,38 +1294,45 @@ class ExternalAgentService:
                 continue
             await self._settle(identity, result)
 
-    def _kick_settlement(self, device_id: str, *, resend: bool = False) -> None:
-        """One background settlement pass per device; a request during a pass reruns it."""
+    def _kick_settlement(
+        self, device_id: str, sessions: set[tuple[str, str]] | None, *, resend: bool = False
+    ) -> None:
+        """One background settlement pass per device; a request during a pass reruns it.
+
+        ``sessions`` are (instance local ID, native session ID) pairs with a new wait;
+        None (a connection) means every session of the device.
+        """
         key = f"release:{device_id}"
-        self._settle_requested[key] = self._settle_requested.get(key, False) or resend
+        previous = self._settle_requested.get(key)
+        if previous is not None:
+            resend = resend or previous[0]
+            sessions = None if sessions is None or previous[1] is None else previous[1] | sessions
+        self._settle_requested[key] = (resend, sessions)
         running = self._settling.get(key)
         if running is None or running.done():
             self._background(self._settling, key, self._settle_device(device_id, key))
 
     async def _settle_device(self, device_id: str, key: str) -> None:
         while key in self._settle_requested:
-            resend = self._settle_requested.pop(key)
+            resend, wanted = self._settle_requested.pop(key)
+            query = (
+                select(AgentSessionModel.id, AgentSessionModel.native_id, AgentInstanceModel)
+                .join(AgentInstanceModel, AgentInstanceModel.id == AgentSessionModel.instance_id)
+                .where(AgentInstanceModel.device_id == device_id)
+            )
+            if wanted is not None:
+                query = query.where(AgentSessionModel.native_id.in_({n for _, n in wanted}))
             released = []
             async with self.database.read_session() as reader:
-                sessions = (
-                    await reader.execute(
-                        select(
-                            AgentSessionModel.id, AgentSessionModel.native_id, AgentInstanceModel
-                        )
-                        .join(
-                            AgentInstanceModel,
-                            AgentInstanceModel.id == AgentSessionModel.instance_id,
-                        )
-                        .where(AgentInstanceModel.device_id == device_id)
-                    )
-                ).all()
-                for session_id, native_session, instance in sessions:
-                    holder = await last_holder(reader, session_id)
-                    if holder is not None and await release_operation(reader, holder, session_id):
-                        released.append((holder, session_id, native_session, instance))
-            for holder, session_id, native_session, instance in released:
+                for session_id, native_session, instance in (await reader.execute(query)).all():
+                    if wanted is not None and (instance.local_id, native_session) not in wanted:
+                        continue
+                    release = await release_in_effect(reader, session_id)
+                    if release is not None and release.work_id is not None:
+                        released.append((release.work_id, session_id, native_session, instance))
+            for work_id, session_id, native_session, instance in released:
                 await self._settle_release(
-                    device_id, holder, session_id, native_session, instance, resend
+                    device_id, work_id, session_id, native_session, instance, resend
                 )
 
     async def _settle_release(
@@ -1345,9 +1363,9 @@ class ExternalAgentService:
         lock_key = (device_id, instance.local_id, native_session)
         async with self._session_locks.setdefault(lock_key, asyncio.Lock()):
             async with self.database.read_session() as reader:
-                if await last_holder(reader, session_id) != work_id:
-                    return  # Taken over: the new holder's deny-only path owns what is left.
-                release = await release_operation(reader, work_id, session_id)
+                release = await release_in_effect(reader, session_id)
+                if release is None or release.work_id != work_id:
+                    return  # Taken over or resumed: the holder's own path owns the waits.
                 record = (
                     await reader.execute(
                         select(work.c.conversation_id, work.c.generation).where(
@@ -1366,7 +1384,7 @@ class ExternalAgentService:
                         .order_by(AgentOperationModel.created_at, AgentOperationModel.id)
                     )
                 )
-            if release is None or record is None:
+            if record is None:
                 return
             by_wait: dict[str, list[AgentOperationModel]] = {}
             for attempt in attempts:
@@ -1386,7 +1404,9 @@ class ExternalAgentService:
                             wait["permission_id"],
                             last.id,
                         )
-                        await self._write(last.id, connection, json.loads(last.command_json))
+                        await self._write(
+                            last.id, connection, json.loads(last.command_json), unconfirmed=True
+                        )
                     continue
                 registered = await self._register_release_answer(
                     work_id,

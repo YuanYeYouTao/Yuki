@@ -5,13 +5,21 @@ Failure cases written before the implementation (taskbook
 - F1-F4, F7: the release does not deny the wait, wakes the parent, leaves no record
   on the released record, or denies twice on a redelivered fact;
 - N1-N4: a forged or misused marker lets a command through ``dispatchable``;
-- R1, R2: a session taken over by another delegation is still denied by the release;
+- R1, R2: a session taken over by another delegation is still denied by the release,
+  including a takeover between the settlement's check and its registration, after
+  which the release's own attempt must not make it the session's holder again;
+- R4: an observation started after the release (it watches, never answers) stops
+  the settlement, so the turn is stuck again;
+- R5: a release that a later resume of the same record ended still denies;
 - T1: an answer whose delivery is unknown is never written again on a reconnect, or
-  is written under a new ID (a second native answer);
+  is written under a new ID (a second native answer); a resend that cannot be
+  written (connection replaced, grant gone) records "not executed" although the
+  device may have run the first write;
 - T2: a transient refusal (owner_disconnected / session_not_loaded / not_live) ends
   the settlement, or is retried by every maintenance tick instead of at the next
   fact (another wait in that session, or a reconnect);
 - T3: request_resolved or a native resolution does not end it;
+- T4: a wait in another session retries this released session's refused answers;
 - T5: a (re)connect waits for settlement work.
 Nothing about a settlement is kept in memory, so a bot restart is a reconnect (T1).
 """
@@ -28,11 +36,11 @@ from tests.integration.test_external_agent_bridge import (
     settled,
 )
 from tests.integration.test_external_agent_bridge import bridge as bridge
-from tests.integration.test_external_agent_delegation import _delegate, _inputs
+from tests.integration.test_external_agent_delegation import _delegate, _inputs, _start
 from tests.integration.test_external_agent_review_fixes import _card, _texts, _unowned
 
 from yuki.external_agents.db_models import AgentOperationModel
-from yuki.external_agents.delegation import Delegations, release_answer
+from yuki.external_agents.delegation import Delegations, last_holder, release_answer
 from yuki.runtime.work_schema_v1 import work
 
 SUBMITTED = {
@@ -466,3 +474,157 @@ async def test_a_reconnect_does_not_wait_for_settlement(bridge, monkeypatch):
         await computer.close()
         if second is not None:
             await second.close()
+
+
+# R2: taken over between the settlement's check and its registration.
+async def test_a_takeover_during_the_settlement_pass_wins(bridge):
+    computer = await NativeComputer(bridge).start()
+    computer.hold = {"respond"}
+    try:
+        instance, session_id = await directory(bridge)
+        async with accepted_work(bridge) as control:
+            identity, _ = await _released(bridge, control, instance, session_id)
+            original = bridge.service.repository.unowned_requests
+            taker = []
+
+            async def takeover_first(*args):
+                if not taker:
+                    started = await _start(
+                        control, "call-takeover", executor={"agent": instance}, session=session_id
+                    )
+                    assert started.ok, started
+                    taker.append(started.data["id"])
+                return await original(*args)
+
+            bridge.service.repository.unowned_requests = takeover_first
+            await _unowned(computer, "late-bash")
+            await settled(bridge)
+            bridge.service.repository.unowned_requests = original
+            assert _responds(computer) == []
+            async with bridge.database.read_session() as reader:
+                assert await last_holder(reader, session_id) == taker[0] != identity
+            before = len(_texts(await _inputs(bridge, control.current["id"])))
+            await _unowned(computer, "after-takeover")
+            await settled(bridge)
+            assert _responds(computer) == []
+            later = _texts(await _inputs(bridge, control.current["id"]))[before:]
+            assert len([text for text in later if "deny_only" in text]) == 1
+    finally:
+        await computer.close()
+
+
+# R4: an observation watches but never answers; the release still settles.
+async def test_an_observation_after_the_release_does_not_stop_the_settlement(bridge):
+    computer = await NativeComputer(bridge).start()
+    computer.hold = {"respond"}
+    try:
+        instance, session_id = await directory(bridge)
+        async with accepted_work(bridge) as control:
+            await _released(bridge, control, instance, session_id)
+            current, control.current = control.current, None
+            observed = await _start(
+                control,
+                "call-observe",
+                executor={"agent": instance},
+                session=session_id,
+                relationship="observe",
+                goal="watch",
+            )
+            assert observed.ok, observed
+            control.current = current
+            await settled(bridge)
+            await _unowned(computer, "after-observe")
+            await settled(bridge)
+            assert [item["arguments"]["permission_id"] for item in _responds(computer)] == [
+                "after-observe"
+            ]
+    finally:
+        await computer.close()
+
+
+# R5: resuming the released record ends that release; its waits reach the parent.
+async def test_a_resume_after_the_release_ends_it(bridge):
+    computer = await NativeComputer(bridge).start()
+    computer.hold = {"respond"}
+    try:
+        instance, session_id = await directory(bridge)
+        async with accepted_work(bridge) as control:
+            identity, operation = await _delegate(bridge, control, instance, session_id)
+            await computer.event(operation.id, "completed", {"status": "completed", "text": "a"})
+            await settled(bridge)
+            released = await control.tool_outcome(
+                "manage_task", {"action": "release", "id": identity}, "release-completed"
+            )
+            assert released.ok, released
+            await settled(bridge)
+            resumed = await control.tool_outcome(
+                "manage_task", {"action": "resume", "id": identity, "text": "more"}, "resume"
+            )
+            assert resumed.ok, resumed
+            await settled(bridge)
+            before = len(_texts(await _inputs(bridge, control.current["id"])))
+            await _unowned(computer, "while-resumed")
+            await settled(bridge)
+            assert _responds(computer) == []
+            later = _texts(await _inputs(bridge, control.current["id"]))[before:]
+            assert len([text for text in later if "deny_only" in text]) == 1
+    finally:
+        await computer.close()
+
+
+# T1: a resend that cannot be written records nothing; the next reconnect writes it.
+async def test_an_unwritable_resend_is_not_recorded_as_not_executed(bridge, monkeypatch):
+    computer = await NativeComputer(bridge).start()
+    computer.drop_next = "respond"
+    second = third = None
+    try:
+        instance, session_id = await directory(bridge)
+        async with accepted_work(bridge) as control:
+            identity, _ = await _released(bridge, control, instance, session_id)
+            await _unowned(computer, "late-bash")
+            await settled(bridge)
+            [first] = _responds(computer)
+            original = bridge.service.repository.dispatchable
+
+            async def refused(identity):
+                return False
+
+            monkeypatch.setattr(bridge.service.repository, "dispatchable", refused)
+            second = await NativeComputer(bridge).start()
+            await settled(bridge)
+            assert _responds(second) == []
+            [attempt] = await _attempts(bridge, identity)
+            assert attempt.result_json is None
+            monkeypatch.setattr(bridge.service.repository, "dispatchable", original)
+            third = NativeComputer(bridge)
+            third.hold = {"respond"}
+            await third.start()
+            await settled(bridge)
+            [again] = _responds(third)
+            assert again["id"] == first["id"]
+    finally:
+        await computer.close()
+        for other in (second, third):
+            if other is not None:
+                await other.close()
+
+
+# T4: only a wait in the released session itself retries its refused answers.
+async def test_a_wait_in_another_session_does_not_retry_this_release(bridge):
+    computer = await NativeComputer(bridge).start()
+    try:
+        instance, session_id = await directory(bridge)
+        async with accepted_work(bridge) as control:
+            await _released(bridge, control, instance, session_id)
+            computer.fail = {"respond": {"code": "owner_disconnected", "message": "native"}}
+            await _unowned(computer, "late-bash")
+            await settled(bridge)
+            assert len(_responds(computer)) == 1
+            released_session = computer.native_session
+            computer.native_session = released_session + "-second"
+            await _unowned(computer, "elsewhere-bash")
+            await settled(bridge)
+            computer.native_session = released_session
+            assert len(_responds(computer)) == 1
+    finally:
+        await computer.close()

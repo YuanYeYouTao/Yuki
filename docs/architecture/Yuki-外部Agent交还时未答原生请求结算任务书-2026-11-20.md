@@ -77,7 +77,7 @@ E-A、E-B、E-C 用真 Claude 会产生少量模型费用，且需在本机起 C
 - `dispatchable()` 放行条件，全部按事实：
   1. `action=respond`，命令里 `option_id=deny`、无 `response`、无 `operation_id`；
   2. source 引用的 detach 行存在，且 `work_id`、`session_id` 与本行相同，命令带 `release`；
-  3. 会话最新操作仍属该记录（无接管，见 §4.2）。
+  3. 该记录的交还仍生效（修订 3）：会话最近一次带 `release` 的 detach 之后，没有能回答的记录（委派或接管，不含观察）再给该会话 prompt/queue/steer/watch。答复（含交还自己的 deny）不改变持有者；观察只看不答，不终止交还；同一记录 resume 即终止。
 
   标记本身不授予任何权限：伪造 `settled_by` 而无对应 detach 行、或用于其他 action，一律不放行。
 - 第一版用 `answered_via == "release"` 放行的写法作废。
@@ -104,7 +104,8 @@ E-A、E-B、E-C 用真 Claude 会产生少量模型费用，且需在本机起 C
 | 送达未知 | 尚无回执 | 设备重连时以**同一操作 ID** 重发（C10：连接器去重） |
 | 其他拒绝 | `owner_disconnected`、`session_not_loaded`、`not_live`、`unknown`（未消费）等 | 只说明此刻没有 owner；在下一个事实时以新 ID 再试 |
 
-- **触发**：该会话又到一个无主等待（事件入账后后台触发，不在 ACK 路径）；设备连接（`connect()` 后后台触发，含重发未确认答复）。维护循环与定时器不参与。
+- **触发**：该会话又到一个无主等待（只结算事件所属会话，后台触发，不在 ACK 路径）；设备连接（`connect()` 后后台结算该设备全部会话，含以原 ID 重发未确认答复；此时若连接已被取代或不再可派发，不写任何回执，因为设备可能已执行上一次写出）。维护循环与定时器不参与。
+- **部署时**：首次连接会结算生产库中所有交还仍生效会话里未解决的无主等待；部署前只读统计其数量。
 - **不保存结算状态**：每次按事实计算——设备的会话中，最后持有者带 `release` detach 的那些，读其仍未解决的无主等待（`unowned_requests`）与已有尝试行。重启即一次重连。
 - 删除的修订 2 机制及理由：待结算表与迁移 0160（状态可由事实算出）；持久退避与告警（C8 的拒绝只说明此刻无 owner；owner 进程退出时回调撤回并发 `permission_resolved`，等待自然结束，不需要定时重试）。
 - **过时等待**（H3 崩溃场景，未验证）：若没有 `permission_resolved`，每次重连多一条 deny 尝试，直到 `request_resolved`；代价随重连次数，不随时间。
@@ -138,6 +139,11 @@ E-A、E-B、E-C 用真 Claude 会产生少量模型费用，且需在本机起 C
 | N4 | 未交还而终结的记录（completed/cancelled 非 released）→ 放行 | 构造 → False | 集成 |
 | R1 | 接管竞态：交还后新委派接管，结算仍发出 | 新委派登记后才到的无主等待 → 无结算、新父 Work 收 deny-only 卡 | 集成 |
 | R2 | 接管竞态：结算已登记未发出时被接管 → 仍发出 | 设备 hold 住发送窗口，新委派登记 → 结算判定不发、记为接管终结 | 集成 |
+| R2' | 核对后、登记前被接管：交还仍发 deny，且尝试行使交还记录重新成为持有者 | `test_a_takeover_during_the_settlement_pass_wins` | 集成 |
+| R4 | 交还后开始观察，结算停止，回合重新卡住 | `test_an_observation_after_the_release_does_not_stop_the_settlement` | 集成 |
+| R5 | 同一记录交还后 resume，旧交还仍自动 deny | `test_a_resume_after_the_release_ends_it` | 集成 |
+| T1' | 重连重发写不出时记成"未执行"（设备可能已执行） | `test_an_unwritable_resend_is_not_recorded_as_not_executed` | 集成 |
+| T4' | 其他会话的等待触发本会话重试 | `test_a_wait_in_another_session_does_not_retry_this_release` | 集成 |
 | R3 | bot 内锁失效：结算与新输入交错 | 未单独测试：同进程会话锁保护“核对→写出”，写出时 `dispatchable` 再按事实核验（R2 覆盖） | — |
 | T1 | 送达未知（发出后断线）→ 永不重试或换 ID 重复执行 | 设备收到后断线 → 重连后同 ID 重发；连接器 journal 去重（真连接器 E2E 断言只执行一次） | 集成 + E2E |
 | T2 | 其他拒绝被当终态，或被每次维护重试 | 维护 tick 不重试；同会话新等待与重连各以新 ID 重试，直到成功 | 集成 |
@@ -170,9 +176,10 @@ uv run --directory $W ruff check . && uv run --directory $W mypy --platform linu
 
 结果：
 
-- 上述 11 个文件 152 passed、1 skipped（cross-version 中"协议不同"分支按设计跳过）；ruff、mypy 通过。
+- 独立审查（只读）发现 R2'、R4、R5、T1'、T4' 五处缺陷，先写失败测试再修。修复后上述 11 个文件 157 passed、1 skipped（cross-version 中"协议不同"分支按设计跳过）；ruff、mypy 通过。
+- T1 的"连接器按 ID 至多执行一次"仅由连接器代码（C10）支撑，集成测试的假设备没有 journal，只断言同一 ID。
 - P1 通过：请求 A（交还时挂着）与 B（同回合新请求）均由交还 deny，`answered_via: release`，产物 `test-results/claude-release-pending-request/result.json`。
-- 自然 E2E 通过一次：真 Claude 的 transcript 中挂着的 `tool_use` 收到连接器 deny 的 `tool_result`；回合结束后 CLI 进程退出；父 Work 无新输入；被拒命令未在外部目录建文件。产物 `test-results/claude-release-natural/`。
+- 自然 E2E 通过（修复前后各一次）：真 Claude 的 transcript 中挂着的 `tool_use` 收到连接器 deny 的 `tool_result`；回合结束后 CLI 进程退出；父 Work 无新输入；被拒命令未在外部目录建文件。产物 `test-results/claude-release-natural/`。
 - 实验（修订 2 期间，单次观察）：H1 成立（deny 落地前排队输入不并入卡住的回合）；H2 成立（haiku）；H3、H4 未验证。
 
 ## 7. 提交文件
