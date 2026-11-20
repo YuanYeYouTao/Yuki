@@ -44,7 +44,6 @@ from yuki_agent_connector.drivers import claude as claude_module
 from yuki_agent_connector.scope import Scope
 
 FULL: dict[str, Any] = {"write_paths": ["/"], "network": True, "commands": ["*"]}
-ROOT = Path(Path.cwd().anchor)
 
 
 @pytest.mark.parametrize(
@@ -81,7 +80,8 @@ async def test_full_scope_opens_claude_in_auto_mode_and_approves_what_it_escalat
         options = configurations[0]
         assert options.permission_mode == "auto"
         assert options.setting_sources == ["user", "project", "local"]
-        assert options.add_dirs == [ROOT]
+        # "/" is resolved against the session's cwd: on Windows, that drive's root.
+        assert options.add_dirs == [Path(tmp_path.resolve().anchor)]
         assert options.settings is not None
         assert json.loads(options.settings) == {"permissions": {"ask": ["SendMessage"]}}
         assert options.can_use_tool is not None
