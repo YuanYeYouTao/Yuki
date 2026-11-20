@@ -331,8 +331,10 @@ async def test_desktop_answer_of_an_observed_request_is_refused(bridge):
         await computer.close()
 
 
-# F6: a request that arrived before the parent registers wait(run) still wakes it at once.
-async def test_request_before_wait_satisfies_the_new_wait(bridge):
+# F6: a request that arrived before the parent registers wait(run) is never slept on.
+# Since 2026-11-20 (delegation wait deadlock) the wait is refused with the request
+# instead of registered and woken; the card stays the next model input either way.
+async def test_request_before_wait_is_never_slept_on(bridge):
     computer = await NativeComputer(bridge).start()
     try:
         instance, session_id = await directory(bridge)
@@ -342,7 +344,10 @@ async def test_request_before_wait_satisfies_the_new_wait(bridge):
                 operation.id, "question", {"native_request_id": "q", "question": "?"}
             )
             outcome = await control.tool_outcome("wait", {"for": [{"run": identity}]}, "late-wait")
-            assert outcome.ok, outcome
+            assert not outcome.ok and outcome.error_code == "run_waiting_for_you"
+            card = json.loads(_texts(await _inputs(bridge, control.current["id"]))[0])
+            assert f"permission_id={card['permission_id']}（question" in outcome.public_message
+            assert control.accepted is None
             assert await control.has_pending_business_inputs()
     finally:
         await computer.close()
@@ -401,9 +406,15 @@ async def test_parent_initiated_end_does_not_wake_the_parent(bridge):
         await computer.close()
 
 
-async def _unowned(computer, native_request_id):
+async def _unowned(computer, native_request_id, event=None):
     import asyncio
 
+    if event is not None:
+        # The same fact again (its ACK was lost): one original event ID.
+        await computer.socket.send(json.dumps(event))
+        async with asyncio.timeout(5):
+            assert await computer.acknowledged.get() == event["event_id"]
+        return event
     computer.sequence += 1
     event = {
         "type": "event",
@@ -426,19 +437,18 @@ async def _unowned(computer, native_request_id):
     await computer.socket.send(json.dumps(event))
     async with asyncio.timeout(5):
         assert await computer.acknowledged.get() == event["event_id"]
+    return event
 
 
-# 6: an unowned wait after release reaches nobody, and nothing can deny it any more.
-async def test_unowned_wait_reaches_the_last_owner_and_is_deny_only(bridge):
+# 6: an unowned wait no release explains (a turn the CLI started by itself, owned by
+# nobody) reaches the record that last held the session, and only deny answers it.
+async def test_unowned_wait_without_release_reaches_the_parent_deny_only(bridge):
     computer = await NativeComputer(bridge).start()
     try:
         instance, session_id = await directory(bridge)
         async with accepted_work(bridge) as control:
-            identity, _operation = await _delegate(bridge, control, instance, session_id)
-            released = await control.tool_outcome(
-                "manage_task", {"action": "release", "id": identity}, "release-then-unowned"
-            )
-            assert released.ok, released
+            identity, operation = await _delegate(bridge, control, instance, session_id)
+            await computer.event(operation.id, "completed", {"status": "completed", "text": "a"})
             await settled(bridge)
             await _unowned(computer, "late-bash")
             cards = [

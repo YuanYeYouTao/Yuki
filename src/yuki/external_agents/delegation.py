@@ -16,7 +16,7 @@ from datetime import UTC
 from typing import Any
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
-from sqlalchemy import func, select, update
+from sqlalchemy import ColumnElement, func, or_, select, update
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -384,19 +384,13 @@ class Delegations:
 
         Only metadata was uploaded, so it is answerable only with deny (§4.5, §15.2 #9):
         a delegation's parent gets the card; an observation's user is told where it is.
+        A session that record released is not asked about: the release settles it (#645).
         """
         from yuki.external_agents.cards import external_agent_card
 
-        last = await session.scalar(
-            select(AgentOperationModel.work_id)
-            .join(children, children.c.work_id == AgentOperationModel.work_id)
-            .where(
-                AgentOperationModel.session_id == session_id,
-                children.c.executor_json.is_not(None),
-            )
-            .order_by(AgentOperationModel.created_at.desc())
-            .limit(1)
-        )
+        if await release_in_effect(session, session_id) is not None:
+            return  # Given back: the release settles the wait (#645).
+        last = await last_holder(session, session_id)
         if last is None:
             return
         record = (await session.execute(select(work).where(work.c.id == last))).mappings().first()
@@ -787,6 +781,130 @@ def operation_entry(item: AgentOperationModel) -> dict[str, Any]:
     return {key: value for key, value in entry.items() if value is not None}
 
 
+async def last_holder(reader: AsyncSession, session_id: str) -> str | None:
+    """The delegation or observation record that most recently acted on this session.
+
+    Answering a request (``respond``) acts on the holder's own wait; it never makes
+    the answering record the holder.
+    """
+    return await reader.scalar(
+        select(AgentOperationModel.work_id)
+        .join(children, children.c.work_id == AgentOperationModel.work_id)
+        .where(
+            AgentOperationModel.session_id == session_id,
+            AgentOperationModel.action != "respond",
+            children.c.executor_json.is_not(None),
+        )
+        .order_by(AgentOperationModel.created_at.desc())
+        .limit(1)
+    )
+
+
+async def release_in_effect(reader: AsyncSession, session_id: str) -> AgentOperationModel | None:
+    """The release that still governs this session, if any (#645).
+
+    The latest detach carrying ``release``, unless a record that can answer (a
+    delegation or takeover, not an observation) gave the session input after it: a
+    resume of the same record or another delegation ends it. Answers, including the
+    release's own, and observations never do. A release detach is registered before
+    it is sent, and a connector turns a wait unowned only after it arrives.
+    """
+    release = (
+        await reader.scalars(
+            select(AgentOperationModel)
+            .where(
+                AgentOperationModel.session_id == session_id,
+                AgentOperationModel.action == "detach",
+                func.json_extract(AgentOperationModel.command_json, "$.arguments.release") == 1,
+            )
+            .order_by(AgentOperationModel.created_at.desc(), AgentOperationModel.id.desc())
+            .limit(1)
+        )
+    ).first()
+    if release is None:
+        return None
+    relationship = func.coalesce(
+        func.json_extract(children.c.executor_json, "$.relationship"), "delegate"
+    )
+    later = await reader.scalar(
+        select(AgentOperationModel.id)
+        .join(children, children.c.work_id == AgentOperationModel.work_id)
+        .where(
+            AgentOperationModel.session_id == session_id,
+            AgentOperationModel.action.in_(("prompt", "queue", "steer", "watch")),
+            AgentOperationModel.created_at > release.created_at,
+            relationship != "observe",
+        )
+        .limit(1)
+    )
+    return release if later is None else None
+
+
+async def release_reference(reader: AsyncSession, row: AgentOperationModel) -> bool:
+    """Whether a row names, by ID, the release it settles for (#645).
+
+    The named row must be this record's own detach of this session carrying
+    ``release``; a ``settled_by`` marker without that fact grants nothing.
+    """
+    source = json.loads(row.source_json)
+    named = source.get("release_operation_id")
+    if (
+        source.get("settled_by") != "release"
+        or not isinstance(named, str)
+        or row.work_id is None
+        or row.session_id is None
+    ):
+        return False
+    release = await reader.get(AgentOperationModel, named)
+    return (
+        release is not None
+        and release.action == "detach"
+        and release.work_id == row.work_id
+        and release.session_id == row.session_id
+        and json.loads(release.command_json).get("arguments", {}).get("release") is True
+    )
+
+
+async def release_answer(reader: AsyncSession, row: AgentOperationModel) -> bool:
+    """Whether a registered command is a release's deny of a session wait (#645).
+
+    Only facts decide: a deny of a wait no operation received (no target operation,
+    no response body), naming the record's own release of the session, while that
+    record's release is still in effect (no resume, no other delegation since).
+    """
+    arguments = json.loads(row.command_json).get("arguments", {})
+    if (
+        row.action != "respond"
+        or arguments.get("option_id") != "deny"
+        or "response" in arguments
+        or "operation_id" in arguments
+        or row.session_id is None
+        or not await release_reference(reader, row)
+    ):
+        return False
+    release = await release_in_effect(reader, row.session_id)
+    return release is not None and release.work_id == row.work_id
+
+
+async def waiting_on_parent(reader: AsyncSession, work_id: str) -> list[dict[str, Any]]:
+    """Requests a live delegation record is waiting on its parent to answer (or deny).
+
+    Read from facts (events and answers), never from whether a card was consumed. An
+    observation's waits are handled at the native terminal and are never included.
+    """
+    executor = await executor_of(reader, work_id)
+    if executor is None or executor["relationship"] == "observe":
+        return []
+    state = await reader.scalar(select(work.c.state).where(work.c.id == work_id))
+    if state is None or state in TERMINAL:
+        return []
+    return [
+        request
+        for request in await pending_requests(reader, work_id, executor["relationship"])
+        if request["answer_at"] in {"yuki_or_user", "deny_only"}
+    ]
+
+
 async def executor_of(reader: AsyncSession, work_id: str | None) -> dict[str, Any] | None:
     if work_id is None:
         return None
@@ -814,18 +932,7 @@ async def pending_requests(
             .order_by(AgentEventModel.id)
         )
     )
-    answered = {
-        str(json.loads(command).get("arguments", {}).get("native_request_id"))
-        for command, result in (
-            await reader.execute(
-                select(AgentOperationModel.command_json, AgentOperationModel.result_json).where(
-                    AgentOperationModel.work_id == work_id,
-                    AgentOperationModel.action == "respond",
-                )
-            )
-        ).all()
-        if result is not None and json.loads(result).get("error") is None
-    }
+    answered = await _answered(reader, AgentOperationModel.work_id == work_id)
     pending: dict[str, dict[str, Any]] = {}
     for identity, kind, payload_json, created, operation_id in rows:
         payload = json.loads(payload_json).get("payload") or {}
@@ -852,6 +959,32 @@ async def pending_requests(
     return list(pending.values())
 
 
+def answer_taken() -> ColumnElement[bool]:
+    """A respond counts while in flight (no receipt yet), once the native callback took
+    it, or once the device said that callback is gone (``request_resolved``).
+
+    Any other unknown or failed receipt leaves the request pending and answerable
+    again; the native owner still lets only a still-pending request take an answer.
+    """
+    return or_(
+        AgentOperationModel.result_json.is_(None),
+        func.json_type(AgentOperationModel.result_json, "$.response_submitted") == "true",
+        func.json_extract(AgentOperationModel.result_json, "$.error.code") == "request_resolved",
+        func.json_extract(AgentOperationModel.result_json, "$.error") == "request_resolved",
+    )
+
+
+async def _answered(reader: AsyncSession, scope: ColumnElement[bool]) -> set[str]:
+    return {
+        str(json.loads(command).get("arguments", {}).get("native_request_id"))
+        for command in await reader.scalars(
+            select(AgentOperationModel.command_json).where(
+                scope, AgentOperationModel.action == "respond", answer_taken()
+            )
+        )
+    }
+
+
 async def _unowned_waits(
     reader: AsyncSession, work_id: str, answered: set[str]
 ) -> dict[str, dict[str, Any]]:
@@ -862,15 +995,23 @@ async def _unowned_waits(
     sessions = list(
         (
             await reader.execute(
-                select(AgentSessionModel.instance_id, AgentSessionModel.native_id)
+                select(
+                    AgentSessionModel.id,
+                    AgentSessionModel.instance_id,
+                    AgentSessionModel.native_id,
+                )
                 .join(AgentOperationModel, AgentOperationModel.session_id == AgentSessionModel.id)
                 .where(AgentOperationModel.work_id == work_id)
                 .distinct()
             )
         ).all()
     )
+    # The parent's deny of such a wait names the session, not one of this record's operations.
+    answered = answered | await _answered(
+        reader, AgentOperationModel.session_id.in_([row[0] for row in sessions])
+    )
     waits_found: dict[str, dict[str, Any]] = {}
-    for instance_id, native_session in sessions:
+    for _, instance_id, native_session in sessions:
         rows = (
             await reader.execute(
                 select(

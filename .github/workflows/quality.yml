@@ -175,6 +175,8 @@ jobs:
       PRODUCTION_BOT: ad59a686f31efba804643dfe922d1dc28016f7d5
       TEST: tests/integration/test_claude_connector_cross_version_e2e.py
       CODEX_TEST: tests/integration/test_codex_connector_delegation_e2e.py
+      RELEASE_TEST: tests/integration/test_claude_release_pending_request_e2e.py
+      PARALLEL_TEST: tests/integration/test_delegation_parallel_requests_e2e.py
     steps:
       - uses: actions/checkout@v4
         with:
@@ -200,13 +202,17 @@ jobs:
             uv run --no-sync --with claude-agent-sdk==0.2.172 pytest "$@" -q \
               --strict-markers -o pythonpath="$PYTHONPATH_PAIR"
           }
-          PYTHONPATH_PAIR="src packages/yuki-agent-connector/src" run "$TEST" "$CODEX_TEST"
+          PYTHONPATH_PAIR="src packages/yuki-agent-connector/src" \
+            run "$TEST" "$CODEX_TEST" "$RELEASE_TEST" "$PARALLEL_TEST"
           PYTHONPATH_PAIR="src $RUNNER_TEMP/released/packages/yuki-agent-connector/src" run "$TEST"
           PYTHONPATH_PAIR="$RUNNER_TEMP/production/src packages/yuki-agent-connector/src" run "$TEST"
-          ls test-results/claude-connector-cross-version/ test-results/codex-connector-delegation/
+          ls test-results/claude-connector-cross-version/ test-results/codex-connector-delegation/ \
+            test-results/delegation-parallel-requests/
           test "$(ls test-results/claude-connector-cross-version/ | wc -l)" -eq 3
           test -f test-results/codex-connector-delegation/run.json
           test -f test-results/claude-connector-full-access/run.json
+          test -f test-results/claude-release-pending-request/result.json
+          test -f test-results/delegation-parallel-requests/result.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -215,6 +221,8 @@ jobs:
             test-results/claude-connector-cross-version/
             test-results/codex-connector-delegation/
             test-results/claude-connector-full-access/
+            test-results/claude-release-pending-request/
+            test-results/delegation-parallel-requests/
           retention-days: 7
 
   desktop-headed:

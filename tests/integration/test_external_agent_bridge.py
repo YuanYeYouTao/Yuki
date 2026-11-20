@@ -199,6 +199,14 @@ class NativeComputer:
                         "admitted": True,
                     }
                     self.results[message["id"]] = result
+                elif action == "respond":
+                    # What every real driver returns once the native callback took it.
+                    result = {
+                        "status": "response_submitted",
+                        "pending": False,
+                        "response_submitted": True,
+                        "admitted": True,
+                    }
                 else:
                     result = {"status": "accepted", "pending": True, "admitted": True}
                 await self.reply(message, result)
@@ -1279,6 +1287,9 @@ async def settled(bridge):
     ACKs after settling it; settled means every receipt sent so far is ACKed.
     """
     async with asyncio.timeout(5):
+        # Background work (e.g. a release settlement) registers and writes commands of
+        # its own; finish it first so the snapshot below counts them.
+        await bridge.service.drain()
         # A written command may not have reached the peer yet; give it a bounded moment
         # to arrive (commands written to a closed socket never do).
         async with bridge.database.read_session() as reader:

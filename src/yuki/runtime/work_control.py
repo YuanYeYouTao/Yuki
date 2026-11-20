@@ -949,24 +949,26 @@ class WorkControl:
 
             return await browse(self, args["agents"], args)
         if identity is not None:
+            from yuki.external_agents.delegation import Delegations
+
+            delegations = Delegations(self.repository.database)
+            async with self.repository.database.read_session() as reader:
+                card = await delegations.card(reader, identity)
+            # A delegation record has no Yuki loop: its cursor pages its timeline only.
             row = await queries.get(
                 self.lease,
                 self.source,
                 identity,
                 include_progress=True,
                 limit=limit,
-                cursor=cursor,
+                cursor=None if card is not None else cursor,
             )
             if row is None:
                 raise ValueError("work_not_found_or_not_authorized")
             view = task_view(row)
-            from yuki.external_agents.delegation import Delegations
-
-            delegations = Delegations(self.repository.database)
-            async with self.repository.database.read_session() as reader:
-                card = await delegations.card(reader, identity)
-                if card is not None:
-                    view["card"] = card
+            if card is not None:
+                view["card"] = card
+                async with self.repository.database.read_session() as reader:
                     view["timeline"] = await delegations.timeline(
                         reader, identity, int(cursor) if cursor else 0, limit
                     )
@@ -1127,6 +1129,51 @@ class WorkControl:
             )
         return found is not None
 
+    async def _refuse_waiting_on_self(self, conditions: list[dict[str, Any]]) -> None:
+        """A run waiting on this Work's answer never completes while this Work waits.
+
+        Checked from facts (unanswered requests of the delegation), whatever the wait's
+        mode or other conditions, and whether or not their cards were consumed.
+        """
+        from yuki.external_agents.delegation import waiting_on_parent
+        from yuki.external_agents.errors import ExternalAgentArgumentError
+
+        blocked = []
+        async with self.repository.database.read_session() as reader:
+            for condition in conditions:
+                if condition["kind"] != "owned_run":
+                    continue
+                requests = await waiting_on_parent(reader, condition["run_id"])
+                if requests:
+                    blocked.append((condition["run_id"], requests))
+        if not blocked:
+            return
+        lines = [
+            f"子任务 {run} 正在等你回答："
+            + "；".join(
+                f"permission_id={item['permission_id']}（"
+                + "，".join(
+                    part
+                    for part in (
+                        item["kind"],
+                        item["tool"],
+                        f"收到 {item['received_at']}",
+                        "只能 deny" if item["answer_at"] == "deny_only" else None,
+                    )
+                    if part
+                )
+                + "）"
+                for item in requests
+            )
+            for run, requests in blocked
+        ]
+        raise ExternalAgentArgumentError(
+            "run_waiting_for_you",
+            "\n".join(lines)
+            + "\n先逐个用 message_task(id, reply_to=permission_id, answer) 回答，再等待。"
+            "本次未登记等待。",
+        )
+
     async def _wait(self, args: dict[str, Any], call_key: str) -> dict[str, Any]:
         if self.current is None:
             raise ValueError("no_active_work")
@@ -1174,6 +1221,7 @@ class WorkControl:
                     )
             if not owned:
                 raise ValueError("waiting_requires_owned_execution")
+        await self._refuse_waiting_on_self(normalized)
         # A root task waiting only for the next message is waiting for its user:
         # entries that end a turn on a question (ACP, Client) read waiting_user.
         action = (
