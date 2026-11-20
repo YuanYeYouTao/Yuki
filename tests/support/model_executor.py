@@ -16,7 +16,6 @@ from yuki.model_runtime.models import (
     ModelCapability,
     ModelExecutionPriority,
     ModelProtocol,
-    ModelRequestKind,
     ModelSearchMode,
     ModelTask,
     StructuredOutputMode,
@@ -38,7 +37,9 @@ class InjectedModelExecutor:
         priority: ModelExecutionPriority = ModelExecutionPriority.FOREGROUND,
         canonical_conversation_id: str | None = None,
         prepared_capacity: PreparedModelInput | None = None,
-        request_kind: ModelRequestKind | None = None,
+        # Untyped: conftest also loads against the released Bot sources in the
+        # cross-version CI job, which predate ModelRequestKind.
+        request_kind: object = None,
     ) -> ChatResponse:
         del task, priority, canonical_conversation_id, request_kind
         return await self._provider.complete(request)
