@@ -38,3 +38,32 @@
 （即“两次写入之间”）。detach 在独立任务里执行；测试等到回执可读，立即按原测试查询读 control 输入，
 并把读到的状态写进产物。`offline` 参数随后取消被暂停的任务，模拟进程在此结束，再 drain 后复查。
 产物目录：`YUKI_DETACH_ARTIFACT_DIR`（默认 pytest `tmp_path`）。
+
+## 对应测试
+
+- R1：`test_external_agent_bridge.py::test_detach_receipt_commits_with_the_works_control_input[offline|no_record]`。
+- R2、R3、R4：`tests/integration/test_external_agent_control_settlement.py`（先在基线通过；分别删掉
+  run 唤醒、改成对已结束 run 也唤醒、不告诉父 Work、成功控制也告诉父 Work 四种改动，各自只让对应测试失败）。
+- R5：`_input` 原判断未改；R6、R7：见修复提交的 diff。
+
+## 结果（各参数串行 20 次）
+
+`summary.json` 汇总；`baseline/`、`fixed/` 各存第 1 次运行的完整产物。
+
+| 源码 | 参数 | 两次写入之间 `scalar_one()` | 之后（settled + get） |
+|------|------|------------------------------|------------------------|
+| 9d5242ea（基线） | offline | 20/20 `NoResultFound` | 20/20 仍 0 条输入 |
+| 9d5242ea（基线） | no_record | 20/20 `NoResultFound` | 20/20 1 条输入 |
+| 39659cd9（修复） | offline | 20/20 一行 | 20/20 1 条输入 |
+| 39659cd9（修复） | no_record | 20/20 一行 | 20/20 1 条输入 |
+
+复现：
+
+```bash
+git checkout 9d5242ea -- src   # 基线源码（测试来自 a1d0f4a7 或之后）
+for i in $(seq 1 20); do
+  YUKI_DETACH_ARTIFACT_DIR=/tmp/yuki-668/run-$i uv run pytest -q -p no:randomly \
+    "tests/integration/test_external_agent_bridge.py::test_detach_receipt_commits_with_the_works_control_input"
+done
+git checkout HEAD -- src       # 回到修复源码再跑同一循环
+```
