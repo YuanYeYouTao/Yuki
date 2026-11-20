@@ -336,8 +336,6 @@ class AgentRunner:
         runtime: AgentRuntime,
         tools: AgentToolBackend | None,
     ) -> AgentRunResult:
-        from yuki.runtime.work_budget import WorkBudgetExceeded
-
         receipts = ExecutionReceipts()
         runtime = replace(runtime, auxiliary_requests=[runtime.preparation_model_requests])
         self._record_failure_usage(
@@ -349,37 +347,20 @@ class AgentRunner:
             for _ in range(runtime.preparation_model_requests):
                 await control.reserve_request(auxiliary=True)
         try:
-            try:
-                from yuki.services.turn_execution import TurnExecution
+            from yuki.services.turn_execution import TurnExecution
 
-                result = await TurnExecution(self, initial_messages, runtime, tools).activate()
-                if control is not None:
-                    result = replace(
-                        result,
-                        model_requests=control.requests_started,
-                        work_id=control.current["id"] if control.current is not None else None,
-                    )
-                elif runtime.auxiliary_requests:
-                    result = replace(
-                        result, model_requests=result.model_requests + runtime.auxiliary_requests[0]
-                    )
-                return result
-            except ExceptionGroup as exc:
-                budget_errors, other_errors = exc.split(WorkBudgetExceeded)
-                if budget_errors is not None and other_errors is None:
-                    raise WorkBudgetExceeded("work_total_budget_exhausted") from exc
-                if control is None or control.current is None:
-                    from yuki.services.turn_coordinator import HistorySourceChangedError
-
-                    source_errors, other_errors = exc.split(HistorySourceChangedError)
-                    if source_errors is not None and other_errors is None:
-                        # Parallel read tools retain the original source version
-                        # for the caller's coalesced, uncommitted chat wakeup.
-                        original: BaseException = source_errors
-                        while isinstance(original, BaseExceptionGroup):
-                            original = original.exceptions[0]
-                        raise original from exc
-                raise
+            result = await TurnExecution(self, initial_messages, runtime, tools).activate()
+            if control is not None:
+                result = replace(
+                    result,
+                    model_requests=control.requests_started,
+                    work_id=control.current["id"] if control.current is not None else None,
+                )
+            elif runtime.auxiliary_requests:
+                result = replace(
+                    result, model_requests=result.model_requests + runtime.auxiliary_requests[0]
+                )
+            return result
         except BaseException as exc:
             if control is None or control.current is None or not isinstance(exc, Exception):
                 if control is not None:
