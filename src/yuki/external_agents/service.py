@@ -20,6 +20,7 @@ from yuki.external_agents.db_models import (
     AgentOperationModel,
     AgentSessionModel,
 )
+from yuki.external_agents.delegation import answer_taken
 from yuki.external_agents.errors import ExternalAgentArgumentError
 from yuki.external_agents.identity import ConnectorIdentityService
 from yuki.external_agents.repository import (
@@ -907,10 +908,7 @@ class ExternalAgentService:
                                 AgentOperationModel.command_json, "$.arguments.operation_id"
                             )
                             == owned.id,
-                            func.coalesce(
-                                func.json_type(AgentOperationModel.result_json, "$.error"), "null"
-                            )
-                            == "null",
+                            answer_taken(),
                         )
                     )
                     if earlier is not None:

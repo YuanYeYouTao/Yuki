@@ -470,6 +470,8 @@ SubagentScheduler 同样启动以恢复原子任务；新子任务接纳关闭�
 
 委派记录的状态由原生事实确定性结算：权限或提问 → `waiting_user`（父视角 `waiting_parent`）并以卡片唤醒父 Work；属于该委派的全部运行都结束 → completed／failed／cancelled，结果卡片经子任务结果通知交给父 Work；执行者消失（`status: unknown`、设备离线）只记原因并告诉父 Work 一次，不改判失败、不重派，设备重连后按真实终态结算。进展（文本、工具调用、计划、处置、已解决）只入时间线，不写 Work 输入、不唤醒、不打断时间或 `all` 等待。父 Work 只等消息（`waiting_user`）时，委派的请求也会唤醒它；挂起或终态的父 Work 保存卡片但不被复活。`message_task(id, text, mode?)` 向委派追加输入（默认 queue），`message_task(id, reply_to=permission_id, answer, text=理由)` 回答一个原生请求（先答者生效，回答者、选项、理由与原请求摘要写进时间线，批准只对该请求有效）；`manage_task(cancel)` 取消原生回合并结束关系，`resume` 带 text 在同一会话继续，`release` 只结束拥有关系，声明 `release` 的连接器在回合边界关闭 Yuki 自己持有的原生进程，以便用户接回而不分叉。`get_tasks(id)` 读卡片与时间线，`get_tasks(agents=…)` 浏览设备、Agent、会话与历史（在线只读查询）。
 
+父 Work 不等正在等它的委派（[等待死锁任务书](Yuki-委派权限卡并行处理与等待死锁任务书-2026-11-20.md)）。`wait` 的条件中有 `run` 指向委派记录，而该记录有父 Work 可回答的未答请求（`answer_at` 为 `yuki_or_user` 或 `deny_only`；观察记录的 `native_terminal` 不算）时，拒绝登记并返回 `run_waiting_for_you`，逐条列出 `permission_id`、类型、工具与收到时间：先逐个回答，再等待。核验与 any／all、期限和其他条件无关，读事件与回答操作的事实，不看卡片输入是否已消费；核验与登记之间到达的卡片仍是待处理输入，进入下一步模型请求并撤销刚登记的等待。`message_task` 的回答结果附 `remaining`，即该记录其余仍待父 Work 回答的请求，不提供批量回答。一次回答在回执到达前与回执确认 `response_submitted` 时算已答；回执为 unknown 或失败时该请求仍待回答，可再次回答，是否仍可回答由原生持有者裁决。无主等待的拒绝按其会话计入。Yuki 自己的子 Work 不适用此核验。`get_tasks(id=委派记录, cursor)` 的 cursor 只翻时间线，不交给 Work 进度查询。
+
 没有任何操作接收的原生等待（只上传了元信息）交给最后持有该会话的记录：委派的父 Work 收到 `answer_at: deny_only` 的卡片，只能拒绝；观察记录只通知。连接器只接受一次性回答（`one_time_only`），持续性的"总是允许"不经 Yuki 或 Desktop 生效。
 
 观察记录只看：服务端拒绝以观察记录或其操作为目标的输入、回答（含 deny）与原生控制（`observe_only`），观察到的请求不带 `permission_id`。唤醒更窄：同一请求只提醒一次，整轮失败、执行者消失或会话消失才提醒，回合结束只在用户要求“做完告诉我”时提醒（`notify_turn_end`）；提醒由原会话里的一次普通 Main（独立的通知 Work，沿原请求的来源）用 send 告诉用户。观察独立存在，直到用户停止或原生会话消失。
