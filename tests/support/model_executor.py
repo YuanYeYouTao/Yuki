@@ -16,6 +16,7 @@ from yuki.model_runtime.models import (
     ModelCapability,
     ModelExecutionPriority,
     ModelProtocol,
+    ModelRequestKind,
     ModelSearchMode,
     ModelTask,
     StructuredOutputMode,
@@ -37,8 +38,9 @@ class InjectedModelExecutor:
         priority: ModelExecutionPriority = ModelExecutionPriority.FOREGROUND,
         canonical_conversation_id: str | None = None,
         prepared_capacity: PreparedModelInput | None = None,
+        request_kind: ModelRequestKind | None = None,
     ) -> ChatResponse:
-        del task, priority, canonical_conversation_id
+        del task, priority, canonical_conversation_id, request_kind
         return await self._provider.complete(request)
 
     def model_name(self, task: ModelTask) -> str:

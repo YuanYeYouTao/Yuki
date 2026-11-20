@@ -59,3 +59,9 @@ class ModelInvocationModel(Base):
         ForeignKey("canonical_conversations.id", onupdate="RESTRICT", ondelete="RESTRICT"),
         nullable=True,
     )
+    # Main / execution_compact / public_compact of a Main chain; NULL for other
+    # task requests and for rows written before 0161 (unknown, not backfilled).
+    request_kind: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # The ChatRequest.request_chain_id the call was sent with; a compact request
+    # carries the chain it compacts, the following Main request the new chain.
+    request_chain_id: Mapped[str | None] = mapped_column(String(64), nullable=True)

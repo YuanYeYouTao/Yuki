@@ -43,7 +43,7 @@
 
 ## 派发、发布与恢复
 
-compact 使用原 `_PrimaryDispatch`、模型并发槽位、来源核验和请求计量。已接纳 Work 沿原 journal 保存 `dispatched → response → paired`；原协议与付费内容仍作为不可变对象保存，新链关联原件。没有业务 Work 的普通轮使用现有私有 observation 存储，按内部 execution ID、Conversation、generation 与 actor 只追加三阶段回执，不改写已有行（改写会触发全表扫描的 observation 触发器）。dispatched 只记录未知已付事实（阶段、序号、来源修订与隐私代次）；response 保存唯一一份已付结果：冷恢复读取的合同、公共切点、摘要、有效性、保留尾部、观察与计量，以及实际输入内容的摘要 `request_digest`；无效结果另保存原输入、原初始块与实际 model_response。paired 只记录发布已提交，读取时沿同序号的 response 行取得内容。候选、prefix、layout 和请求正文都由这份回执推导，不再重复保存；有效结果的后续请求由检查点和保留尾部组成，无效结果沿原输入继续。执行结束后保留 paired 及其 response 作为最终事实。这些付费证据不被自动选为公共历史或 Memory。
+compact 使用原 `_PrimaryDispatch`、模型并发槽位、来源核验和请求计量。已接纳 Work 沿原 journal 保存 `dispatched → response → paired`；原协议与付费内容仍作为不可变对象保存，新链关联原件。没有业务 Work 的普通轮使用现有私有 observation 存储，按内部 execution ID、Conversation、generation 与 actor 只追加三阶段回执，不改写已有行（改写会触发全表扫描的 observation 触发器）。dispatched 只记录未知已付事实（阶段、序号、来源修订与隐私代次）；response 保存唯一一份已付结果：冷恢复读取的合同、公共切点、摘要、有效性、保留尾部、观察与计量，以及实际输入内容的摘要 `request_digest`；无效结果另保存原输入、原初始块与实际 model_response。paired 只记录发布已提交，读取时沿同序号的 response 行取得内容。候选、prefix、layout 和请求正文都由这份回执推导，不再重复保存；有效结果的后续请求由检查点和保留尾部组成，无效结果沿原输入继续。执行结束后保留 paired 及其 response 作为最终事实。这些付费证据不被自动选为公共历史或 Memory。compact 请求在 `model_invocations` 中记为 `execution_compact` 或 `public_compact`，带被压缩的原 `request_chain_id`；用途只在 executor 记录，不进入请求或回执（见[用量口径](model-providers.md#用量与-http-请求口径)）。
 
 完成响应先持久化，再准备和发布结果。P 沿现有 projection CAS 核验 generation、来源 revision 与原 epoch；E 沿 Work journal 核验原租约和来源。发布事务同时核验隐私代次，外部请求、文件准备和历史扫描不占 SQLite writer。
 

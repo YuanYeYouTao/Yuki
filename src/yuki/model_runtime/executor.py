@@ -42,6 +42,7 @@ from yuki.model_runtime.models import (
     ModelExecutionPriority,
     ModelProfile,
     ModelProtocol,
+    ModelRequestKind,
     ModelSearchMode,
     ModelTask,
     StructuredOutputMode,
@@ -131,6 +132,7 @@ class ModelExecutor(Protocol):
         priority: ModelExecutionPriority = ModelExecutionPriority.FOREGROUND,
         canonical_conversation_id: str | None = None,
         prepared_capacity: PreparedModelInput | None = None,
+        request_kind: ModelRequestKind | None = None,
     ) -> ChatResponse: ...
 
     def model_name(self, task: ModelTask) -> str: ...
@@ -354,9 +356,15 @@ class TaskModelExecutor:
         priority: ModelExecutionPriority = ModelExecutionPriority.FOREGROUND,
         canonical_conversation_id: str | None = None,
         prepared_capacity: PreparedModelInput | None = None,
+        request_kind: ModelRequestKind | None = None,
     ) -> ChatResponse:
+        """``request_kind`` is recorded with the call; it never enters the request."""
         phases = ModelPhases(
-            metadata={"task": task.value, "request_chain_id": request.request_chain_id}
+            metadata={
+                "task": task.value,
+                "request_kind": request_kind.value if request_kind is not None else None,
+                "request_chain_id": request.request_chain_id,
+            }
         )
         phase_token = current_model_phases.set(phases)
         outcome = "terminated"
@@ -376,6 +384,7 @@ class TaskModelExecutor:
                             priority=priority,
                             canonical_conversation_id=canonical_conversation_id,
                             prepared_capacity=prepared_capacity,
+                            request_kind=request_kind,
                         )
                     except asyncio.CancelledError:
                         outcome = "cancelled"
@@ -429,6 +438,7 @@ class TaskModelExecutor:
         priority: ModelExecutionPriority,
         canonical_conversation_id: str | None,
         prepared_capacity: PreparedModelInput | None,
+        request_kind: ModelRequestKind | None,
     ) -> ChatResponse:
         required: set[ModelCapability] = set()
         if request.tools:
@@ -593,6 +603,8 @@ class TaskModelExecutor:
                     unknown_usage_request_count=attempts.unknown_usage_requests,
                     native_search_requested=native_search_requested,
                     canonical_conversation_id=canonical_conversation_id,
+                    request_kind=request_kind,
+                    request_chain_id=request.request_chain_id,
                 )
             raise
         finally:
@@ -656,6 +668,8 @@ class TaskModelExecutor:
                 unknown_usage_request_count=attempts.unknown_usage_requests,
                 native_search_requested=native_search_requested,
                 canonical_conversation_id=canonical_conversation_id,
+                request_kind=request_kind,
+                request_chain_id=request.request_chain_id,
             )
         return response
 

@@ -325,6 +325,15 @@ Main 容量准备通过 `PreparedModelInput` 显式交给 Executor。只有同�
 历史调用的两个字段为 NULL，无法从原逻辑记录
 反推出真实 HTTP 次数。缓存率只使用上游明确报告缓存量的输入作分母，并同时保留未报告计数。
 
+同一 Main 链里的请求另记 `request_kind` 与 `request_chain_id`（0161）。`request_kind` 为
+`main`、`execution_compact` 或 `public_compact`，由发起处按实际规划传给 executor，不进入
+`ChatRequest`、请求正文或请求头，也不改变 compact 回执与输入摘要；`request_chain_id` 是该次
+请求已有的 `ChatRequest.request_chain_id`。compact 请求带被压缩的旧链，其后的 Main 带新链；
+Work 的 `runtime_work_journal.chain_id` 与进度里的 `chain_links` 记录同一换链，可据此把调用
+关联到 Work。记忆、SELF、Dream、搜索桥等其他任务两列为 NULL，由 `task` 区分；0161 之前的
+行同样为 NULL，表示未知，不回填。写入仍是原诊断 writer 的单行条件 INSERT，不读历史；
+`model_phases` 诊断带同样两项。管理用量的四维聚合不变。
+
 管理用量按记录发生时的 task/provider/model/profile_id 四维，从一次只读快照聚合。
 今日按调用方明确的 IANA 时区，近 24h/7d 为滚动窗口；全部留存不等于完整生命周期。
 同一实际模型的不同 Profile 可合并，曾用同一 Profile 的不同模型不能合并；不查当前配置
