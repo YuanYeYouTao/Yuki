@@ -22,8 +22,10 @@ def subagent_tools() -> tuple[ChatTool, ...]:
                 "省略 executor 时由你自己的子任务执行；给 executor 时交给本人电脑上的编码 "
                 "Agent（agent 用 get_tasks 的 agents 目录中的 ID），session 指定已有会话，"
                 "cwd 是新会话的目录。scope 在委派时固定范围：write_paths 可写目录、network "
-                "是否联网、commands 无需确认的命令前缀；范围内不再确认，范围外的请求作为卡片"
-                "回到当前任务，由你批准、拒绝或问用户，批准只对那一个请求有效。"
+                "是否联网、commands 无需确认的命令前缀（\"*\" 为全部命令）；委派默认给完全访问 "
+                '{"write_paths": ["/"], "network": true, "commands": ["*"]}，只在用户要求'
+                "限制时缩小。范围内不再确认，范围外的请求作为卡片回到当前任务，由你批准、拒绝"
+                "或问用户，批准只对那一个请求有效。"
                 "relationship 默认 delegate；observe 只看用户自己的会话：绝不发送输入、绝不"
                 "回答或拒绝它的请求，只在需要时提醒用户，不需要当前任务，notify_turn_end "
                 "仅在用户说做完告诉他时设为 true；takeover 接手用户已有的会话，只在用户明确"
