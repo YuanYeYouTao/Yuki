@@ -17,6 +17,7 @@ Nothing here gates real work: every interval is reporting pace.
 from __future__ import annotations
 
 import asyncio
+import collections
 import functools
 import json
 import logging
@@ -62,7 +63,7 @@ _OFF_RECHECK_SECONDS = 60.0
 CONTENT = (
     "看门狗发现了上面运行资料 watchdog 里的新问题。用你自己的话告诉对方发生了什么、影响什么、"
     "建议怎么处理，并写出处理需要的内部 ID；这次只汇报，不执行任何管理操作，"
-    "对方同意后会在普通对话里处理。"
+    "对方同意后会在普通对话里处理。只用文字，不发表情。"
 )
 
 # A loop/component fact: {"running": bool | None, "errors": {field: category | None}}
@@ -105,7 +106,9 @@ class Watchdog:
         self._task: asyncio.Task[None] | None = None
         self._attempts: dict[str, asyncio.Task[str]] = {}
         self._attempt_error: str | None = None
-        self.outcomes: list[str] = []
+        # Recent attempt outcomes (tests read them through ``drain``); bounded.
+        self.outcomes: collections.deque[str] = collections.deque(maxlen=64)
+        self._enabled: bool | None = None
         self._last_check: float | None = None
         self._last_error: str | None = None
         self._check_errors: dict[str, str] = {}
@@ -128,13 +131,17 @@ class Watchdog:
         await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _loop(self) -> None:
+        interval = _OFF_RECHECK_SECONDS
         while True:
-            interval = (await self._config.snapshot()).watchdog.check_interval_seconds
-            if interval <= 0:
-                await asyncio.sleep(_OFF_RECHECK_SECONDS)
-                continue
             try:
-                await self.tick()
+                # Any failure, the config read included, is one failed round: next round
+                # tries again; the loop never ends silently.
+                pace = (await self._config.snapshot()).watchdog.check_interval_seconds
+                self._enabled = pace > 0
+                # A failed round retries after the last interval read.
+                interval = pace if self._enabled else _OFF_RECHECK_SECONDS
+                if self._enabled:
+                    await self.tick()
                 self._last_error = None
             except Exception as exc:
                 self._last_error = type(exc).__name__
@@ -144,6 +151,7 @@ class Watchdog:
     def status(self) -> dict[str, object]:
         """In-memory facts only (public ``/healthz``: no IDs, no queries)."""
         return {
+            "enabled": self._enabled,
             "running": self._task is not None and not self._task.done(),
             "last_check_at": self._last_check,
             "last_error_category": self._last_error,
@@ -251,7 +259,8 @@ class Watchdog:
         """Wait for the turn attempts started so far; their outcomes (tests and shutdown)."""
         tasks = list(self._attempts.values())
         await asyncio.gather(*tasks, return_exceptions=True)
-        outcomes, self.outcomes = self.outcomes, []
+        outcomes = list(self.outcomes)
+        self.outcomes.clear()
         return outcomes
 
     # ---- planning (pure) ---------------------------------------------------------------
@@ -541,12 +550,14 @@ class Watchdog:
                 observation.present[f"loop_stopped:{name}"] = {"loop": name}
             for error_field, category in (fact.get("errors") or {}).items():
                 prefix = f"loop_error:{name}:{error_field}:"
-                if category is None:
-                    for seen in [key for key in self._first_seen if key.startswith(prefix)]:
+                key = f"{prefix}{_code(category)}" if category is not None else None
+                # Another category (or none) restarts the persistence clock.
+                for seen in [item for item in self._first_seen if item.startswith(prefix)]:
+                    if seen != key:
                         del self._first_seen[seen]
+                if key is None:
                     continue
                 category = _code(category)
-                key = f"{prefix}{category}"
                 first = self._first_seen.setdefault(key, now)
                 if now - first >= window:
                     observation.present[key] = {
@@ -574,6 +585,9 @@ class Watchdog:
                 continue
             state = _code(fact.get("state")) or "unhealthy"
             key = f"{prefix}{state}"
+            for seen in [item for item in self._first_seen if item.startswith(prefix)]:
+                if seen != key:
+                    del self._first_seen[seen]
             first = self._first_seen.setdefault(key, now)
             if fact.get("durable") or now - first >= window:
                 observation.present[key] = {

@@ -5,7 +5,8 @@
 ## 谁会收到
 
 - 有超管资格、启用且未被合并的 Person。
-- 只走本人在 Desktop「主动消息发送入口」里设置的路由（`person_active_routes`）。没设置或已暂停时不发送，回合保持 pending，健康里显示 `route_none`／`route_paused`。设置好后，下一次检查会送达。
+- 只走本人在 Desktop「主动消息发送入口」里设置的路由（`person_active_routes`），包括它设置的那个 Presence。没设置、已暂停或该 Presence 不可用时不发送，回合保持 pending，健康里显示 `route_none`／`route_paused`／`route_presence_unavailable`。恢复后，下一次检查会送达。
+- 遗忘（删除）某人时，他的通知回合和问题行一并删除。
 - 失去超管资格后不再收到；新超管会在下一次检查时被告知当前仍开放的问题（每个一次）。
 
 ## 节奏（热配置，全局）
@@ -38,7 +39,7 @@ SELECT id, person_id, state, reason, attempts, datetime(started, 'unixepoch')
 | pending | 等待送达：路由缺失／暂停、会话正忙或未到最小间隔（`reason` 说明） |
 | running | 正在运行；进程中止后启动时按 Social 回执结算 |
 | finished | 已结束；`reason=cleared_before_start` 表示问题在开口前已恢复，没有发消息 |
-| failed | 模型或网关失败；`attempts=1` 时会在一个检查周期后（且满足最小间隔）重试一次，`attempts=2` 后等下一批新问题一起说 |
+| failed | 模型或网关失败，或回合结束却没有成功发送（`no_delivery`）；`attempts=1` 时会在一个检查周期后（且满足最小间隔）重试一次，`attempts=2` 后等下一批新问题一起说 |
 | unknown | 进程中止时已有发送记录但结果未知；不重发 |
 
 ## 它不会做的事

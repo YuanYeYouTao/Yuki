@@ -76,9 +76,10 @@ def health_container(database, gateway):
         ),
         subagent_scheduler=worker(),
         watchdog=SimpleNamespace(
-            status=lambda: {"running": False},
+            status=lambda: {"enabled": True, "running": False},
             health=AsyncMock(
                 return_value={
+                    "enabled": True,
                     "running": False,
                     "last_check_at": None,
                     "last_error_category": None,

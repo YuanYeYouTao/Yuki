@@ -40,6 +40,15 @@ F22 a send claimed with an unknown result, then a model failure, is retried and
 F23 an issue undetermined at the due tick, or cleared before the start and back
     within the window, is never told;
 F24 a lost attempt leaves the turn running and blocks the person forever.
+
+Added after the second review (each failed before its fix):
+
+F25 a turn that ends without a successful send (no send call, or a refused send)
+    is recorded as told and the issue is swallowed;
+F26 forgetting a person who was notified fails on the turn's foreign key;
+F27 the route's Presence is gone and another Presence of the same Binding is used;
+F28 a failing config read ends the loop; a changed error category keeps the old
+    first-seen time; outcomes grow without bound.
 """
 
 from __future__ import annotations
@@ -1067,3 +1076,124 @@ async def test_a_lost_attempt_does_not_block_the_person(database, tmp_path):
     assert await scene.tick(MIN_INTERVAL) == ["finished"]
     assert len(scene.sends()) == 1
     RESULTS["S17_lost_attempt"] = [row["reason"] for row in await scene.rows(proactive_turns)]
+
+
+# --------------------------------------------------------------------------- round 2 F25-F28
+
+
+def _silent(scene: Scene, first):
+    def respond(request):
+        context = _runtime_context(request)
+        if context is not None and "watchdog" in context:
+            scene.notice_requests.append(request)
+            if any(message.role == "tool" for message in request.messages):
+                return "发不出去"
+            return first()
+        return "好"
+
+    scene.respond = respond
+    scene.provider._responder = respond
+
+
+@pytest.mark.parametrize("shape", ["no_send", "refused_send"])
+async def test_a_turn_without_a_delivered_send_is_not_told(database, tmp_path, shape):
+    scene = await _scene(database, tmp_path)
+    if shape == "no_send":
+        _silent(scene, lambda: "看门狗提醒：runtime_work 停了")  # final text only
+    else:
+        _silent(scene, lambda: _call("send", {"text": "提醒", "reply_to": 999999}, "n1"))
+    scene.loops = {"runtime_work": {"running": False, "errors": {}}}
+    assert await scene.tick() == ["failed"]
+    assert await scene.tick(MIN_INTERVAL) == ["failed"]  # the one retry
+    assert await scene.tick(MIN_INTERVAL) == []  # waits for the next batch
+    scene.mode = "send"
+    scene.respond = Scene.respond.__get__(scene)
+    scene.provider._responder = scene.respond
+    scene.loops["maintenance"] = {"running": False, "errors": {}}
+    assert await scene.tick(MIN_INTERVAL) == ["finished"]
+    context = _runtime_context(scene.notice_requests[-2])
+    assert context is not None
+    assert {issue["key"] for issue in context["watchdog"]["issues"]} == {
+        "loop_stopped:runtime_work",
+        "loop_stopped:maintenance",
+    }
+    RESULTS[f"S18_undelivered_{shape}"] = [
+        {key: row[key] for key in ("state", "reason", "attempts")}
+        for row in await scene.rows(proactive_turns)
+    ]
+
+
+async def test_forgetting_a_notified_person_removes_the_watchdog_rows(database, tmp_path):
+    from yuki.persistence.people_repository import PeopleRepository
+
+    scene = await _scene(database, tmp_path)
+    scene.loops = {"runtime_work": {"running": False, "errors": {}}}
+    assert await scene.tick() == ["finished"]
+    assert await PeopleRepository(database).delete_person_id(scene.env.person) is True
+    assert await scene.rows(proactive_turns) == []
+    assert await scene.rows(watchdog_issues) == []
+    RESULTS["S19_forget"] = "notified person forgotten; turns and issues removed"
+
+
+async def test_a_route_whose_presence_is_gone_is_not_rerouted(database, tmp_path):
+    from tests.support.canonical_identity import ensure_presence
+
+    scene = await _scene(database, tmp_path)
+    async with database.immediate_session() as writer:
+        other = await ensure_presence(writer, "80009")
+    async with database.immediate_session() as writer:
+        await writer.execute(
+            update(PersonActiveRouteModel)
+            .where(PersonActiveRouteModel.person_id == scene.env.person)
+            .values(presence_id=other)
+        )
+    scene.loops = {"runtime_work": {"running": False, "errors": {}}}
+    outcome = await scene.tick()
+    assert outcome == ["route_presence_unavailable"]
+    assert scene.notice_requests == [] and scene.sends() == []
+    turns = await scene.rows(proactive_turns)
+    assert [row["state"] for row in turns] == ["pending"]
+    RESULTS["S20_presence_gone"] = outcome
+
+
+async def test_the_loop_survives_a_config_failure_and_state_stays_bounded(database, tmp_path):
+    scene = await _scene(database, tmp_path)
+    failures = {"left": 0}
+    inner = scene.config.snapshot
+
+    async def flaky(**kwargs):
+        if failures["left"]:
+            failures["left"] -= 1
+            raise RuntimeError("config read failed")
+        snapshot = await inner(**kwargs)
+        return replace(snapshot, watchdog=replace(snapshot.watchdog, check_interval_seconds=0.01))
+
+    scene.config.snapshot = flaky
+    task = asyncio.create_task(scene.watchdog._loop())
+
+    async def until(condition) -> None:
+        for _ in range(500):
+            if condition():
+                return
+            await asyncio.sleep(0.01)
+        raise AssertionError("condition not reached")
+
+    try:
+        await until(lambda: scene.watchdog._last_check is not None)
+        failures["left"] = 1  # the next config read fails
+        await until(lambda: scene.watchdog._last_error == "RuntimeError")
+        before = scene.watchdog._last_check
+        await until(lambda: scene.watchdog._last_check != before)  # and it goes on
+        assert not task.done()
+        assert scene.watchdog.status()["enabled"] is True
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+    # A category change restarts its persistence clock.
+    scene.loops = {"runtime_work": {"running": True, "errors": {"maintenance": "A"}}}
+    await scene.tick()
+    scene.loops = {"runtime_work": {"running": True, "errors": {"maintenance": "B"}}}
+    await scene.tick(WINDOW / 2)
+    assert not any(key.endswith(":A") for key in scene.watchdog._first_seen)
+    assert scene.watchdog.outcomes.maxlen is not None
+    RESULTS["S21_loop_and_bounds"] = "loop survived a config failure"

@@ -58,7 +58,7 @@ async def runtime_health(app: ApplicationContainer) -> list[dict[str, Any]]:
     rows.append(
         {
             "name": "watchdog",
-            "enabled": True,
+            "enabled": watchdog["enabled"],
             "running": watchdog["running"],
             "healthy": None,
             "checked_at": checked_at,

@@ -243,6 +243,9 @@ class ProactivePrivateTurns:
             )
         except RouteSendError as exc:
             return await self._note(turn_id, f"route_{exc.category}"[:128])
+        if resolved.presence_id != route.presence_id:
+            # Only the route as set: another Presence of the Binding is not this route.
+            return await self._note(turn_id, "route_presence_unavailable")
         async with self.database.read_session() as reader:
             conversation = await conversation_for_binding(
                 reader, resolved.binding_id, presence_id=resolved.presence_id
@@ -290,10 +293,14 @@ class ProactivePrivateTurns:
             "tool_calls": result.tool_calls_used,
             "messages_sent": result.messages_sent,
         }
-        if failure is not None:
-            return await self._fail(turn_id, conversation.id, failure.code, summary)
-        await self._settle(turn_id, "finished", None, summary, expect="running")
-        return "finished"
+        # Told only by a real delivery: a final text without send, or a refused send,
+        # leaves the issue untold (retried once, then merged into the next batch).
+        return await self._fail(
+            turn_id,
+            conversation.id,
+            failure.code if failure is not None else "no_delivery",
+            summary,
+        )
 
     async def _run(
         self,
@@ -406,10 +413,12 @@ class ProactivePrivateTurns:
         code: str,
         summary: dict[str, Any] | None = None,
     ) -> str:
+        """Settle a turn by its real Social receipts, whatever its run reported."""
         sent, claimed = await self._receipts(conversation_id, turn_id)
         if sent:
-            # Already told: a later failure does not make it untold.
-            await self._settle(turn_id, "finished", code, summary, expect="running")
+            # Told; a later failure does not make it untold.
+            reason = None if code == "no_delivery" else code
+            await self._settle(turn_id, "finished", reason, summary, expect="running")
             return "finished"
         if claimed:
             # A send was claimed with an unknown result: never resent.
