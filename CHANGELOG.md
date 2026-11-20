@@ -2,6 +2,9 @@
 
 ## 未发布
 
+- 模型调用记录区分 Main 与 compact（#649，迁移 0161）：`model_invocations` 新增 `request_kind`（`main`／`execution_compact`／`public_compact`）与 `request_chain_id`，`model_phases` 诊断带同样两项。compact 请求记被压缩的旧链，其后的 Main 记新链，可经 Work journal 的 `chain_links` 关联到 Work。只加观测字段：发给模型的正文、请求头和前缀缓存不变（E2E 比对改动前后的上游请求摘要一致）。其他任务和历史行为 NULL。此前 compact 与 Main 都只记作 `chat_agent`，缓存失效只能靠诊断里碰巧留下的请求体推断。
+- Model invocation records tell Main from compact requests (#649, migration 0161): `model_invocations` gains `request_kind` (`main`/`execution_compact`/`public_compact`) and `request_chain_id`, and `model_phases` diagnostics carry both. A compact request records the chain it compacts and the following Main request the new chain, which the Work journal's `chain_links` ties to the Work. Observation only: the request body, headers and prompt-cache prefix are unchanged (the E2E compares provider request digests before and after). Other tasks and historical rows stay NULL. Previously compact and Main were both just `chat_agent`, so cache misses could only be inferred from request bodies that diagnostics happened to keep.
+
 - 本机连接器 **0.9.3**：委派的工作目录可以写成 `~/…`，连接器在本机展开为本人主目录后再交给 Claude、Codex 或 ACP Agent。此前 Yuki 委派 `cwd: "~/Developer/personal"` 时 Claude SDK 把 `~` 当字面目录，报 `CLIConnectionError`（工作目录不存在），委派没有启动。
 - Local connector **0.9.3**: a delegation's working directory may be written as `~/…`; the connector expands it to the user's home before handing it to Claude, Codex or an ACP agent. Previously `cwd: "~/Developer/personal"` made the Claude SDK look for a literal `~` directory and fail with `CLIConnectionError`, so the delegation never started.
 

@@ -13,7 +13,12 @@ from yuki.execution_trace.db_models import ExecutionTraceStateModel
 from yuki.execution_trace.payload import PayloadCapacityError, freeze_payload
 from yuki.execution_trace.recorder import _trace_source_guards, current_trace
 from yuki.model_runtime.db_models import ModelInvocationModel
-from yuki.model_runtime.models import ModelInvocationRecord, ModelStats, ModelTask
+from yuki.model_runtime.models import (
+    ModelInvocationRecord,
+    ModelRequestKind,
+    ModelStats,
+    ModelTask,
+)
 from yuki.model_runtime.usage import (
     ModelCacheRead,
     ModelStatsView,
@@ -79,6 +84,8 @@ class ModelInvocationRepository:
         unknown_usage_request_count: int | None = None,
         native_search_requested: bool | None = None,
         canonical_conversation_id: str | None = None,
+        request_kind: ModelRequestKind | None = None,
+        request_chain_id: str | None = None,
     ) -> ModelInvocationRecord | None:
         row = ModelInvocationModel(
             runtime_turn_id=claim_runtime_turn_id(),
@@ -100,6 +107,8 @@ class ModelInvocationRepository:
             latency_seconds=latency_seconds,
             error_category=error_category,
             created_at=datetime.now(UTC),
+            request_kind=request_kind.value if request_kind is not None else None,
+            request_chain_id=request_chain_id or None,
         )
         if self.writer is not None:
             scope = current_trace.get()
@@ -383,4 +392,6 @@ class ModelInvocationRepository:
             latency_seconds=row.latency_seconds,
             error_category=row.error_category,
             created_at=row.created_at,
+            request_kind=row.request_kind,
+            request_chain_id=row.request_chain_id,
         )

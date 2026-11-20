@@ -49,7 +49,11 @@ from yuki.llm.request_media import carry_request_media, request_media
 from yuki.model_runtime.capacity import estimate_request_tokens
 from yuki.model_runtime.dispatch_guard import model_dispatch_guard
 from yuki.model_runtime.executor import PreparedModelInput
-from yuki.model_runtime.models import ModelCapability, ModelExecutionPriority
+from yuki.model_runtime.models import (
+    ModelCapability,
+    ModelExecutionPriority,
+    ModelRequestKind,
+)
 from yuki.runtime.execution_receipts import current_receipts
 from yuki.runtime.origin import TurnOrigin
 from yuki.runtime.work_control import WORK_CONTROL_NAMES, WorkControl, WorkInputsPreparing
@@ -608,6 +612,7 @@ class TurnExecution:
                     priority=candidate.priority,
                     canonical_conversation_id=self.runtime.canonical_conversation_id,
                     prepared_capacity=candidate.capacity,
+                    request_kind=ModelRequestKind.MAIN,
                 )
                 if self.runtime.canonical_conversation_id is not None
                 else partial(
@@ -616,6 +621,7 @@ class TurnExecution:
                     candidate.request,
                     priority=candidate.priority,
                     prepared_capacity=candidate.capacity,
+                    request_kind=ModelRequestKind.MAIN,
                 )
             )
 
@@ -1192,6 +1198,11 @@ class TurnExecution:
                 plan.request,
                 priority=priority,
                 canonical_conversation_id=self.runtime.canonical_conversation_id,
+                request_kind=(
+                    ModelRequestKind.PUBLIC_COMPACT
+                    if plan.public is not None
+                    else ModelRequestKind.EXECUTION_COMPACT
+                ),
             )
 
         async def persist_dispatch() -> None:

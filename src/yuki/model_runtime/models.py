@@ -25,6 +25,14 @@ class ModelTask(StrEnum):
     UTILITY_STRUCTURED = "utility_structured"
 
 
+class ModelRequestKind(StrEnum):
+    """Which request of a Main chain a call is; observation only, never sent."""
+
+    MAIN = "main"
+    EXECUTION_COMPACT = "execution_compact"
+    PUBLIC_COMPACT = "public_compact"
+
+
 class ModelExecutionPriority(StrEnum):
     """Scheduling priority for provider calls inside the shared executor."""
 
@@ -193,6 +201,8 @@ class ModelInvocationRecord(_FrozenModel):
     latency_seconds: float
     error_category: str | None = None
     created_at: datetime
+    request_kind: str | None = None
+    request_chain_id: str | None = None
 
 
 class ModelStats(_FrozenModel):
