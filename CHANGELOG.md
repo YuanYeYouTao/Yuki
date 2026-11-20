@@ -2,6 +2,9 @@
 
 ## 未发布
 
+- 本机连接器 **0.9.3**：委派的工作目录可以写成 `~/…`，连接器在本机展开为本人主目录后再交给 Claude、Codex 或 ACP Agent。此前 Yuki 委派 `cwd: "~/Developer/personal"` 时 Claude SDK 把 `~` 当字面目录，报 `CLIConnectionError`（工作目录不存在），委派没有启动。
+- Local connector **0.9.3**: a delegation's working directory may be written as `~/…`; the connector expands it to the user's home before handing it to Claude, Codex or an ACP agent. Previously `cwd: "~/Developer/personal"` made the Claude SDK look for a literal `~` directory and fail with `CLIConnectionError`, so the delegation never started.
+
 - 委派与浏览可以用原生会话 ID：`start_subtask(executor={agent}, session=…)` 与 `get_tasks(agents={agent, session})` 在给出 Agent 时也接受该 Agent 下的原生会话 ID（如 Claude 的会话 ID），记录仍保存内部 ID；不给 Agent 时仍只认内部 ID。此前用户直接给出原生会话 ID 时会报 `external_agent_not_found`。
 - Delegation and browsing accept native session IDs: with an `agent` given, `start_subtask(session=…)` and `get_tasks(agents={agent, session})` also resolve that agent's native session ID (such as a Claude session ID) and keep storing the internal ID; without an agent only the internal ID is accepted. Previously a native ID handed over by the user failed with `external_agent_not_found`.
 

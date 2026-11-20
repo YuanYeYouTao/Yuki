@@ -833,7 +833,7 @@ async def test_cancelling_close_still_drains_the_actual_file_thread(tmp_path):
     assert closing.cancelled() and finished.is_set()
 
 
-async def test_long_index_rpc_is_not_a_seven_second_observation(tmp_path):
+async def test_long_index_rpc_is_not_a_seven_second_observation(tmp_path, socket_dir):
     from yuki.sandbox.client import SandboxClient
     from yuki.sandbox.persistent import PersistentManager
 
@@ -863,7 +863,7 @@ async def test_long_index_rpc_is_not_a_seven_second_observation(tmp_path):
         finally:
             handlers.discard(current)
 
-    socket = tmp_path / "manager.sock"
+    socket = socket_dir / "manager.sock"
     server = await asyncio.start_unix_server(accept, str(socket))
     task = asyncio.create_task(
         SandboxClient(socket).execute(

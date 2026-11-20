@@ -38,7 +38,7 @@ from acp.stdio import spawn_agent_process
 from .. import __version__
 from ..config import Instance
 from ..journal import followup_id
-from ..scope import Scope
+from ..scope import Scope, expand_home
 from . import DriverError, Emit
 
 # Agent modes that ask before side effects, strictest first (§15 E5). A mode that
@@ -756,7 +756,7 @@ class ACPDriver:
             }
         if action == "prompt":
             if not identity:
-                cwd = arguments.get("cwd") or self.spec.cwd
+                cwd = expand_home(arguments.get("cwd") or self.spec.cwd)
                 created = await self._native_request(
                     self.connection.new_session(cwd=cwd, mcp_servers=[])
                 )

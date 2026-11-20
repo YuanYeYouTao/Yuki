@@ -246,7 +246,7 @@ class Delegations:
                 card,
             )
             return
-        if state.get("pending") is False:
+        if final_receipt(state):
             if await self._other_runs_pending(session, record["id"], operation.id):
                 return
             native = str(state.get("status") or "")
@@ -903,6 +903,14 @@ async def waiting_on_parent(reader: AsyncSession, work_id: str) -> list[dict[str
         for request in await pending_requests(reader, work_id, executor["relationship"])
         if request["answer_at"] in {"yuki_or_user", "deny_only"}
     ]
+
+
+def final_receipt(result: dict[str, Any]) -> bool:
+    """Nothing more follows this answer: the run ended, or the command was refused.
+
+    A connector's refusal (admitted false, nothing executed) carries no "pending".
+    """
+    return result.get("pending") is False or result.get("admitted") is False
 
 
 async def executor_of(reader: AsyncSession, work_id: str | None) -> dict[str, Any] | None:

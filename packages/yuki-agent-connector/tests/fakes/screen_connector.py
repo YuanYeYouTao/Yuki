@@ -152,16 +152,10 @@ class FakeScreen:
     def move(self, x: float, y: float) -> str:
         return self._post("move", x=x, y=y)
 
-    def click(
-        self, x: float, y: float, button: str, count: int, modifiers: tuple[str, ...]
-    ) -> str:
-        return self._post(
-            "click", x=x, y=y, button=button, count=count, modifiers=list(modifiers)
-        )
+    def click(self, x: float, y: float, button: str, count: int, modifiers: tuple[str, ...]) -> str:
+        return self._post("click", x=x, y=y, button=button, count=count, modifiers=list(modifiers))
 
-    def drag(
-        self, x: float, y: float, x2: float, y2: float, modifiers: tuple[str, ...]
-    ) -> str:
+    def drag(self, x: float, y: float, x2: float, y2: float, modifiers: tuple[str, ...]) -> str:
         return self._post("drag", x=x, y=y, x2=x2, y2=y2, modifiers=list(modifiers))
 
     def scroll(self, x: float, y: float, dx: int, dy: int, modifiers: tuple[str, ...]) -> str:
@@ -309,16 +303,10 @@ class FakeTarget:
     def move(self, x: float, y: float) -> str:
         return self._post("move", x=x, y=y)
 
-    def click(
-        self, x: float, y: float, button: str, count: int, modifiers: tuple[str, ...]
-    ) -> str:
-        return self._post(
-            "click", x=x, y=y, button=button, count=count, modifiers=list(modifiers)
-        )
+    def click(self, x: float, y: float, button: str, count: int, modifiers: tuple[str, ...]) -> str:
+        return self._post("click", x=x, y=y, button=button, count=count, modifiers=list(modifiers))
 
-    def drag(
-        self, x: float, y: float, x2: float, y2: float, modifiers: tuple[str, ...]
-    ) -> str:
+    def drag(self, x: float, y: float, x2: float, y2: float, modifiers: tuple[str, ...]) -> str:
         return self._post("drag", x=x, y=y, x2=x2, y2=y2, modifiers=list(modifiers))
 
     def scroll(self, x: float, y: float, dx: int, dy: int, modifiers: tuple[str, ...]) -> str:

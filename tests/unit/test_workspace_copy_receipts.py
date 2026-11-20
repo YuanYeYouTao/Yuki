@@ -278,12 +278,14 @@ async def test_copy_result_waits_for_the_same_physical_request(tmp_path, monkeyp
 
 
 @pytest.mark.parametrize("method", ["workspace_copy", "workspace_publish"])
-async def test_socket_lost_ack_is_uncertain_and_queries_original_file_effect(tmp_path, method):
+async def test_socket_lost_ack_is_uncertain_and_queries_original_file_effect(
+    tmp_path, socket_dir, method
+):
     manager, cache = manager_at(tmp_path)
     args, content = copy_input(cache)
     if method == "workspace_publish":
         args = {"path": args["path"]}
-    socket = tmp_path / "manager.sock"
+    socket = socket_dir / "manager.sock"
     connections = 0
     handlers = set()
 
