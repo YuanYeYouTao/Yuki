@@ -550,7 +550,18 @@ class ClaudeDriver:
         owner.append(native)
         self.sessions[identity] = native
         native.task = asyncio.create_task(self._serve(native))
-        await native.ready
+        try:
+            await native.ready
+        except Exception as exc:
+            # The SDK never connected, so no input reached Claude: a definite failure
+            # the caller can act on, and nothing is left registered for the session.
+            if self.sessions.get(identity) is native:
+                self.sessions.pop(identity)
+            raise DriverError(
+                "native_start_failed",
+                f"Claude could not start: {exc}",
+                {"error_type": type(exc).__name__},
+            ) from exc
         return native
 
     async def _serve(self, session: ManagedSession) -> None:
