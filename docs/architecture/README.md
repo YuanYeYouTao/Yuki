@@ -1,5 +1,7 @@
 # 架构文档入口
 
+2026-11-20 [委派原生完全访问任务书](Yuki-委派原生完全访问任务书-2026-11-20.md)：方案 B，委派省略 `scope` 时由 Bot 填入完全访问；连接器 0.9.2 把完全范围映射到原生完全访问模式（Claude `auto`、Codex `dangerFullAccess`＋`never`、ACP 保留自身模式），收窄范围不变；推翻第二阶段“full access 不采纳”一行。
+
 2026-11-18 [外部 Agent 委派与协作第二阶段任务书](Yuki-外部Agent委派与协作第二阶段任务书-2026-11-18.md)：外部 Agent 作为 Yuki 的子 agent；删除 `use_coding_agent`／`get_coding_agents`、并入子任务工具（执行者参数），委派时固定权限范围，observe／delegate／takeover 三种关系，只按唤醒类事件唤醒与有界卡片，Codex 实时共享与 Claude 活会话保护、交接，前缀字节验收，不设并发上限；为待用户批准的计划，产品代码未改。
 
 2026-11-18 [外部 Agent 操作事件化与防卡改造任务书](Yuki-外部Agent操作事件化与防卡改造任务书-2026-11-18.md)（[Codex 复审原文](Codex-事件化任务书独立复审原文.md)）：第一阶段（防卡）已在 #637 交付，bot 先后以 `cf4dc201`、`ad59a686` 上线；连接器 0.8.0 随 Desktop #85 发布；第二阶段范围见上一条。

@@ -10,6 +10,10 @@ different protocol versions never pair. Three pairings, selected by pytest's
   the handshake, the connector parks with ``protocol_unsupported`` and the device stays
   offline (no reconnect loop);
 - the production Bot (``ad59a686`` src, protocol 4) with this connector: same refusal.
+Full-access default (2026-11-20 task book), paired only: a delegation that omits scope
+opens Claude without permission_mode "auto", keeps the side-effect ``ask`` override, or
+turns a Bash request into a card for the parent instead of the connector approving it.
+Artifact: ``test-results/claude-connector-full-access/run.json``.
 No model, no paid call: the CLI side is a deterministic stream-json peer.
 The Claude SDK belongs to the connector's environment, not the Bot's, so run it with
 ``uv run --with claude-agent-sdk==<connector pin> pytest <this file>``.
@@ -44,6 +48,7 @@ from yuki_agent_connector.journal import Journal
 from yuki.external_agents import service as service_module
 from yuki.external_agents.db_models import AgentOperationModel
 from yuki.external_agents.errors import ExternalAgentArgumentError
+from yuki.runtime.work_schema_v1 import inputs, work
 
 # Facts of the code actually loaded, not version strings.
 REPLAYS_INPUT = "queue" in getattr(
@@ -52,6 +57,7 @@ REPLAYS_INPUT = "queue" in getattr(
 BOT = f"protocol{service_module.CONNECTOR_PROTOCOL}"
 PAIRED = service_module.CONNECTOR_PROTOCOL == CONNECTOR_PROTOCOL
 ARTIFACT = Path(__file__).resolve().parents[2] / "test-results" / "claude-connector-cross-version"
+FULL_ACCESS_ARTIFACT = ARTIFACT.parent / "claude-connector-full-access"
 
 
 def record(**facts: Any) -> None:
@@ -70,7 +76,8 @@ def record(**facts: Any) -> None:
 class CliWire(Transport):
     """The CLI side of stream-json: answers control requests; replays inputs on demand."""
 
-    def __init__(self) -> None:
+    def __init__(self, options: ClaudeAgentOptions | None = None) -> None:
+        self.options = options
         self.incoming: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
         self.writes: list[dict[str, Any]] = []
         self.queued: list[dict[str, Any]] = []
@@ -123,7 +130,7 @@ async def until(predicate):
 
 def _connector(bridge, tmp_path, monkeypatch, wires):
     def factory(*, options: ClaudeAgentOptions) -> ClaudeSDKClient:
-        wire = CliWire()
+        wire = CliWire(options)
         wires.append(wire)
         return ClaudeSDKClient(options=options, transport=wire)
 
@@ -348,6 +355,124 @@ async def test_silent_claude_cli_never_holds_the_work_on_any_connector_version(
             queue="written_to_cli",
             unowned_requests_surfaced=view["pending_unowned_requests"],
             cli_answer=answer["response"]["response"],
+        )
+    finally:
+        running.cancel()
+        if connector.stream is not None:
+            await connector.stream.close()
+        await asyncio.gather(running, return_exceptions=True)
+        connector.journal.close()
+
+
+@pytest.mark.skipif(not PAIRED, reason="Q4 hard switch: different protocols never pair")
+async def test_delegation_without_scope_runs_claude_in_auto_mode(bridge, tmp_path, monkeypatch):
+    if not REPLAYS_INPUT:
+        pytest.skip("this connector offers no input replay")
+    wires: list[CliWire] = []
+    connector = _connector(bridge, tmp_path, monkeypatch, wires)
+    running = asyncio.create_task(connector.run())
+    try:
+
+        async def online():
+            if running.done():
+                await running
+            catalog = await bridge.service.catalog(bridge.env.person)
+            return any(item["online"] for item in catalog["instances"])
+
+        await until(online)
+        catalog = await bridge.service.catalog(bridge.env.person)
+        instance = next(item for item in catalog["instances"] if item["online"])
+        async with accepted_work(bridge) as control:
+            outcome = await control.tool_outcome(
+                "start_subtask",
+                {"goal": "fix it", "executor": {"agent": instance["id"]}},
+                "claude-full",
+            )
+            assert outcome.ok, outcome
+            record_id = outcome.data["id"]
+
+            async def written():
+                return bool(wires) and bool(wires[0].queued)
+
+            await until(written)
+            wire = wires[0]
+            options = wire.options
+            assert options is not None
+            assert options.permission_mode == "auto"
+            assert json.loads(options.settings or "{}") == {"permissions": {"ask": ["SendMessage"]}}
+            native_session = wire.queued[0]["session_id"]
+            await wire.take_up()
+            # Auto mode escalates a request: the full scope approves it in the connector.
+            await wire.incoming.put(
+                {
+                    "type": "control_request",
+                    "request_id": "escalated",
+                    "request": {
+                        "subtype": "can_use_tool",
+                        "tool_name": "Bash",
+                        "tool_use_id": "bash-1",
+                        "input": {"command": "make build && ./deploy.sh | tee /tmp/log"},
+                    },
+                }
+            )
+
+            def answer():
+                return next(
+                    (
+                        item["response"]["response"]
+                        for item in wire.writes
+                        if item["type"] == "control_response"
+                        and item["response"].get("request_id") == "escalated"
+                    ),
+                    None,
+                )
+
+            async def answered():
+                return answer() is not None
+
+            await until(answered)
+            assert answer()["behavior"] == "allow"
+            await wire.incoming.put(
+                {
+                    "type": "result",
+                    "subtype": "success",
+                    "duration_ms": 1,
+                    "duration_api_ms": 1,
+                    "is_error": False,
+                    "num_turns": 1,
+                    "session_id": native_session,
+                    "result": "done",
+                }
+            )
+
+            async def completed():
+                async with bridge.database.read_session() as reader:
+                    state = await reader.scalar(select(work.c.state).where(work.c.id == record_id))
+                return state == "completed"
+
+            await until(completed)
+            async with bridge.database.read_session() as reader:
+                parent_inputs = list(
+                    await reader.scalars(
+                        select(inputs.c.source_key).where(inputs.c.work_id == control.current["id"])
+                    )
+                )
+            # No permission card reached the parent; only the result.
+            assert [key.split(":")[0] for key in parent_inputs] == ["worker-result"]
+        FULL_ACCESS_ARTIFACT.mkdir(parents=True, exist_ok=True)
+        (FULL_ACCESS_ARTIFACT / "run.json").write_text(
+            json.dumps(
+                {
+                    "connector": claude_module.__file__,
+                    "permission_mode": options.permission_mode,
+                    "settings": json.loads(options.settings or "{}"),
+                    "add_dirs": [str(item) for item in options.add_dirs],
+                    "escalated_bash_answer": answer(),
+                    "parent_inputs": parent_inputs,
+                },
+                indent=2,
+            )
+            + "\n"
         )
     finally:
         running.cancel()

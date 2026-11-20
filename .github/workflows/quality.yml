@@ -206,6 +206,7 @@ jobs:
           ls test-results/claude-connector-cross-version/ test-results/codex-connector-delegation/
           test "$(ls test-results/claude-connector-cross-version/ | wc -l)" -eq 3
           test -f test-results/codex-connector-delegation/run.json
+          test -f test-results/claude-connector-full-access/run.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -213,6 +214,7 @@ jobs:
           path: |
             test-results/claude-connector-cross-version/
             test-results/codex-connector-delegation/
+            test-results/claude-connector-full-access/
           retention-days: 7
 
   desktop-headed:

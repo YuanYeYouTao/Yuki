@@ -4,7 +4,10 @@ Run in the ``claude-cross-version`` CI job's paired configuration (this Bot with
 connector; different protocols never pair, which the Claude pairing test records).
 Failure cases written first: Yuki's input to a Codex thread uses ``turn/start`` (which
 merges into a running user turn); the delegation record does not settle from the
-native terminal; the parent sees progress; a receipt is answered as an RPC.
+native terminal; the parent sees progress; a receipt is answered as an RPC. Full-access
+default (2026-11-20 task book): a delegation that omits scope does not give the thread
+Codex full access (no sandbox, approvals never) before Yuki's input, or leaves it on the
+thread instead of restoring the thread's own settings after Yuki's turn.
 No model, no paid call. Artifact: ``test-results/codex-connector-delegation/run.json``.
 """
 
@@ -36,6 +39,15 @@ pytestmark = pytest.mark.skipif(
 )
 
 
+# The thread's own settings, as thread/resume reports them.
+ORIGINAL = {
+    "cwd": "/user/project",
+    "approvalPolicy": "on-request",
+    "approvalsReviewer": "user",
+    "sandbox": {"type": "workspaceWrite", "writableRoots": [], "networkAccess": False},
+}
+
+
 class AppServer:
     """The Codex app-server side: one idle thread; queue/add starts its own turn."""
 
@@ -50,15 +62,17 @@ class AppServer:
             value = json.loads(raw)
             if "method" not in value or "id" not in value:
                 continue
-            self.calls.append({"method": value["method"]})
             method, params = value["method"], value.get("params", {})
+            self.calls.append({"method": method, "params": params})
             thread = {"id": "thread", "status": {"type": "idle"}, "turns": []}
             result: Any = {}
             if method == "initialize":
                 result = {"userAgent": "fake-codex-0.169.0"}
             elif method == "thread/list":
                 result = {"data": [thread]}
-            elif method in {"thread/read", "thread/resume", "thread/start"}:
+            elif method in {"thread/resume", "thread/start"}:
+                result = {"thread": thread, **ORIGINAL}
+            elif method == "thread/read":
                 result = {"thread": thread}
             elif method in {"thread/turns/list", "thread/loaded/list", "thread/queue/list"}:
                 result = {"data": []}
@@ -166,6 +180,32 @@ async def test_codex_delegation_settles_from_the_native_terminal(bridge, tmp_pat
                     return state == "completed"
 
                 await until(settled)
+
+                def settings():
+                    return [
+                        call["params"]
+                        for call in server.calls
+                        if call["method"] == "thread/settings/update"
+                    ]
+
+                async def restored():
+                    return len(settings()) == 2
+
+                await until(restored)
+                methods = [call["method"] for call in server.calls]
+                assert methods.index("thread/settings/update") < methods.index("thread/queue/add")
+                full, original = settings()
+                assert full == {
+                    "threadId": "thread",
+                    "approvalPolicy": "never",
+                    "sandboxPolicy": {"type": "dangerFullAccess"},
+                }
+                assert original == {
+                    "threadId": "thread",
+                    "approvalPolicy": "on-request",
+                    "approvalsReviewer": "user",
+                    "sandboxPolicy": ORIGINAL["sandbox"],
+                }
                 async with bridge.database.read_session() as reader:
                     parent_inputs = list(
                         (
@@ -187,6 +227,7 @@ async def test_codex_delegation_settles_from_the_native_terminal(bridge, tmp_pat
                         "connector_protocol": PROTOCOL_VERSION,
                         "record_state": "completed",
                         "app_server_methods": [call["method"] for call in server.calls],
+                        "thread_settings_updates": settings(),
                         "parent_inputs": parent_inputs,
                     },
                     indent=2,

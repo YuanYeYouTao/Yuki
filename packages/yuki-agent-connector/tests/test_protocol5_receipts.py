@@ -92,7 +92,7 @@ def receipts(journal: Journal, key: str) -> list[dict[str, Any]]:
 
 
 def test_hello_declares_protocol_five_and_connector_0_9_0(journal: Journal) -> None:
-    assert __version__ == "0.9.1"
+    assert __version__ == "0.9.2"
     assert PROTOCOL_VERSION == 5
     hello = Connector(Config("ws://localhost/", "device", "token"), journal).hello()
     assert hello["protocol_version"] == 5

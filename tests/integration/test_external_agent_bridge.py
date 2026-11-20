@@ -77,6 +77,8 @@ class NativeComputer:
             "respond",
             "cancel",
             "detach",
+            # Every protocol-5 connector declares scope for its agents.
+            "scope",
         ]
         self.socket = None
         self.reader = None

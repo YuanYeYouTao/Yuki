@@ -118,6 +118,9 @@ class ManagedSession:
     cwd: str = ""
     # Opened with the scope's `ask` override; only such an owner can serve a scope.
     scoped: bool = False
+    # Opened in auto mode for a full scope: it asks for nothing a narrower scope
+    # would need, so it serves only full scopes.
+    full: bool = False
     # The latest Yuki operation whose input this owner took up. The process exists
     # for it, so turns the CLI starts by itself belong to it until it is detached.
     owner_operation: str | None = None
@@ -345,6 +348,9 @@ class ClaudeDriver:
         scope = self.scopes.get(owner) if owner else None
         if scope is None:
             return False
+        if scope.full:
+            # Questions and cross-session messages are not permissions a scope grants.
+            return tool not in {"AskUserQuestion", *SCOPE_REPORTED}
         if tool in _WRITE_TOOLS or tool == "NotebookEdit":
             path = arguments.get(_WRITE_TOOLS.get(tool, "notebook_path"))
             return isinstance(path, str) and scope.writes(path, session.cwd)
@@ -505,6 +511,7 @@ class ClaudeDriver:
         if profile is not None:
             environment["CLAUDE_CONFIG_DIR"] = profile
         bounds = Scope.parse(scope, cwd)
+        full = bounds is not None and bounds.full
         identity = str(uuid4()) if fork else session_id
         options = ClaudeAgentOptions(
             cli_path=self.spec.command,
@@ -519,7 +526,12 @@ class ClaudeDriver:
             session_id=identity if fork or not resume else None,
             fork_session=fork,
             add_dirs=list(bounds.write_paths) if bounds else [],
-            settings=json.dumps({"permissions": {"ask": [*SCOPE_ASK, *SCOPE_REPORTED]}})
+            # A full scope runs Claude's own auto mode; only cross-session messages
+            # are still forced to ask (§15 E4).
+            permission_mode="auto" if full else None,
+            settings=json.dumps(
+                {"permissions": {"ask": [*([] if full else SCOPE_ASK), *SCOPE_REPORTED]}}
+            )
             if bounds
             else None,
             can_use_tool=permission,
@@ -532,6 +544,7 @@ class ClaudeDriver:
             asyncio.get_running_loop().create_future(),
             cwd=cwd,
             scoped=bounds is not None,
+            full=full,
         )
         owner.append(native)
         self.sessions[identity] = native
@@ -934,6 +947,12 @@ class ClaudeDriver:
                 raise DriverError(
                     "scope_conflict",
                     "This Claude session is held without a scope; release it first",
+                )
+            if session.full and not (scope is not None and scope.full):
+                # Auto mode would not ask for what this input's scope leaves out.
+                raise DriverError(
+                    "scope_conflict",
+                    "This Claude session is held in auto mode for a full scope; release it first",
                 )
             if action == "prompt" and (session.active or session.inputs):
                 raise DriverError(
