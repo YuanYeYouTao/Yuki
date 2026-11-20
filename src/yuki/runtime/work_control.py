@@ -396,9 +396,11 @@ class WorkControl:
     staged_attempt: str | None = None
     context_access: ArtifactAccess | None = None
     # Revisions of Works this activation read as failed with get_tasks(id). A failed
-    # Work does not run, so only a manager moves its revision: managing it later
-    # expects the read one, and a resume by another entry in between is a
-    # version_conflict instead of cancelling a Work the reader never saw running.
+    # Work does not run, so only a manager moves its revision: every manage_task path
+    # on it (Work, subtask, delegation record, neutral resume) expects the read one,
+    # and a move by another entry in between is a version_conflict instead of acting
+    # on a Work the reader never saw. Only a successful call or a new read ends it,
+    # so a retry after a conflict conflicts again until Yuki reads the Work anew.
     observed_revisions: dict[str, int] = field(default_factory=dict)
 
     def bind_context_access(self, access: ArtifactAccess) -> None:
@@ -1019,7 +1021,17 @@ class WorkControl:
                 from yuki.external_agents.subtasks import authorize_record
 
                 await authorize_record(self, target)
-                return await manage_external(self, action, target, call_key, text, executor)
+                managed = await manage_external(
+                    self,
+                    action,
+                    target,
+                    call_key,
+                    text,
+                    executor,
+                    revision=self.observed_revisions.get(target),
+                )
+                self.observed_revisions.pop(target, None)
+                return managed
         if action == "release":
             raise ValueError("release_requires_agent_subtask")
         if (
@@ -1036,14 +1048,16 @@ class WorkControl:
                 # A subtask is a child Work: cancel it, or resume it with new requirements.
                 from yuki.runtime.subagent_tools import manage_subtask
 
-                return await manage_subtask(
+                managed = await manage_subtask(
                     self,
                     action,
                     target,
                     call_key,
                     text,
-                    revision=self.observed_revisions.pop(target, None),
+                    revision=self.observed_revisions.get(target),
                 )
+                self.observed_revisions.pop(target, None)
+                return managed
         if action in {"cancel", "fail", "resume"} and target is not None:
             if (
                 action in {"cancel", "fail"}
@@ -1085,6 +1099,9 @@ class WorkControl:
             )
             if candidate is None or candidate["state"] in {"completed", "cancelled"}:
                 raise ValueError("resume_work_not_authorized")
+            read = self.observed_revisions.get(candidate["work_id"], candidate["revision"])
+            if read != candidate["revision"]:
+                raise ValueError("version_conflict")
             await self.repository.enqueue(
                 self.lease.conversation_id,
                 self.lease.generation,
@@ -1103,6 +1120,7 @@ class WorkControl:
                 ),
             )
             self.handoff_work_id = target
+            self.observed_revisions.pop(candidate["work_id"], None)
             # The original execution chain continues it after this round.
             return {"id": target, "status": "queued"}
         if action == "start":

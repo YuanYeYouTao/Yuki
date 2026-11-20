@@ -13,7 +13,7 @@ import json
 import time
 from typing import Any
 
-from sqlalchemy import func, select, update
+from sqlalchemy import func, select, true, update
 
 from yuki.external_agents.db_models import AgentEventModel, AgentOperationModel
 from yuki.external_agents.delegation import (
@@ -367,13 +367,25 @@ async def manage_external(
     key: str,
     text: str | None,
     executor: dict[str, Any],
+    *,
+    revision: int | None = None,
 ) -> dict[str, Any]:
-    """cancel / resume / release a delegation; cancel or release stops an observation."""
+    """cancel / resume / release a delegation; cancel or release stops an observation.
+
+    ``revision`` is the one the caller read the record at, if any: a record moved on
+    since then is a version_conflict, checked before any native side effect and again
+    in the writer that settles it.
+    """
     from yuki.runtime.work_management import WorkManagementError, manage_work
 
     database = control.repository.database
     service = _service(control)
     observe = executor["relationship"] == "observe"
+    if revision is not None:
+        async with database.read_session() as reader:
+            current = await reader.scalar(select(work.c.revision).where(work.c.id == identity))
+        if current != revision:
+            raise ValueError("version_conflict")
     if action == "resume":
         if observe:
             raise ExternalAgentArgumentError("observe_only", "观察不能恢复；需要时重新开始观察。")
@@ -386,9 +398,13 @@ async def manage_external(
             prior = await reader.scalar(select(work.c.state).where(work.c.id == identity))
         async with database.immediate_session() as writer:
             await control.repository._assert_lease(writer, control.lease)
-            await writer.execute(
+            reopened = await writer.execute(
                 update(work)
-                .where(work.c.id == identity, work.c.state.in_(("completed", "failed")))
+                .where(
+                    work.c.id == identity,
+                    work.c.state.in_(("completed", "failed")),
+                    true() if revision is None else work.c.revision == revision,
+                )
                 .values(
                     state="waiting_external",
                     reason="native_executor",
@@ -396,6 +412,8 @@ async def manage_external(
                     updated=time.time(),
                 )
             )
+            if revision is not None and not reopened.rowcount:
+                raise ValueError("version_conflict")
         native: dict[str, Any] = {
             "action": "prompt",
             "instance_id": executor["instance_id"],
@@ -432,6 +450,8 @@ async def manage_external(
     async with database.immediate_session() as writer:
         await control.repository._assert_lease(writer, control.lease)
         row = (await writer.execute(select(work).where(work.c.id == identity))).mappings().one()
+        if revision is not None and row["revision"] != revision:
+            raise ValueError("version_conflict")
         # A failed record is ended here as well, so the reply matches its stored state.
         # Its native run already ended: only the retire sweep cancels waiting runs.
         if row["state"] not in {"completed", "cancelled"}:

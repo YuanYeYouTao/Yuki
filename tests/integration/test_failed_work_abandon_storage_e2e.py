@@ -1129,3 +1129,148 @@ async def test_failed_work_state_matrix(database, tmp_path):
     matrix["F13_inputs_and_waits"] = {"input": left[0][0], "wait": left[1][0]}
 
     RESULTS["S5_state_matrix"] = matrix
+
+
+# --------------------------------------------------------------------------- S6
+
+
+async def _failed_child(database, parent: str) -> str:
+    """A failed worker of ``parent``, visible through the parent's original source."""
+    row = await _row(database, parent)
+    identity = str(uuid.uuid4())
+    now = time.time()
+    async with database.immediate_session() as writer:
+        await writer.execute(
+            work.insert().values(
+                id=identity,
+                parent_work_id=parent,
+                conversation_id=row["conversation_id"],
+                generation=row["generation"],
+                source_key=f"child:{identity}",
+                source_json=json.dumps({**json.loads(row["source_json"]), "worker": True}),
+                goal="SECRET-GOAL 子任务",
+                state="failed",
+                reason="LLMInvalidRequestError",
+                created=now,
+                updated=now,
+            )
+        )
+        await writer.execute(
+            children.insert().values(
+                work_id=identity, source_key=f"worker:{identity}", brief_json="{}"
+            )
+        )
+    return identity
+
+
+async def _resumed_elsewhere(database, identity: str, state: str = "queued") -> None:
+    """Another entry moved the Work on (as its resume writes: new state, revision + 1)."""
+    async with database.immediate_session() as writer:
+        await writer.execute(
+            update(work)
+            .where(work.c.id == identity)
+            .values(state=state, revision=work.c.revision + 1, updated=time.time())
+        )
+
+
+async def test_a_failed_read_guards_every_manage_path(database, tmp_path):
+    """F17 on every path: generic, subtask, delegation record, neutral resume; retries.
+
+    Each case: Yuki reads the target as failed with get_tasks(id); another entry
+    moves it on before Yuki's call; the call and a retry without a new read must
+    both be ``version_conflict`` and leave no write or native side effect.
+    """
+    scene = await Scene(database, tmp_path).build()
+    recorder = Recorder()
+    database.external_agents = recorder
+    outcome: dict[str, Any] = {}
+
+    def moved(identity: str, state: str = "queued"):
+        async def hook(index: int) -> None:
+            if index == 1:
+                await _resumed_elsewhere(database, identity, state)
+
+        return hook
+
+    def codes(results) -> list[str]:
+        return [
+            "version_conflict" if "version_conflict" in _error_text(r) else _error_text(r)
+            for r in results
+        ]
+
+    # Generic path: conflict, then a retry without a new read.
+    generic = await _fail_by_turn(scene, "fg", "SECRET-GOAL-G 整理")
+    read, first, retry = await _owner_turn(
+        scene,
+        "generic",
+        [
+            ("get_tasks", {"id": generic}),
+            ("manage_task", {"action": "cancel", "id": generic, "text": "放弃"}),
+            ("manage_task", {"action": "cancel", "id": generic, "text": "重试"}),
+        ],
+        hook=moved(generic),
+    )
+    assert read["status"] == "failed"
+    assert codes([first, retry]) == ["version_conflict"] * 2, (first, retry)
+    assert (await _row(database, generic))["state"] == "queued"
+    outcome["generic_cancel_and_retry"] = codes([first, retry])
+
+    # Subtask path: cancel and a retry; resume (with and without text) as well.
+    parent = await _fail_by_turn(scene, "fp", "SECRET-GOAL-P 父任务")
+    for action, extra in (("cancel", {}), ("resume", {}), ("resume", {"text": "继续"})):
+        child = await _failed_child(database, parent)
+        call = {"action": action, "id": child, **extra}
+        read, first, retry = await _owner_turn(
+            scene,
+            f"child-{action}-{len(extra)}",
+            [("get_tasks", {"id": child}), ("manage_task", call), ("manage_task", call)],
+            hook=moved(child),
+        )
+        assert read["status"] == "failed", read
+        assert codes([first, retry]) == ["version_conflict"] * 2, (action, first, retry)
+        row = await _row(database, child)
+        assert (row["state"], row["revision"]) == ("queued", 2), row
+        async with database.read_session() as reader:
+            mailbox = int(
+                await reader.scalar(
+                    select(func.count()).select_from(inputs).where(inputs.c.work_id == child)
+                )
+            )
+        assert mailbox == 0
+        outcome[f"subtask_{action}{'_with_text' if extra else ''}"] = codes([first, retry])
+
+    # Delegation record: cancel, release and resume never act on the moved record,
+    # and nothing native is sent.
+    conversation = await scene.conversation()
+    for action, extra in (("cancel", {}), ("release", {}), ("resume", {"text": "继续"})):
+        record = (await _failed_record(database, conversation, scene.env.person))["record"]
+        call = {"action": action, "id": record, **extra}
+        operations = await _operations(database)
+        read, first, retry = await _owner_turn(
+            scene,
+            f"record-{action}",
+            [("get_tasks", {"id": record}), ("manage_task", call), ("manage_task", call)],
+            hook=moved(record, "waiting_external"),
+        )
+        assert read["status"] == "failed", read
+        assert codes([first, retry]) == ["version_conflict"] * 2, (action, first, retry)
+        row = await _row(database, record)
+        assert (row["state"], row["revision"]) == ("waiting_external", 2), row
+        assert recorder.calls == [], recorder.calls
+        assert await _operations(database) == operations
+        outcome[f"record_{action}"] = codes([first, retry])
+
+    # Neutral resume (no current Work): it is not queued again.
+    neutral = await _fail_by_turn(scene, "fn", "SECRET-GOAL-N 订票")
+    read, first = await _owner_turn(
+        scene,
+        "neutral",
+        [("get_tasks", {"id": neutral}), ("manage_task", {"action": "resume", "id": neutral})],
+        hook=moved(neutral, "failed"),
+    )
+    assert read["status"] == "failed"
+    assert codes([first]) == ["version_conflict"], first
+    row = await _row(database, neutral)
+    assert (row["state"], row["revision"]) == ("failed", 3), row
+    outcome["neutral_resume"] = codes([first])
+    RESULTS["S6_every_path_guarded"] = outcome

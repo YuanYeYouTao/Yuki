@@ -171,14 +171,21 @@ async def manage_subtask(
 ) -> dict[str, Any]:
     """Cancel or resume (optionally with new requirements) an owned child Work.
 
-    A cancel expects ``revision`` when the caller read one, else the current one.
+    Both expect ``revision`` when the caller read one, else act on the current one.
     """
+    from yuki.runtime.work_management import WorkManagementError
+
     parent_id = await owned_child_parent(control, identity)
     repository = SubagentRepository(control.repository)
-    if action == "cancel":
-        await repository.cancel(control.lease, parent_id, identity, revision=revision)
-    else:
-        await repository.resume(control.lease, parent_id, identity, key=key, instruction=text)
+    try:
+        if action == "cancel":
+            await repository.cancel(control.lease, parent_id, identity, revision=revision)
+        else:
+            await repository.resume(
+                control.lease, parent_id, identity, key=key, instruction=text, revision=revision
+            )
+    except WorkManagementError as exc:
+        raise ValueError(exc.code) from exc
     row = await repository.related(parent_id, identity)
     return {"id": identity, "status": child_state(row)}
 

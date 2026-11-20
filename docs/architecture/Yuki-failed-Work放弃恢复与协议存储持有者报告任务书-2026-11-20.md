@@ -54,7 +54,7 @@
 | Q5 | **不级联改写终态后代**。沿用现有 cancel 的子树语义：只取消非终态后代；failed 或 completed 的工作者保持原状态，它们的 refs 在根取消 7 天后随工作者归档释放 | 不改原事实，不新增机制；根取消后，现有归档会接手剩下的 refs（C6） |
 | Q6 | **修复 failed 委派记录的虚假成功**：`manage_external` 把 failed 记录当作仍可结束的记录，实际写入 cancelled（cancel 走 `manage_work`；release 和停止观察照原分支写 `released`/`observation_stopped`），返回值与实际状态一致。个人设备 API 和管理端直接调用 `manage_work`，结果同样是 cancelled，三个入口一致。验证：已结束的原生回合**不会再收到取消**（不调用原生服务，不登记新操作） | 当前返回 `cancelled` 而状态仍是 failed，是对事实的错误报告；放宽 C2 之后，个人设备 API 会真的改成 cancelled，如果 `manage_task` 不改，入口之间会出现新分歧。原生回合已经结束，C18 说明状态改写不会再触发原生取消。completed 记录的同类问题不在本 issue 范围，见 §7 |
 | Q7 | **不改工具合同**：`manage_task` 和 `get_tasks` 的声明（说明和参数 schema）不变，manifest 不变 | 声明已经覆盖“cancel 终止 id 指定的任务”；修改声明会让固定合同和缓存前缀变化，而本问题不需要 |
-| Q8 | **facts 可能过时**（问题打开时冻结，C12）。普通轮执行所有者同意的“放弃恢复”之前，必须核对当前状态和 revision，防止目标在此期间被并发 resume 后误取消正在运行的任务。设计用现有版本保护：`WorkControl` 记下本次激活里 `get_tasks(id)` **读到 failed 状态**的 Work 的 revision，之后对同一非当前目标调用 `manage_task` 的 cancel/fail/resume（包括子任务 cancel）时，把这个 revision 作为期望值交给 `manage_work` 的 CAS；revision 已变化则返回 `version_conflict`，提示先用 `get_tasks` 重新查看，不写任何东西。Yuki 自己成功管理目标后记录即失效；再次读到非 failed 状态时也清除；记录只在本次激活内有效，不跨轮。只记 failed 的原因：failed Work 不执行，只有管理操作会改它的 revision；运行中 Work 的 revision 会随自身执行不断推进，绑定它会误伤正常取消（实施时被现有测试 `test_subagent_lifecycle.py::test_foreground_manages_original_child_without_accepting_another_work` 发现，见 §8）。没有先查看时，行为与现在相同（调用内现读）。看门狗不获得任何管理权。facts 每条带上观察时的 `revision`，供管理端和个人设备按现有 `expected_revision` 操作 | 保守选择：所有者同意的是放弃“那个 failed 的 Work”；把 Yuki 实际看到的 revision 绑定到现有 CAS，就不会误取消被别人恢复的任务。不改工具声明（Q7），不新增状态机或锁，只复用 `manage_work` 已有的 revision 检查。**剩余缺口**：如果 Yuki 没有先用 `get_tasks` 查看就直接取消，而目标在此之前已被恢复，这次取消仍会生效，这与现有取消运行中 Work 的语义相同。完全消除这个缺口需要 `manage_task` 接受显式 revision 参数，属于工具合同变更，已被 Q7 排除 |
+| Q8 | **facts 可能过时**（问题打开时冻结，C12）。普通轮执行所有者同意的“放弃恢复”之前，必须核对当前状态和 revision，防止目标在此期间被并发 resume 后误取消正在运行的任务。设计用现有版本保护：`WorkControl` 记下本次激活里 `get_tasks(id)` **读到 failed 状态**的 Work 的 revision，之后对同一非当前目标调用 `manage_task` 的 cancel/fail/resume（包括子任务 cancel）时，把这个 revision 作为期望值交给 `manage_work` 的 CAS；revision 已变化则返回 `version_conflict`，提示先用 `get_tasks` 重新查看，不写任何东西。Yuki 自己成功管理目标后记录即失效；再次读到非 failed 状态时也清除；记录只在本次激活内有效，不跨轮。只记 failed 的原因：failed Work 不执行，只有管理操作会改它的 revision；运行中 Work 的 revision 会随自身执行不断推进，绑定它会误伤正常取消（实施时被现有测试 `test_subagent_lifecycle.py::test_foreground_manages_original_child_without_accepting_another_work` 发现，见 §8）。独立审查后，这一核对覆盖普通 Work、子任务、委派记录和中性前台 resume 四条路径；失败后的重试同样受保护；委派记录在任何原生副作用之前核对（§3.3，F20）。没有先查看时，行为与现在相同（调用内现读）。看门狗不获得任何管理权。facts 每条带上观察时的 `revision`，供管理端和个人设备按现有 `expected_revision` 操作 | 保守选择：所有者同意的是放弃“那个 failed 的 Work”；把 Yuki 实际看到的 revision 绑定到现有 CAS，就不会误取消被别人恢复的任务。不改工具声明（Q7），不新增状态机或锁，只复用 `manage_work` 已有的 revision 检查。**剩余缺口**：如果 Yuki 没有先用 `get_tasks` 查看就直接取消，而目标在此之前已被恢复，这次取消仍会生效，这与现有取消运行中 Work 的语义相同。完全消除这个缺口需要 `manage_task` 接受显式 revision 参数，属于工具合同变更，已被 Q7 排除 |
 | Q9 | **不需要迁移，不回填** | 触发器已覆盖 `failed → cancelled`，索引已存在（C1、C14）；哪些 failed Work 要放弃由主人逐个决定，程序不批量清理生产数据 |
 | Q10 | **不升个人 Client API revision** | 请求和响应形状不变，只是 failed 从 409 变成成功；Desktop 更新按钮条件即可（§3.5，只列出） |
 
@@ -75,7 +75,17 @@
 `WorkControl` 增加一个只在本次激活内有效的 `observed_revisions: dict[str, int]`：
 
 - `_get_tasks` 按 id 读到 failed 时记下该行的 `revision`，读到其他状态时清除记录（列表读取不带 revision，不记录）。
-- `_manage` 对非当前目标的 cancel/fail/resume（`manage_work` 路径）使用 `observed_revisions.get(target, candidate["revision"])` 作为期望 revision，成功后清除记录；子任务路径由 `_manage` 取出记录（取出即清除），作为 `manage_subtask(..., revision=)` 的显式参数传入，cancel 时交给 `SubagentRepository.cancel(..., revision=)`。
+- **记录只在调用成功或重新读取时结束**。任何失败（包括 `version_conflict`）都保留记录，所以同一激活里不重新读取就重试，会再次得到 `version_conflict`，不会改用最新 revision 绕过保护。
+- `_manage` 的四条路径都把读到的 revision 交给真正写入的地方：
+  - **普通 Work**（cancel/fail/resume）：作为 `manage_work` 的期望 revision，在同一个 writer 里做 CAS。
+  - **子任务**：作为 `manage_subtask(..., revision=)` 的显式参数。cancel 交给 `SubagentRepository.cancel` 的 `manage_work` CAS；resume 在 `SubagentRepository.resume` 的 writer 里比对；带 text 的 resume 在 `SubagentRepository.message` 的 writer 里比对。`manage_subtask` 把 `WorkManagementError` 转为工具错误（以前会让整轮以 `internal_failure` 结束）。
+  - **委派记录**：作为 `manage_external(..., revision=)`。**在任何原生副作用之前**先用 reader 比对；resume 的重开写入加上 `revision` 条件，没有命中则在派发前返回 `version_conflict`；cancel/release/停止观察在结算 writer 里再比对一次。
+  - **中性前台 resume**（没有当前 Work、入队交给原执行链）：入队前比对候选行的 revision。
+- `_ERROR_MESSAGES` 增加 `version_conflict` 的文案：“该任务在你查看后状态已变化，操作未执行；先用 get_tasks 重新查看再决定。”这是工具结果文案，不属于工具声明（Q7）。
+- **设计限制**（不新增机制，如实说明）：
+  1. 委派记录的 release/停止观察要先向原生服务发 release，这个外部调用不能放进 SQLite 写事务。所以只剩一个窗口：在 reader 比对之后、结算 writer 之前，如果另一入口改动了记录，release 已经发出，调用会返回 `version_conflict`，状态不变。cancel 和 resume 没有这个窗口（cancel 分支不调用原生服务；resume 在 writer CAS 成功后才派发）。
+  2. 中性前台 resume 只负责入队，实际状态迁移由原执行链之后完成；比对覆盖到入队为止，之后的变化由原执行链自己按来源与状态重新核验。
+  3. 没有先用 `get_tasks(id)` 读取时，照旧按调用时的当前 revision 执行；这是 Q7（不改工具声明）的限制。
 - `_ERROR_MESSAGES` 增加 `version_conflict` 的文案：“该任务在你查看后状态已变化，操作未执行；先用 get_tasks 重新查看再决定。”这是工具结果文案，不属于工具声明（Q7）。
 
 ### 3.4 看门狗附上 failed 持有者（只读）
@@ -134,6 +144,7 @@
 | F17 | Yuki 用 `get_tasks` 看到 failed（revision r）后，另一个入口执行了 resume（r+1），随后的 `manage_task cancel` 取消了已排队的 Work（Q8） | S2 |
 | F18 | 版本核对误伤：Yuki 自己在同一激活中成功管理目标后，后续合法操作被旧 revision 拒绝；没有先查看的取消被新增门槛拒绝；记录跨轮泄漏到下一次激活；读取时不是 failed 的 Work（其 revision 随自身执行推进）也被绑定，导致之后无法取消 | S2；现有 `test_subagent_lifecycle.py` |
 | F19 | 取消 failed 委派记录时，向原生服务发出取消/release，或者登记了新的原生操作（Q6） | S2 |
+| F20 | Q8 被绕过（独立审查发现）：委派记录的 cancel/release/resume 不使用读到的 revision，被其他入口 resume 后仍被取消，或者 release 在比对前已发给原生服务；子任务在调用前就清除记录，`version_conflict` 后不重新读取就重试，结果按最新 revision 取消；子任务 resume（含带 text）和中性前台 resume 不比对 revision；子任务的 `WorkManagementError` 让整轮崩溃 | S6 |
 
 ### 4.2 看门狗一侧
 
@@ -156,6 +167,8 @@
 - **S3 个人设备与管理端**（复用 `app_env`：真实 HTTP、个人设备、管理端令牌）：同形的 failed Work 分别经 `POST /client/v1/works/{id}/cancel` 和 `POST /admin/v1/works/{id}/cancel` 取消，比较状态、revision 增量、refs 是否释放、回执、重放；`GET /admin/v1/works/{id}` 的 `actions.cancel`；completed/cancelled 仍返回 409；过期 revision 返回 409，不改 refs，个人设备记录 problem 回执；别人的 failed Work 返回 `not_found`；failed 委派记录经两个入口都变成 cancelled。
 - **S4 管理聊天命令**（复用 `stack`：真实 ApplicationContainer）：`/ai admin work cancel <id>` 取消 failed Work，结果与 S3 一致。
 - **S5 状态矩阵**（真实 SQLite 与 ProtocolStore，直接调用 `manage_work`/`WorkControl`）：F6、F7（`asyncio.gather` 并发 resume 与 cancel）、F8、F9、F10、F11、F12、F13、F14。
+
+- **S6 每条管理路径**（同一 Scene，替身原生服务）：普通 Work、子任务 cancel/resume/带 text 的 resume、委派记录 cancel/release/resume、中性前台 resume。每种情况都是先读到 failed，再由另一入口推进，然后调用一次、不重新读取再重试一次；两次都必须是 `version_conflict`，且没有状态、revision、mailbox 写入，没有原生调用，没有新增原生操作（F20）。
 
 产物只包含标签和关系事实：Work ID、sha256、时间都映射成稳定标签或布尔关系（例如“下降量 = 独占字节”），不写生成时间。末尾附 `results_sha256`。**可复现验收**：连续跑两次，产物文件逐字节相同：
 
@@ -186,5 +199,6 @@ cmp /tmp/run1.json test-results/failed-work-abandon-storage-e2e.json
 - **变异核对**：去掉 Q8 绑定后，S2 中“读到 failed 后被别处 resume”的取消会真的取消已排队的 Work（断言失败）；绑定所有读取（不限 failed）后，S2 的非 failed 读取场景返回 `version_conflict`（断言失败）；把 Q6 改回 `not in TERMINAL` 后，S2 的委派记录仍是 failed（断言失败）。三处都已还原。
 - **与本书第一版设计的偏差**：Q8 第一版对所有 `get_tasks` 读取都做绑定，现有测试 `test_subagent_lifecycle.py::test_foreground_manages_original_child_without_accepting_another_work` 发现，运行中的子任务在读取后被自己 resume、发消息并开始执行，revision 推进，之后的取消被误判为 `version_conflict`。已改为只绑定读到 failed 的 Work，并在 S2 补充对应用例（F18 最后一项）。
 - **回归中发现并修正**：第一版在 `manage_subtask` 内直接读 `control.observed_revisions`，`test_subagent_result_checkpoint.py` 的 6 个用例以最小控制对象调用它而失败；改为由 `WorkControl._manage` 以显式参数传入，`manage_subtask` 对调用方的依赖不变。`test_work_execution_receipt_regressions.py::...[False-terminal_exec]` 在本机失败，但在基线 `9d5242ea` 的临时工作树中同样失败（沙箱进程在 macOS 上的既有问题），与本改动无关，以 CI（Linux）结果为准。
+- **独立审查后的第二轮**：审查指出两处可能绕过 Q8：委派记录路径没有传入读到的 revision，且 release/停止观察有先行副作用；子任务在调用前就清除记录，`version_conflict` 后可以不重新读取就按最新 revision 重试。按全路径复查后，另外发现子任务 resume（含带 text）和中性前台 resume 都不比对 revision，子任务的 `WorkManagementError` 会让整轮以 `internal_failure` 结束。先写 S6（F20），在旧实现上失败（第一处在子任务阶段整轮崩溃）；修复见 §3.3。逐项变异核对都会让 S6 失败：委派记录不传 revision 时取消已被恢复的记录；子任务先清除记录时重试取消成功；去掉中性 resume 比对；去掉委派记录的副作用前比对时 release 被发往原生服务。剩余设计限制见 §3.3。
 - **产物**：`test-results/failed-work-abandon-storage-e2e.json`（目录被 gitignore，与其他 E2E 一致）。连续两次运行产物逐字节相同（`cmp`），`results_sha256` 记在产物末尾。
 - **验证、CI、合并**：见 PR 描述与最终报告；本书不提前写成已合并或已上线。
