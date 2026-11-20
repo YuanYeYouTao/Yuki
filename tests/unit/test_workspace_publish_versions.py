@@ -73,7 +73,7 @@ def test_manager_publish_uses_single_snapshot_digest_even_when_source_changes(
 
 @pytest.mark.skipif(os.name != "posix", reason="Manager safe workspace FDs require POSIX")
 async def test_actual_publish_rpc_waits_for_its_copy_instead_of_a_fixed_observation(
-    tmp_path, monkeypatch
+    tmp_path, socket_dir, monkeypatch
 ):
     store = WorkspaceStore(tmp_path / "artifacts")
     manager = PersistentManager(
@@ -105,7 +105,7 @@ async def test_actual_publish_rpc_waits_for_its_copy_instead_of_a_fixed_observat
             handlers.discard(current)
 
     monkeypatch.setattr(manager, "file_operation", slow_copy)
-    socket = tmp_path / "manager.sock"
+    socket = socket_dir / "manager.sock"
     server = await asyncio.start_unix_server(accept, str(socket))
     task = asyncio.create_task(
         SandboxClient(socket).execute(
