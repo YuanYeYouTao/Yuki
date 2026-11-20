@@ -38,6 +38,8 @@ async def backend(tmp_path):
                 "PYTHONPATH": os.pathsep.join(sys.path),
                 "YUKI_DESKTOP_COMPUTER_FIXTURE": "1",
                 "YUKI_DESKTOP_IDLE_MINUTES": "30",
+                # Restores an earlier snapshot after taking a newer one: keep both.
+                "YUKI_DESKTOP_SNAPSHOT_KEEP": "3",
             },
             stdout=log,
             stderr=asyncio.subprocess.STDOUT,

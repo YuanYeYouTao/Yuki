@@ -13,7 +13,7 @@ Test endpoints for Desktop e2e:
 - ``POST /__test/computer/snapshot-delay {"seconds"}``: hold commits so ``creating``
   can be seen.
 
-``YUKI_DESKTOP_IDLE_MINUTES`` (default 30) and ``YUKI_DESKTOP_SNAPSHOT_KEEP`` (default 3)
+``YUKI_DESKTOP_IDLE_MINUTES`` (default 30) and ``YUKI_DESKTOP_SNAPSHOT_KEEP`` (default 1)
 set the Manager's own product settings.
 """
 
@@ -60,7 +60,7 @@ class DesktopComputerFixture:
                 "",
                 home,
                 testing=True,
-                snapshot_keep=int(os.environ.get("YUKI_DESKTOP_SNAPSHOT_KEEP", "3")),
+                snapshot_keep=int(os.environ.get("YUKI_DESKTOP_SNAPSHOT_KEEP", "1")),
                 display_idle_minutes=float(os.environ.get("YUKI_DESKTOP_IDLE_MINUTES", "30")),
             )
         self.docker = FakeDocker()

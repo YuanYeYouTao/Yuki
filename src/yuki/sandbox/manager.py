@@ -106,7 +106,7 @@ async def main() -> None:
         browser_mode=browser_mode,
         packages=tuple(configured("packages").split()),
         snapshots=args.snapshots,
-        snapshot_keep=int(configured("snapshot_keep", "3")),
+        snapshot_keep=int(configured("snapshot_keep", "1")),
         snapshot_interval_hours=float(configured("snapshot_interval_hours", "24")),
         display_idle_minutes=float(configured("display_idle_minutes", "30")),
     )

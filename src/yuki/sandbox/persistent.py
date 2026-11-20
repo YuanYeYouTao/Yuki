@@ -106,7 +106,7 @@ class PersistentManager:
         browser_mode: str = "none",
         packages: tuple[str, ...] = (),
         snapshots: Path | None = None,
-        snapshot_keep: int = 3,
+        snapshot_keep: int = 1,
         snapshot_interval_hours: float = 0,
         display_idle_minutes: float = 0,
     ) -> None:
