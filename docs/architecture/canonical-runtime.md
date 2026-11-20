@@ -179,6 +179,12 @@ Binding、Presence、Registry 当前连接代次与能力，无需再次远端�
 此结果不授予写权限；账本首次写入仍执行原持久路由围栏。冷路由、其他 Presence 的路由恢复、
 主动发送与显式恢复继续使用实时成员探针及原 CAS，不缓存成员资格或引入隐式接管。
 
+Yuki 主动发起私聊（`proactive_turns`，第一个来源为看门狗）只读取人物已设置的主动路由：
+`resolve_send_for_person` 之前先确认 `person_active_routes` 行存在且未暂停，不为此调用
+`cas_takeover_person` 建立路由；Binding＋Presence 经 `conversation_for_binding` 定位该入口已有的
+私聊 Conversation（主动路由的设置本身要求它存在）。原 Person ID 是回合的收件人，回合与 Social
+回执不随今日账号或路由变化改写；路由缺失或暂停时不发送、不改用其他平台或群。
+
 冷 ingest 恢复只保留短生命周期计划：原 authenticated connection 快照、Presence revision 和
 SpaceBinding owner/revision。外层数据库会话结束后才执行成员探针及恢复；准备/探测阶段总计
 10 秒 deadline 不包围物理提交。路由写入的新事务核验这些版本及原 route CAS，完成后 fresh

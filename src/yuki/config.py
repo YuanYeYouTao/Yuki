@@ -275,6 +275,11 @@ class Settings(BaseSettings):
     work_protocol_total_max_bytes: int = Field(default=2 * 1024**3, gt=0, le=2**63 - 1)
     work_protocol_object_max_bytes: int = Field(default=64 * 1024**2, gt=0, le=2**63 - 1)
     work_protocol_disk_reserve_bytes: int = Field(default=64 * 1024**2, gt=0, le=2**63 - 1)
+    # Watchdog reporting pace (not completion gates); a check interval of 0 turns it off.
+    watchdog_check_interval_seconds: float = Field(default=300.0, ge=0)
+    watchdog_no_progress_seconds: float = Field(default=900.0, gt=0)
+    watchdog_notify_min_interval_seconds: float = Field(default=1800.0, ge=0)
+    watchdog_protocol_storage_warn_ratio: float = Field(default=0.8, gt=0, le=1)
     subagents_enabled: bool = False
     subagent_concurrency: int = Field(default=2, ge=1)
     conversation_autonomous_debounce_seconds: float = 3.0

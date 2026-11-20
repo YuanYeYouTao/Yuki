@@ -36,6 +36,7 @@ class HealthPayload(TypedDict):
     sandbox_continuations: dict[str, object]
     runtime_work: dict[str, object]
     subagents: dict[str, object]
+    watchdog: dict[str, object]
     main_agent_manifest: dict[str, object]
     memory_embedding_enabled: bool
     memory_embedding_configured: bool
@@ -102,6 +103,7 @@ async def build_health_payload(container: ApplicationContainer) -> HealthPayload
         sandbox_continuations=await container.sandbox_continuations.health(),
         runtime_work=container.work_scheduler.runtime_status(),
         subagents=await container.subagent_scheduler.health(),
+        watchdog=container.watchdog.status(),
         main_agent_manifest=container.main_agent_contract.health(),
         memory_embedding_enabled=container.memory_embeddings.enabled,
         memory_embedding_configured=container.memory_embeddings.provider is not None,

@@ -45,6 +45,56 @@ def hot_config_specs() -> tuple[ConfigSpec, ...]:
                 ),
             )
         ),
+        *tuple(
+            _spec(
+                key,
+                title,
+                description,
+                value_type="number",
+                minimum=minimum,
+                maximum=maximum,
+                scopes=_G,
+                getter=_field(field),
+                settings_fields=(field,),
+                category="watchdog",
+            )
+            for key, title, description, field, minimum, maximum in (
+                (
+                    "watchdog.check_interval_seconds",
+                    "看门狗检查间隔（秒）",
+                    "只读事实检查的节奏，也是一批新问题的合并窗口；0 关闭看门狗。"
+                    "只是汇报节奏，不改变任何执行。",
+                    "watchdog_check_interval_seconds",
+                    0,
+                    86400,
+                ),
+                (
+                    "watchdog.no_progress_seconds",
+                    "看门狗无进展间隔（秒）",
+                    "一个卡住状态持续多久才告诉主人；问题清除后在此间隔内重现视为同一次出现。"
+                    "只是汇报节奏，不是完成或失败的判据。",
+                    "watchdog_no_progress_seconds",
+                    1,
+                    86400 * 7,
+                ),
+                (
+                    "watchdog.notify_min_interval_seconds",
+                    "看门狗每人通知最小间隔（秒）",
+                    "同一人两次主动私聊激活（含重试）之间至少相隔的秒数；期间的新问题合并到下一次。",
+                    "watchdog_notify_min_interval_seconds",
+                    0,
+                    86400 * 7,
+                ),
+                (
+                    "watchdog.protocol_storage_warn_ratio",
+                    "协议存储预警比例",
+                    "协议存储用量达到总容量的该比例时提醒一次；只是汇报，不改变准入。",
+                    "watchdog_protocol_storage_warn_ratio",
+                    0.01,
+                    1,
+                ),
+            )
+        ),
         _spec(
             "context.compact_trigger_tokens",
             "自动 Compact 触发水位（tokens）",

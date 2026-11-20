@@ -103,6 +103,7 @@ class SocialContext:
     sequence_part_index: int | None = None
     initiative_run_id: str | None = None
     automation_run_id: int | None = None
+    proactive_turn_id: str | None = None
     presence_id: str | None = None
     # Host-owned Social parent; split parts and captions cannot replace the
     # Work effect's original domain reference with one of their own receipts.
@@ -114,7 +115,11 @@ class SocialContext:
 
 
 def _self_scene(context: SocialContext) -> bool:
-    return context.initiative_run_id is not None or context.automation_run_id is not None
+    return (
+        context.initiative_run_id is not None
+        or context.automation_run_id is not None
+        or context.proactive_turn_id is not None
+    )
 
 
 def _mentioned_accounts(messages: Iterable[dict[str, Any]]) -> list[dict[str, str]]:
@@ -184,6 +189,35 @@ class SocialService:
     async def _validate_self_context(
         self, context: SocialContext, *, session: AsyncSession | None = None
     ) -> None:
+        if context.proactive_turn_id is not None:
+            if (
+                context.space_id
+                or not context.presence_id
+                or context.trigger_event_id is not None
+                or context.caused_by_event_id is not None
+                or context.inbound is not None
+                or context.initiative_run_id is not None
+                or context.automation_run_id is not None
+                or context.actor is None
+                or context.actor.principal_kind != "self"
+                or context.actor.proactive_turn_id != context.proactive_turn_id
+                or context.actor.conversation_id != context.conversation_id
+                or context.actor.presence_id != context.presence_id
+            ):
+                raise SocialError("invalid_self_context")
+            from yuki.services.proactive_turns import validate_proactive_turn
+
+            try:
+                await validate_proactive_turn(
+                    self.database,
+                    context.proactive_turn_id,
+                    conversation_id=context.conversation_id,
+                    presence_id=context.presence_id,
+                    session=session,
+                )
+            except PermissionError as exc:
+                raise SocialError(str(exc)) from exc
+            return
         if context.automation_run_id is not None:
             if (
                 not context.space_id

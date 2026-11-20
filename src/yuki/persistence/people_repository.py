@@ -111,6 +111,7 @@ from yuki.plugin_host.db_models import (
     PluginNotificationOutboxModel,
     PluginStateModel,
 )
+from yuki.runtime.proactive_schema import proactive_turns, watchdog_issues
 from yuki.runtime.work_repository import WorkRepository
 from yuki.runtime.work_schema_v1 import effects, work
 from yuki.sandbox.db_models import SandboxTaskContinuationModel, SandboxTaskRunModel
@@ -1529,6 +1530,13 @@ class PeopleRepository:
         )
         await session.execute(
             delete(PersonAliasModel).where(PersonAliasModel.canonical_person_id.in_(person_ids))
+        )
+        # Yuki-opened turns and the watchdog's told-once rows name the person (0160).
+        await session.execute(
+            delete(watchdog_issues).where(watchdog_issues.c.person_id.in_(person_ids))
+        )
+        await session.execute(
+            delete(proactive_turns).where(proactive_turns.c.person_id.in_(person_ids))
         )
         await forget_person_by_id(session, person_id)
         return True

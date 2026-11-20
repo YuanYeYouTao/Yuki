@@ -251,6 +251,21 @@ class ToolRuntime:
                 raise PermissionError("tool_actor_unavailable")
             return self.actor_context
         actor: ToolActor | None = self.actor_context
+        if self.origin is TurnOrigin.PROACTIVE_PRIVATE:
+            if (
+                actor is None
+                or actor.principal_kind != "self"
+                or actor.origin is not self.origin
+                or not actor.proactive_turn_id
+                or self.actor_is_superuser
+                or self.person_id is not None
+                or self.initiative_run_id is not None
+                or actor.execution_id != self.execution_id
+                or actor.conversation_id != self.effective_conversation_id
+                or self.effective_trigger_event_id is not None
+            ):
+                raise PermissionError("self_actor_context_mismatch")
+            return actor
         if self.origin is TurnOrigin.SELF_INITIATIVE or (
             self.origin is TurnOrigin.SCHEDULED_AUTOMATION
             and actor is not None
@@ -303,7 +318,10 @@ class ToolRuntime:
             raise InvalidTurnContextError("group scene requires a group id")
         actor = self.actor_context
         if actor is not None and actor.principal_kind == "self":
-            if (
+            if self.origin is TurnOrigin.PROACTIVE_PRIVATE:
+                if self.initiative_run_id is not None or not actor.proactive_turn_id:
+                    raise InvalidTurnContextError("invalid self turn authority")
+            elif (
                 self.origin not in {TurnOrigin.SELF_INITIATIVE, TurnOrigin.SCHEDULED_AUTOMATION}
                 or (self.origin is TurnOrigin.SELF_INITIATIVE and not self.initiative_run_id)
                 or (

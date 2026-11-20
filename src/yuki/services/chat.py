@@ -1290,6 +1290,7 @@ class ChatService:
         return (
             (control is not None and control.current is not None)
             or snapshot.automation_run_id is not None
+            or snapshot.proactive_turn_id is not None
             or self._turn_coordinator.version_matches(
                 snapshot.scope_key,
                 snapshot.coordinator_version,

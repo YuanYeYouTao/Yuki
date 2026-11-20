@@ -31,6 +31,8 @@ def proactive_message_label(
 ) -> str | None:
     """Return a model-only label for one genuine Yuki proactive message."""
 
+    if row.direction == "outbound" and row.origin == "proactive_private":
+        return "[主动消息｜Yuki 主动发起]"
     if row.direction != "outbound" or row.origin != "plugin_background":
         return None
     if row.caused_by_event_id is None:

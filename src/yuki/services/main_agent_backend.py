@@ -302,6 +302,17 @@ class MainAgentBackend(AgentToolBackend):
             return _refused_result(
                 name, "tools_closed", detail="本轮只声明会话前缀工具 schema，不允许真实调用。"
             )
+        if (
+            self._runtime.origin is RuntimeTurnOrigin.PROACTIVE_PRIVATE
+            and name != "send"
+            and self.is_side_effecting(name, arguments_json, runtime)
+        ):
+            # A proactive private turn only reports: reads and send, nothing else.
+            return _refused_result(
+                name,
+                "report_only_source",
+                detail="这次主动私聊只汇报，不执行操作；对方同意后会在普通对话里处理。",
+            )
         if name == STATE_TOOL.name and contract is not None:
             state = contract.state
             execution_runtime = self._request_runtime()

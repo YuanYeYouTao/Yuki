@@ -1065,3 +1065,101 @@ async def session_native_id(reader: AsyncSession, session_id: str | None) -> str
 
 def card_text(card: dict[str, Any]) -> str:
     return encode_card(card)
+
+
+def tool_name(tool: Any) -> str | None:
+    """Only a tool's name: an ACP tool is a whole ToolCallUpdate (title, rawInput)."""
+    name = tool.get("kind") or tool.get("name") if isinstance(tool, dict) else tool
+    return name[:64] if isinstance(name, str) and name else None
+
+
+def _epoch(value: Any) -> float:
+    return float(
+        value.replace(tzinfo=UTC).timestamp() if value.tzinfo is None else value.timestamp()
+    )
+
+
+async def watch_records(reader: AsyncSession) -> list[dict[str, Any]]:
+    """Safe facts of every live delegation/observation record, for the watchdog.
+
+    IDs, states, receipt finality and times only; never native payloads or briefs.
+    Bounded by the live records (few) and their operations, through existing indexes.
+    """
+    rows = list(
+        (
+            await reader.execute(
+                select(
+                    work.c.id,
+                    work.c.state,
+                    work.c.reason,
+                    work.c.updated,
+                    work.c.parent_work_id,
+                    children.c.executor_json,
+                )
+                .join(children, children.c.work_id == work.c.id)
+                .where(children.c.executor_json.is_not(None), work.c.state.not_in(TERMINAL))
+            )
+        ).mappings()
+    )
+    records: list[dict[str, Any]] = []
+    for row in rows:
+        executor = json.loads(row["executor_json"])
+        operations = []
+        for operation in await reader.scalars(
+            select(AgentOperationModel).where(AgentOperationModel.work_id == row["id"])
+        ):
+            receipt = json.loads(operation.result_json) if operation.result_json else None
+            operations.append(
+                {
+                    "id": operation.id,
+                    "action": operation.action,
+                    "created": _epoch(operation.created_at),
+                    "final": receipt is not None and final_receipt(receipt),
+                    "unknown": receipt is None or receipt.get("status", "unknown") == "unknown",
+                }
+            )
+        # Newest event per operation through ``(operation_id, id)``; no event scan.
+        newest = [
+            await reader.scalar(
+                select(func.max(AgentEventModel.id)).where(
+                    AgentEventModel.operation_id == operation["id"]
+                )
+            )
+            for operation in operations
+        ]
+        last_id = max((identity for identity in newest if identity is not None), default=None)
+        last_event = (
+            await reader.scalar(
+                select(AgentEventModel.created_at).where(AgentEventModel.id == last_id)
+            )
+            if last_id is not None
+            else None
+        )
+        # Requests exist only while the record waits for an answer (``waiting_user``);
+        # only then are its events and answers read.
+        waiting = (
+            await waiting_on_parent(reader, row["id"]) if row["state"] == "waiting_user" else []
+        )
+        records.append(
+            {
+                "id": row["id"],
+                "state": row["state"],
+                "reason": row["reason"],
+                "updated": float(row["updated"]),
+                "parent_work_id": row["parent_work_id"],
+                "relationship": executor.get("relationship"),
+                "device_id": executor.get("device_id"),
+                "operations": operations,
+                "last_event": _epoch(last_event) if last_event is not None else None,
+                "waiting_on_parent": [
+                    {
+                        "permission_id": item["permission_id"],
+                        "kind": item["kind"],
+                        "tool": tool_name(item.get("tool")),
+                        "received_at": item["received_at"],
+                    }
+                    for item in waiting
+                ],
+            }
+        )
+    return records
