@@ -18,7 +18,7 @@ from websockets.exceptions import ConnectionClosed, InvalidHandshake
 from .. import __version__
 from ..config import Instance
 from ..discovery import creation_flags, profile_environment
-from ..scope import Scope
+from ..scope import Scope, expand_home
 from . import DriverError, Emit
 
 APPROVAL_METHODS = {
@@ -1300,7 +1300,7 @@ class CodexDriver:
                 )
             elif action == "prompt":
                 resumed = await self.rpc.call(
-                    "thread/start", {"cwd": arguments.get("cwd") or self.spec.cwd}
+                    "thread/start", {"cwd": expand_home(arguments.get("cwd") or self.spec.cwd)}
                 )
                 session = resumed["thread"]["id"]
             if arguments.get("scope") is not None:

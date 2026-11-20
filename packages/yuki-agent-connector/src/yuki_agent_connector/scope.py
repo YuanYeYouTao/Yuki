@@ -10,6 +10,7 @@ native agent runs in its own full-access mode (0.9.2, 2026-11-20 task book).
 
 from __future__ import annotations
 
+import os
 import shlex
 from dataclasses import dataclass
 from pathlib import Path
@@ -65,6 +66,11 @@ class Scope:
         """Whether the whole directory is writable (an agent mode may then write it)."""
         root = Path(path).resolve()
         return any(root == item or item in root.parents for item in self.write_paths)
+
+
+def expand_home(path: str) -> str:
+    """A directory Yuki may write relative to this user's home (``~/...``)."""
+    return os.path.expanduser(path)
 
 
 def _absolute(path: str, cwd: str) -> Path:

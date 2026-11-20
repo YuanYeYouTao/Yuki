@@ -28,6 +28,7 @@ from yuki.external_agents.db_models import (
 from yuki.external_agents.delegation import (
     Delegations,
     executor_of,
+    final_receipt,
     release_answer,
     release_reference,
 )
@@ -590,7 +591,7 @@ class AgentRepository:
             if original.result_json == serialized:
                 return original
             previous = json.loads(original.result_json or "{}")
-            if previous.get("pending") is False or encode(previous) == serialized:
+            if final_receipt(previous) or encode(previous) == serialized:
                 return original
         async with self.database.immediate_session() as session:
             row = await session.get(AgentOperationModel, identity)
@@ -600,7 +601,7 @@ class AgentRepository:
             await self._project(session, row, result, serialized)
             if (
                 row.run_id is not None
-                and result.get("pending") is False
+                and final_receipt(result)
                 and (executor := await executor_of(session, row.work_id)) is not None
             ):
                 # A receipt that ends a record's run (a refusal, an immediate terminal)

@@ -64,6 +64,50 @@ async def test_refused_start_fails_the_record_and_tells_the_parent(bridge):
         await computer.close()
 
 
+# 1a: the actual connector's refusal shape (connector 0.9.3: the native agent never
+# started, e.g. CLIConnectionError) also fails the record and tells the parent why,
+# instead of leaving it waiting on its executor.
+async def test_a_native_start_failure_fails_the_record_and_tells_the_parent(bridge):
+    computer = await NativeComputer(bridge).start()
+    computer.hold = {"prompt"}
+    try:
+        instance, session_id = await directory(bridge)
+        async with accepted_work(bridge) as control:
+            outcome = await _start(
+                control, "never-started", executor={"agent": instance}, session=session_id
+            )
+            assert outcome.ok, outcome
+            identity = outcome.data["id"]
+            await settled(bridge)
+            [prompt] = [item for item in computer.commands if item["action"] == "prompt"]
+            await computer.answer(
+                prompt["id"],
+                {
+                    "status": "failed",
+                    "admitted": False,
+                    "error": {
+                        "code": "native_start_failed",
+                        "message": "Claude could not start: Working directory does not exist",
+                        "details": {"error_type": "CLIConnectionError"},
+                        "admitted": False,
+                        "executed": False,
+                    },
+                },
+            )
+            await settled(bridge)
+            await SandboxContinuationWorker(WorkRepository(bridge.database)).drain_once()
+            record = await _row(bridge, identity)
+            assert record["state"] == "failed", record
+            parent = await _inputs(bridge, control.current["id"])
+            told = [
+                row for row in parent if row["source_key"].startswith(f"worker-result:{identity}:")
+            ]
+            assert told, [row["source_key"] for row in parent]
+            assert any("native_start_failed" in row["payload_json"] for row in told)
+    finally:
+        await computer.close()
+
+
 # 1b: one finished run of a record with another still running never queues the record.
 async def test_a_finished_run_never_queues_a_record_with_another_running(bridge):
     computer = await NativeComputer(bridge).start()
