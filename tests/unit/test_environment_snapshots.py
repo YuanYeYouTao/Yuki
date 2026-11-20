@@ -101,7 +101,8 @@ async def test_s1_same_request_answers_the_original_snapshot_and_restore(tmp_pat
 
 
 async def test_s2_one_snapshot_or_restore_at_a_time(tmp_path):
-    manager, _ = await started(tmp_path)
+    # Restores an earlier snapshot after taking a newer one: keep both.
+    manager, _ = await started(tmp_path, snapshot_keep=3)
     try:
         ready = await snapshot(manager)
         manager.snapshots.request_snapshot("first", "yuki", {}, None)
@@ -231,7 +232,7 @@ async def test_s9_s10_daily_snapshot_only_after_a_real_change_and_not_under_huma
     tmp_path,
 ):
     # The interval is a product setting; a short one keeps the test real-time.
-    manager, docker = await started(tmp_path, snapshot_interval_hours=0.0002)
+    manager, docker = await started(tmp_path, snapshot_interval_hours=0.0002, snapshot_keep=3)
     try:
         # No snapshot yet: the first daily check takes one.
         await manager.snapshots.step()
