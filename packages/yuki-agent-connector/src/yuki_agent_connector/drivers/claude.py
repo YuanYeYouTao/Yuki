@@ -32,7 +32,7 @@ from claude_agent_sdk import (
 from ..config import Instance
 from ..discovery import profile_environment, refresh
 from ..journal import followup_id
-from ..scope import Scope
+from ..scope import Scope, expand_home
 from . import DriverError, Emit
 
 # Side-effect tools a scoped delegation sends through can_use_tool. `ask` wins over
@@ -477,7 +477,8 @@ class ClaudeDriver:
         scope: dict[str, Any] | None = None,
         fork: bool = False,
     ) -> ManagedSession:
-        cwd = cwd or self.spec.cwd
+        # Yuki may write the directory relative to this user's home (~/...).
+        cwd = expand_home(cwd or self.spec.cwd)
         if resume:
             # Two processes on one session silently fork its JSONL (§4.11, §15 E8).
             # Checked here and opened right after: a process starting in between is

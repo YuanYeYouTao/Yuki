@@ -2,7 +2,7 @@
 
 Yuki 继续运行在服务器，Codex、Claude Code 或 ACP Agent 留在用户电脑。电脑主动连接原 Yuki HTTP 服务上的 `/agents/v1/connect`，不用开放电脑入站端口，不上传原生登录文件，也不用在服务器安装 Codex。
 
-连接器是同仓独立包 [yuki-agent-connector](../../packages/yuki-agent-connector/pyproject.toml)，当前版本 `0.9.2`，设备协议为 `5`（与 Bot 一次硬切：协议不同的一端在握手时被拒，连接器停在 `protocol_unsupported`，不循环重连；更新较旧的一端）。手动安装需要 Python 3.12，配套桌面安装包随附独立运行时。它不安装 Bot，不运行另一个 Main／Work，不替原生 Agent 重建历史，也不直接发聊天消息。Yuki 经子任务工具委派、观察或接手本机 Agent；只有需要决定的事实以卡片交给发起它的工作，汇报仍通过 Main 的 `send`。
+连接器是同仓独立包 [yuki-agent-connector](../../packages/yuki-agent-connector/pyproject.toml)，当前版本 `0.9.3`，设备协议为 `5`（与 Bot 一次硬切：协议不同的一端在握手时被拒，连接器停在 `protocol_unsupported`，不循环重连；更新较旧的一端）。手动安装需要 Python 3.12，配套桌面安装包随附独立运行时。它不安装 Bot，不运行另一个 Main／Work，不替原生 Agent 重建历史，也不直接发聊天消息。Yuki 经子任务工具委派、观察或接手本机 Agent；只有需要决定的事实以卡片交给发起它的工作，汇报仍通过 Main 的 `send`。
 
 ## 本机完整访问
 
@@ -311,6 +311,7 @@ python -m pytest tests/integration/test_local_codex_bridge_live.py -q -s
 - Codex：用 `thread/settings/update` 在 Yuki 首次接触线程时收窄为 `on-request`＋`workspaceWrite{writableRoots, networkAccess}`（审批人为用户），Yuki 的回合结束或释放时恢复原设置；接口不可用时返回 `scope_unsupported`，不在无范围的情况下执行。恢复发生在回合结束之后，紧接着开始的回合仍可能沿用收窄后的设置（竞态，见任务书 §16）。
 - ACP：带范围的会话显式 `session/set_mode` 到会询问的模式（`default`、`read-only`，范围覆盖整个 cwd 时才用 `workspace-write`），没有就返回 `scope_unsupported`；按 `request_permission` 的 kind、locations 与 rawInput 判断，范围内只选 Agent 给出的 allow 选项；文件与终端回调在范围外拒绝。
 - `commands` 中的 `*`（0.9.1 起，三个驱动共用）：表示用户授予所有命令，带 shell 控制符的命令也算范围内；它不放宽 `write_paths` 与 `network`。
+- 工作目录（0.9.3 起）：委派的 `cwd` 可以写成相对本人主目录的 `~/…`，连接器在本机展开后再交给原生 Agent（Claude、Codex、ACP 均同）；此前 Claude SDK 把 `~` 当字面目录，报“工作目录不存在”，委派没有启动。范围里的路径原本就会展开。
 - 完全范围（0.9.2 起，[任务书](../architecture/Yuki-委派原生完全访问任务书-2026-11-20.md)）：`write_paths` 含根目录 `/`、`network` 为 true、`commands` 含 `*` 时不收窄，原生按自己的完全访问模式运行，没有新协议字段。Claude 以 `permission_mode="auto"` 打开，不再带副作用工具的 `ask` 覆盖，只保留 SendMessage 询问（上报）；auto 模式仍上交的请求除提问与 SendMessage 外都由连接器批准；以 auto 打开的进程只接受完全范围的输入，非完全或无范围的输入返回 `scope_conflict`，释放后再委派；以 `ask` 覆盖打开的进程可以接受完全范围的输入。Codex 线程设置改为 `approvalPolicy: never`＋`sandboxPolicy: dangerFullAccess`，Yuki 的回合结束或释放时与收窄一样恢复原设置，回执带 `thread_settings_before`。ACP 没有标准的完全访问模式，不调 `session/set_mode`，保留 Agent／用户自己的模式，Agent 仍发来的任何 `request_permission` 都选它给出的一次性 allow，文件与终端回调照常执行；没有会询问模式的 Agent 也接受完全范围。
 
 **归属**：Codex 上 Yuki 的输入一律 `thread/queue/add`，按 `clientUserMessageId` 归属回合，不用 `turn/start`；只回答 Yuki 自己开启的回合的请求，用户 TUI 回合的请求只上传元信息（`answer_at:"native_terminal"`），回答返回 `not_owner`。ACP 没有接收者的权限请求只传元信息、只能 deny。Claude／ACP 在委派持有期间自行开启的回合（后台任务通知、ScheduleWakeup）以 `owner_operation_id`＋`followup_execution` 上报，服务器登记为该委派下的后续执行；owner 被 detach 后转为无主。
