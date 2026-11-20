@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any
 from weakref import WeakKeyDictionary
 
-from sqlalchemy import and_, delete, or_, select, update
+from sqlalchemy import and_, case, delete, func, or_, select, update
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -656,3 +656,73 @@ async def stalled_unowned_object(reader: AsyncSession, before: float) -> dict[st
 async def usage_bytes(reader: AsyncSession) -> int:
     """Registered protocol bytes (owned and unowned), from the singleton counter."""
     return int(await reader.scalar(select(usage.c.byte_size).where(usage.c.id == 1)) or 0)
+
+
+async def failed_holders(reader: AsyncSession, limit: int) -> dict[str, Any]:
+    """Failed Works that still own protocol bytes, most held first (watchdog, read-only).
+
+    ``held_bytes`` is every object a Work references; ``exclusive_bytes`` only those no
+    other Work references, and ``failed_only_bytes`` every object referenced by failed
+    Works alone. The last two are estimates of what giving up recovery could reclaim
+    at this moment: shared refs, the GC grace period and later references decide.
+    Reads ``(state, updated)``, the refs primary key and ``ix_protocol_refs_digest``.
+    """
+    other = refs.alias("other_ref")
+    sole = ~(
+        select(other.c.sha256)
+        .where(other.c.sha256 == refs.c.sha256, other.c.work_id != refs.c.work_id)
+        .exists()
+    )
+    held = (
+        select(
+            refs.c.work_id,
+            func.sum(objects.c.byte_size).label("held_bytes"),
+            func.sum(case((sole, objects.c.byte_size), else_=0)).label("exclusive_bytes"),
+        )
+        .join(objects, objects.c.sha256 == refs.c.sha256)
+        .join(work, work.c.id == refs.c.work_id)
+        .where(work.c.state == "failed")
+        .group_by(refs.c.work_id)
+        .subquery()
+    )
+    rows = (
+        await reader.execute(
+            select(
+                held.c.work_id,
+                held.c.held_bytes,
+                held.c.exclusive_bytes,
+                work.c.parent_work_id,
+                work.c.revision,
+                work.c.conversation_id,
+                work.c.reason,
+                work.c.updated,
+                work.c.model_requests,
+                func.json_extract(work.c.source_json, "$.origin").label("origin"),
+                func.json_extract(work.c.source_json, "$.owner").label("owner"),
+            )
+            .join(work, work.c.id == held.c.work_id)
+            .order_by(held.c.held_bytes.desc(), held.c.exclusive_bytes.desc(), held.c.work_id)
+            .limit(limit)
+        )
+    ).mappings()
+    holders = [dict(row) for row in rows]
+    total = int(await reader.scalar(select(func.count()).select_from(held)) or 0)
+    failed_digests = (
+        select(refs.c.sha256)
+        .join(work, work.c.id == refs.c.work_id)
+        .where(work.c.state == "failed")
+        .distinct()
+        .subquery()
+    )
+    live = (
+        select(other.c.sha256)
+        .join(work, work.c.id == other.c.work_id)
+        .where(other.c.sha256 == objects.c.sha256, work.c.state != "failed")
+        .exists()
+    )
+    failed_only = await reader.scalar(
+        select(func.coalesce(func.sum(objects.c.byte_size), 0))
+        .join(failed_digests, failed_digests.c.sha256 == objects.c.sha256)
+        .where(~live)
+    )
+    return {"holders": holders, "total": total, "failed_only_bytes": int(failed_only or 0)}

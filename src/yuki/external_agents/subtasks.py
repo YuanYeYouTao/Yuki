@@ -432,7 +432,9 @@ async def manage_external(
     async with database.immediate_session() as writer:
         await control.repository._assert_lease(writer, control.lease)
         row = (await writer.execute(select(work).where(work.c.id == identity))).mappings().one()
-        if row["state"] not in TERMINAL:
+        # A failed record is ended here as well, so the reply matches its stored state.
+        # Its native run already ended: only the retire sweep cancels waiting runs.
+        if row["state"] not in {"completed", "cancelled"}:
             if action == "release" or observe:
                 # Ending Yuki's relationship only: the operations are already detached,
                 # so no native cancel follows (taskbook §4.11).

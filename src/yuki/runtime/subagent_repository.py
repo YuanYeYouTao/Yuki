@@ -654,7 +654,10 @@ class SubagentRepository:
                     )
                 )
 
-    async def cancel(self, lease: WorkLease, parent_id: str, identity: str) -> None:
+    async def cancel(
+        self, lease: WorkLease, parent_id: str, identity: str, *, revision: int | None = None
+    ) -> None:
+        """Cancel at ``revision`` when the caller read one, else at the current one."""
         from yuki.runtime.work_management import manage_work
 
         await self.related(parent_id, identity)
@@ -663,7 +666,8 @@ class SubagentRepository:
             row = (
                 (await session.execute(select(work).where(work.c.id == identity))).mappings().one()
             )
-            await manage_work(session, identity, row["revision"], "cancel")
+            expected = row["revision"] if revision is None else revision
+            await manage_work(session, identity, expected, "cancel")
 
     async def finish(self, lease: WorkLease) -> None:
         """Notify the parent with the committed result of this exact revision."""

@@ -158,6 +158,9 @@ jobs:
       - name: Watchdog E2E artifact
         if: matrix.suite == 'integration'
         run: test -s test-results/watchdog-capacity-incident-e2e.json
+      - name: Failed Work abandon E2E artifact
+        if: matrix.suite == 'integration'
+        run: test -s test-results/failed-work-abandon-storage-e2e.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:

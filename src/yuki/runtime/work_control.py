@@ -91,6 +91,7 @@ _ERROR_MESSAGES = {
     "invalid_work_query_cursor": "cursor 只能使用上次返回的 next_cursor。",
     "invalid_work_progress_cursor": "cursor 只能使用上次返回的 next_cursor。",
     "work_activation_obsolete": "本次执行已失效，操作未执行。",
+    "version_conflict": "该任务在你查看后状态已变化，操作未执行；先用 get_tasks 重新查看再决定。",
     "release_requires_agent_subtask": "release 只用于编码 Agent 子任务或观察；其他任务用 cancel。",
     "subagent_message_target_terminal_or_missing": "该子任务已结束，不能再发消息。",
 }
@@ -394,6 +395,11 @@ class WorkControl:
     outcome: ActivationOutcome | None = None
     staged_attempt: str | None = None
     context_access: ArtifactAccess | None = None
+    # Revisions of Works this activation read as failed with get_tasks(id). A failed
+    # Work does not run, so only a manager moves its revision: managing it later
+    # expects the read one, and a resume by another entry in between is a
+    # version_conflict instead of cancelling a Work the reader never saw running.
+    observed_revisions: dict[str, int] = field(default_factory=dict)
 
     def bind_context_access(self, access: ArtifactAccess) -> None:
         """Bind the authenticated entrypoint; model arguments cannot call this."""
@@ -965,6 +971,10 @@ class WorkControl:
             )
             if row is None:
                 raise ValueError("work_not_found_or_not_authorized")
+            if row["state"] == "failed":
+                self.observed_revisions[identity] = row["revision"]
+            else:
+                self.observed_revisions.pop(identity, None)
             view = task_view(row)
             if card is not None:
                 view["card"] = card
@@ -1026,7 +1036,14 @@ class WorkControl:
                 # A subtask is a child Work: cancel it, or resume it with new requirements.
                 from yuki.runtime.subagent_tools import manage_subtask
 
-                return await manage_subtask(self, action, target, call_key, text)
+                return await manage_subtask(
+                    self,
+                    action,
+                    target,
+                    call_key,
+                    text,
+                    revision=self.observed_revisions.pop(target, None),
+                )
         if action in {"cancel", "fail", "resume"} and target is not None:
             if (
                 action in {"cancel", "fail"}
@@ -1045,12 +1062,14 @@ class WorkControl:
                         _revision, state = await manage_work(
                             writer,
                             target,
-                            candidate["revision"],
+                            self.observed_revisions.get(target, candidate["revision"]),
                             action,
                             reason=text,
                         )
                 except WorkManagementError as exc:
                     raise ValueError(exc.code) from exc
+                # Its own write ends what this activation read.
+                self.observed_revisions.pop(target, None)
                 return {"id": target, "status": state}
         if self.lease.work_id and action == "start":
             raise ValueError("worker_already_registered")

@@ -1,8 +1,8 @@
 # Yuki failed Work 放弃恢复与协议存储持有者报告任务书（2026-11-20）
 
-状态：**第一阶段（调研与任务书），待批准，未实施**。对应 [#666](https://github.com/YuanYeYouTao/Yuki/issues/666)。分支 `feat/666-cancel-failed-work`，基线 origin/main `9d5242ea`（#664 看门狗、#665、#667 已合入；迁移 head `0161`）。
+状态：**第二阶段：决定已定（§2.2），已实施，PR 待 CI，未合并**。第一阶段调研见 §1，实施记录见 §8。对应 [#666](https://github.com/YuanYeYouTao/Yuki/issues/666)。分支 `feat/666-cancel-failed-work`，基线 origin/main `9d5242ea`（#664 看门狗、#665、#667 已合入；迁移 head `0161`）。
 
-标记约定同看门狗任务书：【实证】是源码或现有测试里查到的事实；【issue】是 #666 给出的生产数据，本阶段没有再去生产只读复核；【假设】是还没查实、需要在实施或 E2E 中确认的判断；【决定】是用户已定的取舍；【推荐】是本书提议、等待批准的取舍。文中路径省略 `src/yuki/`，行号以 `9d5242ea` 为准。
+标记约定同看门狗任务书：【实证】是源码或现有测试里查到的事实；【issue】是 #666 给出的生产数据，本阶段没有再去生产只读复核；【假设】是还没查实、需要在实施或 E2E 中确认的判断；【决定】是用户已定的取舍；第一阶段的【推荐】已由用户逐项决定，见 §2.2。文中路径省略 `src/yuki/`，行号以 `9d5242ea` 为准。
 
 ## 1. 问题与证据
 
@@ -30,137 +30,161 @@
 | C14 | 已有索引足够：`runtime_work (state, updated)`（0084/0085），`runtime_protocol_refs` 主键 `(work_id, sha256)`，以及 `ix_protocol_refs_digest`。持有者查询**不需要迁移** | `migrations/versions/0084_cache_cleanup_indexes.py:14`；`runtime/protocol_schema.py:18-28` |
 | C15 | 没有任何现有测试冻结“cancel failed → precondition_failed”。`test_closed_work_protocol_refs.py:70` 冻结的是“failed 保持 refs”，这在新方案下仍然成立（不取消就保留） | `git grep manage_work( tests`；`git grep precondition_failed tests` |
 | C16 | Desktop 的取消按钮条件是 `!terminal(data)`，而 `terminal` 包含 failed，所以 failed Work 看不到取消入口 | Yuki-Desktop `3adff8e`：`src/renderer/views/Works.tsx:57,498,1087` |
+| C17 | `get_tasks` 的模型视图（`task_view`）不含 revision；`manage_task` 对非当前目标的 cancel/fail/resume 在本次调用内用 reader 读出候选行，再把它的 revision 交给 `manage_work` 做 CAS。所以“读到写”之间的并发 resume 会得到 `version_conflict`；但如果 resume 发生在 Yuki 查看之后、调用 `manage_task` 之前，这次调用会读到新的 revision，照样取消已被恢复的 Work | `runtime/work_control.py:114-128,1030-1056` |
+| C18 | 委派原生回合的取消只由 `ExternalAgentService.reconcile` 的退役扫描发出：只针对 `SandboxTaskRun.status='waiting'`、未 detach、所属 Work 已终态的操作，并且只在 `_view` 仍是 `pending` 时发送 cancel。failed 和 cancelled 都属终态，所以 failed → cancelled 不会让已结束的原生回合重新进入扫描；`manage_external` 的 cancel 分支本身也不调用原生服务 | `external_agents/service.py:1494-1570,1602-1655`；`external_agents/subtasks.py:423-455` |
 
-## 2. 已定决定【决定，用户】
+## 2. 决定
+
+### 2.1 第一阶段已定【决定，用户】
 
 1. 采用 #666 方案 2：放宽条件，允许 `failed → cancelled`，语义是“放弃恢复”。由现有触发器释放 refs，现有 GC 在宽限期后回收。
 2. 看门狗只报告持有协议存储最多的 failed Work，**不自动取消**。所有者同意后，由 Yuki 在普通轮次里用现有 Work 管理工具取消。
 3. Work 管理工具、管理端和个人设备 API 三个入口的行为一致。
 4. 不做：按时间自动过期 failed Work、自动取消、新的保留期配置或阈值。
-5. Desktop 如果需要改动，本书只列出，不实现。如果需要迁移，编号用 0162（本方案推荐不需要，见 Q9）。
+5. Desktop 如果需要改动，本书只列出，不实现。如果需要迁移，编号用 0162。
+
+### 2.2 第二阶段逐项决定与理由【决定，用户 2026-11-20 审查】
+
+| # | 决定 | 理由 |
+|---|---|---|
+| Q1 | **不暴露 goal**。按现有看门狗隐私合同（#664 §4.6），持有者只给内部 ID、来源分类码（`origin`/`owner`）、会话 ID、原因码、时间、计数、字节和 revision。需要知道任务内容时，Yuki 在普通轮里用 `get_tasks(id)` 查询，由执行处按授权判断 | 收件人是所有超管，而 failed Work 可能属于别人的私聊或群；`facts_json` 会持久化，并在激活时进入模型请求。这里**有意不满足** issue“目标摘要”这一项，改用分类码加授权查询：保守的隐私取舍，不另设按人分开计算 facts 的机制 |
+| Q2 | **只附在现有容量事实里**（`protocol_storage_near_cap`、`protocol_storage_capacity`），不新增问题键或阈值。**低于阈值不会报告**：按 #666 的数据，生产约 1.43 GB，低于 2 GiB × 0.8 ≈ 1.72 GB，现在不会触发；现存的 1141 MB 由主人直接让 Yuki 取消 | 与 issue 的“附在协议存储事实里”一致；开发约束禁止新增经验阈值；平时的 tick 不付持有者查询的成本 |
+| Q3 | 列表**按 `held_bytes` 降序**排列（相同时按 `exclusive_bytes` 降序，再按 `work_id`），符合 issue 的“持有最多”。另给 `exclusive_bytes` 和 `failed_only_bytes`，并在 facts 中写明：两者只是**观察时刻的可回收估算或上界**，会受共享引用、24 h GC 宽限期和之后的新引用影响，**不保证实际回收量** | “持有”指引用量，按它排序与 issue 一致；独占量能帮主人判断取消的实际效果，但内容寻址的对象可能被其他 Work 共享或之后再次引用，所以只能写成估算 |
+| Q4 | **最多列 5 条**；总数 `failed_holders_total` 和上界 `failed_only_bytes` 精确给出 | 每条带 10 个字段，5 条足够主人决策，也控制了运行资料的长度 |
+| Q5 | **不级联改写终态后代**。沿用现有 cancel 的子树语义：只取消非终态后代；failed 或 completed 的工作者保持原状态，它们的 refs 在根取消 7 天后随工作者归档释放 | 不改原事实，不新增机制；根取消后，现有归档会接手剩下的 refs（C6） |
+| Q6 | **修复 failed 委派记录的虚假成功**：`manage_external` 把 failed 记录当作仍可结束的记录，实际写入 cancelled（cancel 走 `manage_work`；release 和停止观察照原分支写 `released`/`observation_stopped`），返回值与实际状态一致。个人设备 API 和管理端直接调用 `manage_work`，结果同样是 cancelled，三个入口一致。验证：已结束的原生回合**不会再收到取消**（不调用原生服务，不登记新操作） | 当前返回 `cancelled` 而状态仍是 failed，是对事实的错误报告；放宽 C2 之后，个人设备 API 会真的改成 cancelled，如果 `manage_task` 不改，入口之间会出现新分歧。原生回合已经结束，C18 说明状态改写不会再触发原生取消。completed 记录的同类问题不在本 issue 范围，见 §7 |
+| Q7 | **不改工具合同**：`manage_task` 和 `get_tasks` 的声明（说明和参数 schema）不变，manifest 不变 | 声明已经覆盖“cancel 终止 id 指定的任务”；修改声明会让固定合同和缓存前缀变化，而本问题不需要 |
+| Q8 | **facts 可能过时**（问题打开时冻结，C12）。普通轮执行所有者同意的“放弃恢复”之前，必须核对当前状态和 revision，防止目标在此期间被并发 resume 后误取消正在运行的任务。设计用现有版本保护：`WorkControl` 记下本次激活里 `get_tasks(id)` **读到 failed 状态**的 Work 的 revision，之后对同一非当前目标调用 `manage_task` 的 cancel/fail/resume（包括子任务 cancel）时，把这个 revision 作为期望值交给 `manage_work` 的 CAS；revision 已变化则返回 `version_conflict`，提示先用 `get_tasks` 重新查看，不写任何东西。Yuki 自己成功管理目标后记录即失效；再次读到非 failed 状态时也清除；记录只在本次激活内有效，不跨轮。只记 failed 的原因：failed Work 不执行，只有管理操作会改它的 revision；运行中 Work 的 revision 会随自身执行不断推进，绑定它会误伤正常取消（实施时被现有测试 `test_subagent_lifecycle.py::test_foreground_manages_original_child_without_accepting_another_work` 发现，见 §8）。没有先查看时，行为与现在相同（调用内现读）。看门狗不获得任何管理权。facts 每条带上观察时的 `revision`，供管理端和个人设备按现有 `expected_revision` 操作 | 保守选择：所有者同意的是放弃“那个 failed 的 Work”；把 Yuki 实际看到的 revision 绑定到现有 CAS，就不会误取消被别人恢复的任务。不改工具声明（Q7），不新增状态机或锁，只复用 `manage_work` 已有的 revision 检查。**剩余缺口**：如果 Yuki 没有先用 `get_tasks` 查看就直接取消，而目标在此之前已被恢复，这次取消仍会生效，这与现有取消运行中 Work 的语义相同。完全消除这个缺口需要 `manage_task` 接受显式 revision 参数，属于工具合同变更，已被 Q7 排除 |
+| Q9 | **不需要迁移，不回填** | 触发器已覆盖 `failed → cancelled`，索引已存在（C1、C14）；哪些 failed Work 要放弃由主人逐个决定，程序不批量清理生产数据 |
+| Q10 | **不升个人 Client API revision** | 请求和响应形状不变，只是 failed 从 409 变成成功；Desktop 更新按钮条件即可（§3.5，只列出） |
 
 ## 3. 方案
 
-### 3.1 放宽 failed 的取消前提（删除限制，不新增机制）
+### 3.1 放宽 failed 的取消前提（删除限制）
 
-- `work_management.py:200` 改为：终态只放行 `resume failed` 和 `cancel failed`，其余组合（`fail failed`、任何作用于 `completed`/`cancelled` 的操作）仍返回 `precondition_failed`。只需改这一行条件，`cancel` 分支原样复用：`stop_owned_execution`、写 `cancelled`、`revision+1`、清 `accepted_control`，有父 Work 时给父 mailbox 写 `worker-result`。
-- `management_view` 改为 `"cancel": not terminal or row["state"] == "failed"`（与 `resumable` 同形）。
-- 触发器、GC、索引和 schema 都不改。refs 在同一写事务中由 C1 的触发器删除，对象在宽限期 `GC_GRACE_SECONDS=86400` 之后由维护 tick 回收，`runtime_protocol_usage` 按删除触发器扣减。
-- 四个入口（C4）都不需要单独改代码，原回执、重放和 `version_conflict` 合同照旧。管理端和客户端的取消原因仍分别是 `operator_cancelled` 和 `person_cancelled`，`manage_task` 仍是 `text`；原失败码保留在 `failure_json`（C10）。
-- 委派记录（C11）见 Q6。
+- `work_management.py:200` 改为：终态里只放行 `resume failed` 和 `cancel failed`；`fail failed`，以及任何作用于 `completed`/`cancelled` 的操作，仍返回 `precondition_failed`。`cancel` 分支原样复用：`stop_owned_execution`（只取消非终态后代，Q5）、写入 `cancelled`、`revision+1`、清 `accepted_control`；有父 Work 时，给父 mailbox 写 `worker-result`（父 Work 处于等待外部且没有活动等待时才排队，挂起或终态的父 Work 不复活）。
+- `management_view` 改为 `"cancel": not terminal or row["state"] == "failed"`。
+- 触发器、GC、索引和 schema 都不改（Q9）。refs 在同一写事务中由 C1 的触发器删除；对象在宽限期 `GC_GRACE_SECONDS=86400` 之后由维护 tick 回收，`runtime_protocol_usage` 按删除触发器扣减。原失败码保留在 `runtime_work_recovery.failure_json`（C10）。
 
-### 3.2 看门狗附上 failed 持有者（只读）
+### 3.2 failed 委派记录（Q6）
 
-在 `_check_works` 的 `storage` 事实中加入以下字段，`protocol_storage_near_cap` 和 `protocol_storage_capacity` 两个问题都会带上：
+`external_agents/subtasks.py:435` 的 `row["state"] not in TERMINAL` 改为 `row["state"] not in {"completed", "cancelled"}`：failed 记录走与活记录相同的结束分支，真实写入 cancelled。不新增原生调用；cancel 分支原本就不调用原生服务（C18）。
+
+### 3.3 普通轮的版本核对（Q8）
+
+`WorkControl` 增加一个只在本次激活内有效的 `observed_revisions: dict[str, int]`：
+
+- `_get_tasks` 按 id 读到 failed 时记下该行的 `revision`，读到其他状态时清除记录（列表读取不带 revision，不记录）。
+- `_manage` 对非当前目标的 cancel/fail/resume（`manage_work` 路径）使用 `observed_revisions.get(target, candidate["revision"])` 作为期望 revision，成功后清除记录；子任务路径由 `_manage` 取出记录（取出即清除），作为 `manage_subtask(..., revision=)` 的显式参数传入，cancel 时交给 `SubagentRepository.cancel(..., revision=)`。
+- `_ERROR_MESSAGES` 增加 `version_conflict` 的文案：“该任务在你查看后状态已变化，操作未执行；先用 get_tasks 重新查看再决定。”这是工具结果文案，不属于工具声明（Q7）。
+
+### 3.4 看门狗附上 failed 持有者（只读）
+
+`runtime/protocol_store.py` 新增只读函数 `failed_holders(reader, limit)`，与 `stalled_unowned_object` 并列。`_check_works` 只在 `used ≥ cap × warn_ratio` 或存在容量挂起时，在同一个 reader 里调用它；结果写进 `storage`，两个存储问题都会带上：
 
 ```
-"failed_holders": [            # 按 exclusive_bytes 降序，再按 held_bytes、work_id；最多 N 条（Q4）
-  {"work_id", "parent_work_id", "origin": _code(source.origin|owner), "conversation_id",
-   "reason": _code(work.reason), "failed_at": _iso(updated), "model_requests",
-   "held_bytes",               # 该 Work 引用的全部对象字节
-   "exclusive_bytes"}          # 只被该 Work 引用的字节 = 取消它最终能回收的量
+"failed_holders": [            # held_bytes 降序，再按 exclusive_bytes 降序、work_id；最多 5 条
+  {"work_id", "parent_work_id", "revision", "origin", "owner", "conversation_id",
+   "reason", "failed_at", "model_requests", "held_bytes", "exclusive_bytes"}
 ],
-"failed_holders_total": <有 refs 的 failed Work 数，精确>,
-"failed_only_bytes": <所有引用都来自 failed Work 的对象字节，精确，即全部放弃时的上界>
+"failed_holders_total": <有 refs 的 failed Work 数>,
+"failed_only_bytes": <所有引用都来自 failed Work 的对象字节>,
+"reclaim_note": "exclusive_bytes/failed_only_bytes 是观察时的可回收估算或上界，受共享引用、GC 宽限期和之后的新引用影响，不保证实际回收量"
 ```
 
-- 查询放在一个 reader 里，只在已经满足上面阈值的那次检查中才计算（Q2），平时的 tick 不付这份成本。检查失败时沿用现有的 undetermined 逻辑。
-- SQL 草图：`runtime_work(state='failed')` 走 `(state, updated)` 索引，join `refs`（主键前缀），再 join `objects`；`exclusive` 用 `NOT EXISTS (refs r2 WHERE r2.sha256=r.sha256 AND r2.work_id<>r.work_id)`（走 `ix_protocol_refs_digest`）；`GROUP BY work_id`。
-- 不读 goal、source 正文或 checkpoint（Q1）。`origin` 只取 `CLASSIFICATION_KEYS` 的分类码。
-- `CONTENT` 指示不改，它已经要求“写出处理需要的内部 ID、只汇报、同意后在普通对话里处理”。看门狗本身不调用 `manage_work`，也不写 `runtime_work`。
+- SQL：`runtime_work(state='failed')` 走 `(state, updated)` 索引，join `refs`（主键前缀），再 join `objects`；`exclusive` 用 `NOT EXISTS` 检查同一 sha256 是否有其他 work_id 的 ref（走 `ix_protocol_refs_digest`）；`failed_only` 从 failed 的 digest 集合出发，用 `NOT EXISTS` 排除被非 failed Work 引用的对象。
+- 不读 goal、source 正文或 checkpoint；`origin`/`owner`/`reason` 经过 `_code()`（Q1）。查询失败时沿用现有的 undetermined 逻辑。
+- `CONTENT` 指示不改。看门狗不调用 `manage_work`，也不写 `runtime_work`。
 
-### 3.3 文档（与代码同一 PR）
+### 3.5 文档（与代码同一 PR）
 
-- `docs/architecture/main-agent-runtime.md:650-654`：在“failed 的 Work 仍可 resume … 保留 refs”后补一句：所有者可以 `cancel` 放弃恢复，`failed → cancelled` 后释放 refs；看门狗在存储接近上限时列出 failed 持有者。
+- `docs/architecture/main-agent-runtime.md:650-654`：failed 可以 cancel 放弃恢复，`failed → cancelled` 后释放 refs；看门狗在容量事实中列出 failed 持有者（估算口径）；普通轮的取消绑定 `get_tasks` 读到的 revision。
 - `docs/architecture/persistent-subagents.md:130-131`：同步“failed 仍可 resume，保留引用；取消即放弃恢复并释放”。
-- `docs/architecture/admin-api.md:123`、`docs/architecture/client-api.md:206`：cancel 接受 failed（放弃恢复），其余终态仍返回 `precondition_failed`。
-- `docs/architecture/README.md`：索引加入本任务书。迁移 head 不变。
+- `docs/architecture/admin-api.md:123`、`docs/architecture/client-api.md:206`：cancel 接受 failed；其余终态仍返回 `precondition_failed`。
+- `docs/architecture/README.md`：更新本任务书索引状态。迁移 head 不变。
 
-### 3.4 Desktop（只列出，不实现）
+### 3.6 Desktop（只列出，不实现）
 
-- `src/renderer/views/Works.tsx:498,1087`：`!terminal(data)` 改为 `!terminal(data) || data.state === 'failed'`；failed 时按钮文案用“放弃恢复”，`CancelWorkSheet` 说明“取消后不能再恢复，已发送内容与回执保留”。
-- `src/shared/locales/{en,zh-Hans,zh-Hant}/works.ts` 新增文案。
-- `tests/e2e/work.spec.ts` 增加用例：failed Work 显示放弃恢复，取消后显示 cancelled。
-- OpenAPI 与 `contract.gen.ts` 不变（请求和响应形状不变）。个人 Client API revision 不升（Q10）。
+- `src/renderer/views/Works.tsx:498,1087`：`!terminal(data)` 改为 `!terminal(data) || data.state === 'failed'`；failed 时按钮文案用“放弃恢复”，`CancelWorkSheet` 说明“取消后不能再恢复，已发送内容与回执保留”；请求照旧带 `expected_revision`，409 `version_conflict` 时刷新。
+- `src/shared/locales/{en,zh-Hans,zh-Hant}/works.ts` 新增文案；`tests/e2e/work.spec.ts` 增加 failed → 放弃恢复 → cancelled 的用例。
+- OpenAPI 与 `contract.gen.ts` 不变（Q10）。
 
 ## 4. 失败情况（先写，再写代码）
 
 ### 4.1 取消一侧
 
-| # | 失败情况 | 验证方式 |
+| # | 失败情况 | 场景 |
 |---|---|---|
-| F1 | failed Work 在任一入口取消都返回 `precondition_failed`（现状） | S2：四个入口逐个取消 failed Work |
-| F2 | 入口之间不一致：某个入口仍然拒绝，或者状态、revision、回执、重放结果不同 | S2：对比四个入口的结果与回执；同一 `request_id` 重放返回原结果 |
-| F3 | `management_view` 对 failed 给出 `cancel:false`，或对 completed/cancelled 给出 `cancel:true` | S2：管理端 `GET /admin/v1/works/{id}` 的 actions |
-| F4 | `failed → cancelled` 后 refs 没释放；或误删了别的 Work 的 refs；或另一个活 Work 仍引用的共享对象被 GC 删除 | S1：两个 failed Work 和一个 running Work 共享一个对象 |
-| F5 | GC 在宽限期内就删除对象，或者过了宽限期仍不删除；`runtime_protocol_usage` 的下降量不等于实际回收的字节 | S1：宽限期内外各跑一次维护 tick，核对文件和计数 |
-| F6 | 取消后仍能 resume；或者 resume 之后（queued/running）的 cancel 与现有取消不同 | S3 |
-| F7 | resume 与 cancel 用同一 revision 并发：两者都成功，或者输家得到的不是 `version_conflict`，或者最终状态与赢家的回执不符 | S3：同一 revision 下 `asyncio.gather` 两个 writer |
-| F8 | revision 过期仍然写入或改动了 refs；客户端没有记录 problem 回执 | S3 |
-| F9 | `fail` 作用于 failed、或任何操作作用于 completed/cancelled 被放行；同一状态重复写入时触发器又跑一遍 | S3 |
-| F10 | 后代处理不当：非终态后代没有被取消；终态后代（failed/completed 工作者）被改写了原状态；后代的 refs 被提前或错误地删除 | S3：failed 根下挂 failed 工作者和 completed 未归档工作者（Q5） |
-| F11 | 取消一个 failed 工作者时：父 Work 没收到 `worker-result`；或者挂起、终态的父 Work 被复活；或者父 Work 在有活动等待时被错误地排队 | S3 |
-| F12 | 已经被 7 天归档的 failed 根（journal、refs 已删）无法取消，或者取消时报错 | S3：构造 C6 形态 |
-| F13 | failed Work 残留的 pending 输入或活动等待在取消后又把它唤醒 | S3 |
-| F14 | 改写了原事实：已结算为 failed 的自动化运行、插件作业或 SELF 运行被改成 cancelled；`failure_json`、effects、journal 行或已确认发送被删改 | S1/S3：核对行快照 |
-| F15 | failed 委派记录取消后返回 `cancelled`，状态却仍是 failed（现状 C11） | S3（取决于 Q6） |
-| F16 | 越权：个人设备取消别人的 failed Work 没有返回 `not_found`；`manage_task` 取消不可见的 Work 没有返回 `work_not_found_or_not_authorized` | S2 |
+| F1 | failed Work 在任一入口取消都返回 `precondition_failed`（现状） | S1、S3、S4 |
+| F2 | 入口之间不一致：某个入口仍拒绝，或者状态、revision 增量、回执、重放结果不同 | S3、S4 |
+| F3 | `management_view` 对 failed 给出 `cancel:false`，或对 completed/cancelled 给出 `cancel:true` | S3 |
+| F4 | `failed → cancelled` 后 refs 没释放；误删了别的 Work 的 refs；或另一个活 Work 仍引用的共享对象被 GC 删除 | S1、S3 |
+| F5 | GC 在宽限期内就删除对象，或者过了宽限期仍不删除；`runtime_protocol_usage` 的下降量不等于实际回收的字节 | S1 |
+| F6 | 取消后仍能 resume | S5 |
+| F7 | 同一 revision 下 resume 与 cancel 并发：两者都成功，或者输家得到的不是 `version_conflict`，或者最终状态与赢家的回执不符 | S5 |
+| F8 | revision 过期仍然写入或改动了 refs；个人设备没有记录 problem 回执 | S3、S5 |
+| F9 | `fail` 作用于 failed、或任何操作作用于 completed/cancelled 被放行 | S3、S5 |
+| F10 | 非终态后代没有被取消；终态后代（failed/completed 工作者）的原状态或 refs 被改动（Q5） | S5 |
+| F11 | 取消 failed 工作者时，父 Work 没收到 `worker-result`；挂起的父 Work 被复活 | S5 |
+| F12 | 已被 7 天归档的 failed 根（journal、refs 已删）无法取消 | S5 |
+| F13 | 残留的 pending 输入或活动等待在取消后把 Work 再次唤醒 | S5 |
+| F14 | `failure_json`、journal 行、effects 被删改（自动化运行和插件作业只从运行中结算，由 C9 代码事实保证，不单独构造） | S1、S5 |
+| F15 | failed 委派记录取消后返回 cancelled，状态却仍是 failed；或者 `manage_task`、个人设备 API、管理端的结果不同（Q6） | S2、S3 |
+| F16 | 越权：个人设备取消别人的 failed Work 没有返回 `not_found` | S3 |
+| F17 | Yuki 用 `get_tasks` 看到 failed（revision r）后，另一个入口执行了 resume（r+1），随后的 `manage_task cancel` 取消了已排队的 Work（Q8） | S2 |
+| F18 | 版本核对误伤：Yuki 自己在同一激活中成功管理目标后，后续合法操作被旧 revision 拒绝；没有先查看的取消被新增门槛拒绝；记录跨轮泄漏到下一次激活；读取时不是 failed 的 Work（其 revision 随自身执行推进）也被绑定，导致之后无法取消 | S2；现有 `test_subagent_lifecycle.py` |
+| F19 | 取消 failed 委派记录时，向原生服务发出取消/release，或者登记了新的原生操作（Q6） | S2 |
 
 ### 4.2 看门狗一侧
 
-| # | 失败情况 | 验证方式 |
+| # | 失败情况 | 场景 |
 |---|---|---|
-| W1 | 存储达到告警线时事实里没有 failed 持有者；或者在阈值以下也去计算、写入 | S1：阈值上下各跑一次 tick；用 SQL trace 计数 |
-| W2 | 排序或字节数错误：共享对象被算进 `exclusive_bytes`；`failed_holders_total`、`failed_only_bytes` 不精确；列表超过 N 条 | S1：手算期望值对比 |
-| W3 | facts 或模型请求中出现 goal、source 正文或自由文本原因（隐私，C13） | S1：在 goal 和失败消息中埋入特征串，断言 `facts_json` 与 fake provider 收到的请求中都没有 |
-| W4 | 看门狗修改了 Work：tick 前后 `runtime_work` 的 state/revision/updated 或 refs 发生变化，或者调用了 `manage_work` | S1：tick 前后对行做快照比对 |
-| W5 | 持有者查询占用 writer | S1：tick 期间 writer 计数（沿用看门狗 E2E 的 F7 手法） |
-| W6 | 持有者查询失败时把存储问题误清除，或者整个检查循环停止 | S1：注入查询异常 |
-| W7 | 通知回合本身获得了管理权，或在回合里取消了 Work | S1：沿用看门狗 F5 断言 |
-| W8 | 所有者同意后，Yuki 在普通轮里取消了错误的 ID，或者用了看门狗来源的授权 | S1：主人普通轮中 fake provider 调用 `manage_task(cancel,id)`，核对回执上的 actor 是主人 |
+| W1 | 存储达到告警线时事实里没有 failed 持有者；或者低于阈值时也去计算、写入（Q2） | S1 |
+| W2 | 不按 `held_bytes` 降序；字节数错误（共享对象被算进 `exclusive_bytes`）；`failed_holders_total`、`failed_only_bytes` 不精确；超过 5 条；缺少估算口径说明（Q3、Q4） | S1 |
+| W3 | facts、`facts_json` 或模型请求中出现 goal、source 正文或自由文本原因（Q1） | S1 |
+| W4 | 看门狗修改了 Work：tick 前后 `runtime_work` 的 state/revision 或 refs 发生变化 | S1 |
+| W5 | 观察阶段占用了 writer | S1 |
+| W6 | 持有者查询失败时把存储问题误清除，或者检查循环停止 | S1 |
+| W7 | 所有者同意后的取消使用了看门狗来源的授权，而不是所有者普通轮的授权 | S1 |
 
-## 5. E2E 设计与可复现产物
+## 5. E2E 与可复现产物
 
-文件：`tests/integration/test_failed_work_abandon_storage_e2e.py`。文件头先写 §4 的 F1–F16 和 W1–W8，再写代码。产物写到 `test-results/failed-work-abandon-storage-e2e.json`。
+文件：`tests/integration/test_failed_work_abandon_storage_e2e.py`。文件头先写 §4 的失败清单，再写代码。产物写到 `test-results/failed-work-abandon-storage-e2e.json`。
 
-运行环境：独立的 SQLite 文件；真实 `ProtocolStore` 文件；真实 `WorkControl.recover_failure` 制造 failed Work（同 `test_work_settlement_writer.py:398-400`）；真实 `Watchdog`、Main（`generate_origin_turn`）和 Social；fake provider（沿用 `test_watchdog_capacity_incident_e2e.py` 的 harness）；真实 `WorkScheduler` 维护 tick 负责 GC（沿用 `test_protocol_gc_backlog_e2e.py` 把 `prepared_at` 往前拨的方式模拟过宽限期）。时间只通过偏移时钟移动。
+- **S1 生产形态全链路**（复用看门狗 E2E 的 Scene：真实 Main、Social、主动私聊、`PresenceRouter`；fake provider；偏移时钟）：主人的私聊里经真实轮次制造三个 failed Work（模型返回 `LLMInvalidRequestError`），并给它们挂上大小不同的协议对象，其中一个对象与一个活 Work 共享 → 低于阈值 tick：没有存储问题，持有者查询没有调用 → 越过告警线 tick：facts 里的持有者按 `held_bytes` 降序，字节与独立 SQL 手算一致，不含任何 goal 特征串，观察前后 Work 和 refs 不变，观察阶段没有打开 writer，主动回合只汇报 → 主人普通轮：`get_tasks(A)` + `manage_task(cancel, A)`，回执的 actor 是主人 → A 的 refs 释放，`failure_json` 保留 → 宽限期内 GC 不删；宽限期外 GC 删除，usage 下降量等于取消时 A 的独占字节，共享对象保留 → 注入一次持有者查询异常，存储问题保持打开。
+- **S2 普通轮版本核对与委派记录**（同一 Scene）：Yuki `get_tasks(B)` 之后，另一入口 resume B → `manage_task cancel B` 返回 `version_conflict`，B 仍是 queued、refs 保留（F17）；同一激活内自己 resume 一个 failed 的 C 后再 cancel C 成功；下一轮不先查看直接 cancel，行为照旧（F18）。failed 委派记录：`manage_task cancel` 后真实变成 cancelled，替身原生服务没有收到任何调用，没有新增原生操作（F15、F19）。
+- **S3 个人设备与管理端**（复用 `app_env`：真实 HTTP、个人设备、管理端令牌）：同形的 failed Work 分别经 `POST /client/v1/works/{id}/cancel` 和 `POST /admin/v1/works/{id}/cancel` 取消，比较状态、revision 增量、refs 是否释放、回执、重放；`GET /admin/v1/works/{id}` 的 `actions.cancel`；completed/cancelled 仍返回 409；过期 revision 返回 409，不改 refs，个人设备记录 problem 回执；别人的 failed Work 返回 `not_found`；failed 委派记录经两个入口都变成 cancelled。
+- **S4 管理聊天命令**（复用 `stack`：真实 ApplicationContainer）：`/ai admin work cancel <id>` 取消 failed Work，结果与 S3 一致。
+- **S5 状态矩阵**（真实 SQLite 与 ProtocolStore，直接调用 `manage_work`/`WorkControl`）：F6、F7（`asyncio.gather` 并发 resume 与 cancel）、F8、F9、F10、F11、F12、F13、F14。
 
-- **S1 生产形态全链路**：按 #666 表格的比例造三个持有对象的 failed Work（另有一个对象与一个 running Work 共享），设置 `cap` 使 usage 越过告警线 → 看门狗 tick，facts 列出持有者，主动私聊回合只汇报 → 主人普通轮回复“放弃第一个”，fake provider 调用 `manage_task(cancel, id)` → refs 释放 → 宽限期内跑维护 tick，不删 → 宽限期外跑维护 tick，文件删除，usage 下降量正好等于 `exclusive_bytes` → usage 回到告警线以下，看门狗问题在 `no_progress_seconds` 后清除。
-- **S2 入口一致性**：四个入口（`manage_task`、管理端 HTTP、管理聊天命令、个人设备 API）各取消一个同形的 failed Work，比较 `{state, revision 增量, reason 类别, refs 是否释放, 回执 operation/problem, 重放结果}`；再加上 F3、F16。
-- **S3 失败矩阵**：F6–F15 每项一个子场景，断言状态、refs 和原事实行。
-
-产物结构：每个场景记录 `{case, before, after, receipts, usage_bytes, refs_by_label, files_present}`。Work ID、sha256 和时间都映射成稳定标签或相对偏移，所以产物与运行无关。末尾附上整份规范化 JSON 的 `sha256`。**可复现验收**：连续跑两次，两份产物的 `sha256` 相同：
+产物只包含标签和关系事实：Work ID、sha256、时间都映射成稳定标签或布尔关系（例如“下降量 = 独占字节”），不写生成时间。末尾附 `results_sha256`。**可复现验收**：连续跑两次，产物文件逐字节相同：
 
 ```bash
 uv run pytest tests/integration/test_failed_work_abandon_storage_e2e.py -q
 cp test-results/failed-work-abandon-storage-e2e.json /tmp/run1.json
 uv run pytest tests/integration/test_failed_work_abandon_storage_e2e.py -q
-diff <(jq -S . /tmp/run1.json) <(jq -S . test-results/failed-work-abandon-storage-e2e.json)
+cmp /tmp/run1.json test-results/failed-work-abandon-storage-e2e.json
 ```
 
 其余验证按风险挑选：`ruff`、`mypy`；`tests/unit/test_closed_work_protocol_refs.py`、`test_work_settlement_writer.py`、`test_admin_control_review.py`、`test_client_works.py`；`tests/integration/test_watchdog_capacity_incident_e2e.py`、`test_protocol_gc_backlog_e2e.py`、`test_acp_work_cancel.py`。不跑无关的全量检查。
 
-## 6. 待决问题（每项附推荐，等用户决定）
+## 6. 不做
 
-- **Q1 “目标摘要”与看门狗隐私合同冲突。** #666 要求附上目标摘要，但 #664 §4.6 明确规定 facts 不含 Work goal，而且收件人是所有超管，Work 可能属于别人的私聊。**推荐**：不放 goal，只放 `origin` 分类码、`conversation_id`、`model_requests`、原因码和时间；Yuki 在普通轮里可以按执行处授权用 `get_tasks(id)` 查看。备选：只有当 Work 发起人就是收件超管本人时才附 goal，但这要把 facts 按人分开计算，增加复杂度，不推荐。
-- **Q2 什么时候报告持有者。** #666 写的是“附在协议存储事实里”，也就是只在 usage 达到 80% 或出现容量挂起时才报。按 #666 的数据，生产现在约 1.43 GB，低于约 1.72 GB 的告警线，**目前不会触发**。**推荐**：按 #666 只附在现有两个存储问题里，不新增问题键，也不新增阈值（开发约束禁止经验阈值）；现存的 1141 MB 可以由主人现在直接用 `manage_task` 取消。备选：新增独立问题键 `protocol_failed_holders`，但需要一个新阈值，不推荐。
-- **Q3 字节口径。** **推荐**同时给出 `held_bytes`（引用量）和 `exclusive_bytes`（取消后实际能回收的量），按后者排序，再加 `failed_only_bytes` 作为全部放弃时的上界。
-- **Q4 列几条。** **推荐**最多 5 条；总数和总字节精确给出。`_LISTED_IDS=20` 用于纯 ID 列表，每条带多个字段时 5 条已足够让主人决策。
-- **Q5 终态后代。** 取消 failed 根时，`stop_owned_execution` 只取消非终态后代。failed 或 completed 的工作者保持原状态，它们的 refs 在根取消 7 天后随工作者归档一并释放（C6）。**推荐**：沿用现有取消的同一子树语义，不级联改写终态后代（不改原事实，也不加机制）。备选：级联把 failed 后代也置为 cancelled，可以立即释放，但会改写它们的原状态。
-- **Q6 failed 委派记录（C11）。** 记录没有协议 refs，与存储无关；但通过 `manage_task` 取消时，会出现“返回 cancelled、状态仍是 failed”的不一致，属于“Work 管理工具行为一致”的范围。另外，个人设备 API 取消委派记录时直接调用 `manage_work`（`client_api/works.py:999`），放宽 C2 之后它会真的把 failed 记录改成 cancelled，而 `manage_task` 不会，两个入口会出现新的分歧。**推荐**：在本 PR 中把 `subtasks.py:435` 的 `not in TERMINAL` 放宽为 `not in {"completed","cancelled"}`，让 failed 记录真实地变成 cancelled（复用 `manage_work`，原生回合已经结束，不再发送原生 cancel）。备选：不在本 issue 处理，另开 issue。
-- **Q7 工具说明是否改。** `manage_task` 的说明已写明“cancel 终止 id 指定的任务”，没有排除 failed。**推荐**不改说明，避免固定工具合同和 manifest 变动；错误码文案也不变。
-- **Q8 持有者列表过时。** `facts_json` 在问题打开时冻结（C12）。在主人回复之前，列出的 Work 可能已被 resume 并正在运行，此时取消的是一个运行中的 Work。**推荐**：不加任何机制。facts 带有观察时间，取消发生在主人明确同意之后、由主人授权的普通轮里，`manage_task` 按当时的真实状态执行。
-- **Q9 迁移。** 触发器已经覆盖 `failed → cancelled`，索引也已存在（C1、C14）。**推荐**不需要迁移，0162 不占用；也不回填，生产上哪些 failed Work 要放弃由主人逐个决定。
-- **Q10 个人 Client API revision。** 请求和响应形状不变，只是 failed 从 409 变为成功。**推荐**不升 revision；Desktop 更新按钮条件即可（§3.4，只列出）。
+按时间自动过期 failed Work；自动取消；新的保留期或阈值配置；看门狗管理权；修改触发器或 GC；回填或批量清理生产数据；修改工具声明；Desktop 实现；completed 委派记录被 `manage_task cancel` 时返回 `cancelled` 的同类问题（不是 failed，另开 issue）；合并、部署、重启服务。
 
-## 7. 不做
+## 7. 实施顺序
 
-按时间自动过期 failed Work；自动取消；新的保留期或阈值配置；看门狗管理权；改触发器或 GC；回填或批量清理生产数据；Desktop 实现；合并、部署、重启服务。
+1. 写 E2E 文件头的失败清单（§4）和全部场景，先确认它们在旧代码上失败。
+2. 改 `work_management.py`（§3.1）、`subtasks.py`（§3.2）、`work_control.py`（§3.3）、`protocol_store.py` 与 `watchdog.py`（§3.4）。
+3. 改 §3.5 列出的文档。
+4. 跑 §5 的验证；产物跑两遍逐字节比对；普通提交（不加署名）；推送分支；开 PR 并等待 CI。不合并、不部署。
 
-## 8. 实施顺序（批准后）
+## 8. 实施记录
 
-1. 写 E2E 文件头的失败清单（§4），并补全场景骨架。
-2. 改 `work_management.py` 两处条件；按 Q6 的决定改 `subtasks.py`。
-3. 加看门狗持有者查询（放在 `runtime/protocol_store.py` 中，与 `stalled_unowned_object` 并列），并接入 `_check_works`。
-4. 改 §3.3 列出的文档。
-5. 跑 §5 的验证，产物跑两遍比对 `sha256`；推送分支、开 PR，不合并、不部署。
+- **提交范围**：`runtime/work_management.py`（放宽前提，修改 `management_view`）、`external_agents/subtasks.py`（Q6）、`runtime/work_control.py`、`runtime/subagent_tools.py`、`runtime/subagent_repository.py`（Q8）、`runtime/protocol_store.py`（`failed_holders`）、`application/watchdog.py`（持有者事实）；文档按 §3.5 修改；新增 E2E `tests/integration/test_failed_work_abandon_storage_e2e.py`。CI `quality.yml` 的 integration 套件增加一步，检查本 E2E 产物存在（与看门狗 E2E 的做法相同）。没有迁移，没有修改工具声明，没有修改 Desktop。
+- **先红后绿**：E2E 先于实现写好。在旧代码上 5 个场景全部在预期位置失败：S1 没有 `failed_holders`；S2 failed Work 取消返回 `precondition_failed`；S3 管理端 `actions.cancel=false`；S4 聊天命令返回 `precondition_failed`；S5 `manage_work` 拒绝。实现后 5 个场景全部通过。
+- **变异核对**：去掉 Q8 绑定后，S2 中“读到 failed 后被别处 resume”的取消会真的取消已排队的 Work（断言失败）；绑定所有读取（不限 failed）后，S2 的非 failed 读取场景返回 `version_conflict`（断言失败）；把 Q6 改回 `not in TERMINAL` 后，S2 的委派记录仍是 failed（断言失败）。三处都已还原。
+- **与本书第一版设计的偏差**：Q8 第一版对所有 `get_tasks` 读取都做绑定，现有测试 `test_subagent_lifecycle.py::test_foreground_manages_original_child_without_accepting_another_work` 发现，运行中的子任务在读取后被自己 resume、发消息并开始执行，revision 推进，之后的取消被误判为 `version_conflict`。已改为只绑定读到 failed 的 Work，并在 S2 补充对应用例（F18 最后一项）。
+- **回归中发现并修正**：第一版在 `manage_subtask` 内直接读 `control.observed_revisions`，`test_subagent_result_checkpoint.py` 的 6 个用例以最小控制对象调用它而失败；改为由 `WorkControl._manage` 以显式参数传入，`manage_subtask` 对调用方的依赖不变。`test_work_execution_receipt_regressions.py::...[False-terminal_exec]` 在本机失败，但在基线 `9d5242ea` 的临时工作树中同样失败（沙箱进程在 macOS 上的既有问题），与本改动无关，以 CI（Linux）结果为准。
+- **产物**：`test-results/failed-work-abandon-storage-e2e.json`（目录被 gitignore，与其他 E2E 一致）。连续两次运行产物逐字节相同（`cmp`），`results_sha256` 记在产物末尾。
+- **验证、CI、合并**：见 PR 描述与最终报告；本书不提前写成已合并或已上线。

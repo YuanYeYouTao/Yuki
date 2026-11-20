@@ -203,7 +203,8 @@ QQ 已派发消息也按派发时的绑定记录事实，发送途中转移不�
 WorkSourceGuard 只接纳本 Work mailbox 证明的跨入口事件；仍检查原来源、隐私版本、
 原租约与追加事件摘要。App 主会话重建不重建 QQ Work，输入被改写或遗忘则来源失效。
 
-`POST /works/{id}/cancel {request_id,expected_revision}` 沿原 manage_work 执行与保存回执。
+`POST /works/{id}/cancel {request_id,expected_revision}` 沿原 manage_work 执行与保存回执。failed 的 Work
+可以取消（放弃恢复，释放协议存储）；completed/cancelled 仍返回 precondition_failed，revision 不符返回 version_conflict。
 App 补充不会自动发往群里；群 Work 后续仍可能按任务内容向原群投递结果，投影明确显示
 结果位置。快照、SSE、文件与参考 SDK 的合同如下。
 

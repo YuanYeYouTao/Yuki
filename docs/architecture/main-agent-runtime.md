@@ -651,7 +651,15 @@ AutomationWorker 只扫描未来安排、接纳唯一发生并结算真实结果
 suspended/waiting/failed，App 输入拒绝终态），进入该状态时由 `protocol_refs_closed_work`
 触发器在同一事务删除它的 protocol refs，现有 Protocol GC 回收不再有拥有者的对象。
 failed 的 Work 仍可 resume，未归档的 completed 工作者仍可由父 Work 恢复，二者保留 refs；
-cancelled 工作者不能恢复或接收消息，同样释放。工作者显式归档与 canonical 隐私清退沿各自合同处理。
+cancelled 工作者不能恢复或接收消息，同样释放。failed 的 Work 也可以 cancel（放弃恢复）：各入口都调用
+`manage_work`，failed → cancelled 后由同一个触发器释放 refs，GC 在宽限期后回收；只取消非终态后代，
+failed/completed 后代保持原状态，它们的 refs 随根 Work 的工作者归档释放；原失败码保留在
+`runtime_work_recovery.failure_json`。`manage_task` 对非当前目标做 cancel/fail/resume 时，如果本次激活已经用
+`get_tasks(id)` 读到它是 failed，就以读到的 revision 做 CAS，期间被其他入口改动则返回 `version_conflict`，不写入任何内容；
+没有读过则以调用时的当前 revision 执行。failed 委派记录取消后真实写入 cancelled，已结束的原生回合不再收到取消。
+看门狗只在协议存储达到告警线或出现容量挂起时，在存储事实里列出持有字节最多的 5 个 failed Work（只含内部 ID、
+revision、分类码、原因码、时间和字节），`exclusive_bytes`/`failed_only_bytes` 只是观察时的可回收估算或上界；
+看门狗不取消，放弃由主人在普通轮里决定。工作者显式归档与 canonical 隐私清退沿各自合同处理。
 表情原件、标签和索引沿共享沙箱文件维护，不在主业务库领取分析租约。Work 激活的有效期在执行
 数据库语句时核验；等待写锁期间到期的旧租约不能续期或提交状态。
 
