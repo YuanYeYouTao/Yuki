@@ -49,6 +49,14 @@ F26 forgetting a person who was notified fails on the turn's foreign key;
 F27 the route's Presence is gone and another Presence of the same Binding is used;
 F28 a failing config read ends the loop; a changed error category keeps the old
     first-seen time; outcomes grow without bound.
+
+Added for the 2026-11-20 21:20 production failure (the scene now wires the tool
+receipt recorder, result artifacts and web tools as the container does; before the
+fix every read tool and ``send`` failed here):
+
+F29 any read tool (all parallel-safe ones, in one batch) or ``send`` (with a
+    sticker) in a proactive turn ends the turn with an exception instead of a
+    result, because its post-call bookkeeping assumes a group SELF source.
 """
 
 from __future__ import annotations
@@ -66,6 +74,7 @@ from typing import Any
 import pytest
 from sqlalchemy import func, select, update
 from tests.conftest import MemorySender, build_harness, make_settings
+from tests.integration.test_web_search_read_separation import _web_fixture
 from tests.support.social_identity_cases import social_env
 
 from yuki.admin.models import WatchdogRuntimeConfig, WorkStorageRuntimeConfig
@@ -96,11 +105,15 @@ from yuki.runtime.proactive_schema import proactive_turns, watchdog_issues
 from yuki.runtime.protocol_schema import objects
 from yuki.runtime.subagent_schema import children
 from yuki.runtime.work_schema_v1 import work
+from yuki.services.main_agent_backend import MainAgentBackend
 from yuki.services.main_agent_contract import MainAgentContract
 from yuki.services.proactive_turns import ProactivePrivateTurns, turn_source_key
 from yuki.services.rate_limit import SlidingWindowRateLimiter
 from yuki.social.db_models import SocialOperationModel
 from yuki.time.service import TimeContextService
+from yuki.tool_results.artifacts import ToolArtifactRepository
+from yuki.tool_results.recorder import ToolReceiptRepository
+from yuki.web.models import WebMode
 from yuki.workspace.short_state import ShortState
 from yuki.workspace.store import WorkspaceStore
 
@@ -257,6 +270,13 @@ class Scene:
         )
         self.harness = build_harness(self.database, settings, self.provider)
         self.chat = self.harness.processor._chat
+        # As the container wires them: tool receipts, result artifacts, web tools.
+        self.chat._tool_receipts = ToolReceiptRepository(self.database)
+        self.chat._tool_artifacts = ToolArtifactRepository(
+            self.database, self.tmp_path / "artifacts", retention_seconds=3600
+        )
+        self.chat._settings.web_mode = WebMode.TAVILY
+        self.chat._tools._web_provider = _web_fixture(False)
         state = ShortState(WorkspaceStore(self.tmp_path / "state"))
         self.chat.runtime.runner.main_contract = MainAgentContract(self.chat, state)
         self.chat.runtime.runner.code_mode_settings = settings
@@ -1197,3 +1217,94 @@ async def test_the_loop_survives_a_config_failure_and_state_stays_bounded(databa
     assert not any(key.endswith(":A") for key in scene.watchdog._first_seen)
     assert scene.watchdog.outcomes.maxlen is not None
     RESULTS["S21_loop_and_bounds"] = "loop survived a config failure"
+
+
+# --------------------------------------------------------------------------- F29 (production)
+
+_READ_ARGUMENTS: dict[str, dict[str, Any]] = {
+    "read_chat": {"limit": 20},
+    "search_memory": {"query": "看门狗"},
+    "web_search": {"query": "x"},
+    "read_webpage": {"url": "https://source.example/a"},
+    "find_contacts": {"name": "本人"},
+    "get_members": {},
+    "get_schedules": {},
+    "view_file": {"path": "/tmp/nothing"},
+    "get_environment": {},
+    "read_command": {"id": "nothing"},
+    "read_result": {"handle": "0" * 32},
+    "browser": {"action": "screenshot"},
+    "computer": {"action": "screenshot"},
+}
+
+
+async def test_every_read_tool_and_a_sticker_send_work_in_a_proactive_turn(
+    database, tmp_path, monkeypatch
+):
+    scene = await _scene(database, tmp_path)
+    backends: list[MainAgentBackend] = []
+    original_init = MainAgentBackend.__init__
+
+    def remember(self, *args, **kwargs):
+        original_init(self, *args, **kwargs)
+        backends.append(self)
+
+    monkeypatch.setattr(MainAgentBackend, "__init__", remember)
+    for index in range(3):  # long enough history for a truncated, archived read
+        await scene.harness.processor.handle(
+            scene.message("很长的消息" * 600 + str(index), f"pre-{index}"), MemorySender()
+        )
+    results: dict[str, Any] = {}
+
+    def respond(request):
+        context = _runtime_context(request)
+        if context is None or "watchdog" not in context:
+            return "好"
+        scene.notice_requests.append(request)
+        replies = _tool_results(request)
+        if not replies:
+            return ChatResponse(
+                "",
+                0,
+                tool_calls=tuple(
+                    ToolCall(f"r-{name}", ToolFunction(name, json.dumps(arguments)))
+                    for name, arguments in _READ_ARGUMENTS.items()
+                ),
+            )
+        if "notice" not in replies:
+            results.update(replies)
+            return _call(
+                "send",
+                {"text": "看门狗提醒：runtime_work 停了", "sticker": {"goal": "担心"}},
+                "notice",
+            )
+        results.update(replies)
+        return "说完了"
+
+    scene.respond = respond
+    scene.provider._responder = respond
+    scene.loops = {"runtime_work": {"running": False, "errors": {}}}
+    assert await scene.tick() == ["finished"]
+    turns = await scene.rows(proactive_turns)
+    assert [(row["state"], row["reason"]) for row in turns] == [("finished", None)]
+    assert len(scene.sends()) == 1
+    # Every parallel-safe tool of the real catalog was in the one parallel batch.
+    catalog = backends[-1]._catalog
+    assert catalog is not None
+    parallel = {
+        entry.descriptor.model_name for entry in catalog.entries if entry.descriptor.parallel_safe
+    }
+    assert parallel <= set(_READ_ARGUMENTS), parallel - set(_READ_ARGUMENTS)
+    for name in _READ_ARGUMENTS:
+        assert f"r-{name}" in results, name
+    RESULTS["S22_proactive_tools"] = {
+        "parallel_safe": sorted(parallel),
+        "results": {
+            name: (
+                value.get("error") or value.get("status") or "ok"
+                if isinstance(value, dict)
+                else "text"
+            )
+            for name, value in sorted(results.items())
+        },
+    }

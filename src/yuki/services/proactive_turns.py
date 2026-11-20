@@ -284,7 +284,10 @@ class ProactivePrivateTurns:
                     )
                 except Exception as exc:
                     logger.warning(
-                        "proactive_turn_failed turn=%s category=%s", turn_id, type(exc).__name__
+                        "proactive_turn_failed turn=%s category=%s",
+                        turn_id,
+                        type(exc).__name__,
+                        exc_info=exc,
                     )
                     return await self._fail(turn_id, conversation.id, type(exc).__name__)
         failure = result.outcome.failure if result.outcome is not None else None

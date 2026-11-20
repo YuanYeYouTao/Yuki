@@ -63,7 +63,7 @@ _OFF_RECHECK_SECONDS = 60.0
 CONTENT = (
     "看门狗发现了上面运行资料 watchdog 里的新问题。用你自己的话告诉对方发生了什么、影响什么、"
     "建议怎么处理，并写出处理需要的内部 ID；这次只汇报，不执行任何管理操作，"
-    "对方同意后会在普通对话里处理。只用文字，不发表情。"
+    "对方同意后会在普通对话里处理。"
 )
 
 # A loop/component fact: {"running": bool | None, "errors": {field: category | None}}
