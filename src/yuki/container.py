@@ -11,7 +11,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 from pydantic import BaseModel, ValidationError
-from sqlalchemy.exc import SQLAlchemyError
 
 from yuki import __version__
 from yuki.admin.config_files import ConfigFileService
@@ -32,6 +31,7 @@ from yuki.application.modules import (
 )
 from yuki.application.modules.admin_api import build_admin_api
 from yuki.application.modules.asr import build_asr
+from yuki.application.watchdog import Watchdog
 from yuki.character.avatar import AvatarStore, CharacterAvatars
 from yuki.character.repository import CharacterRepository
 from yuki.character.soul import CharacterSoul
@@ -52,7 +52,7 @@ from yuki.conversation.uploads import ConversationUploads
 from yuki.domain.messages import InboundMessage
 from yuki.emoji.library import EmojiLibrary
 from yuki.external_agents.service import ExternalAgentService
-from yuki.gateway.health import GatewayHealthSource
+from yuki.gateway.health import GatewayHealthSource, platform_health
 from yuki.gateway.platforms import PlatformGateways
 from yuki.gateway.providers import builtin_provider_catalog
 from yuki.gateway.providers.app.ingress import AppGateway
@@ -104,6 +104,7 @@ from yuki.services.main_agent_backend import MainAgentBackend
 from yuki.services.media_resolver import _media_io
 from yuki.services.native_media import NativeMediaPreparer
 from yuki.services.plugin_events import publish_notification
+from yuki.services.proactive_turns import ProactivePrivateTurns
 from yuki.services.processing_status import ProcessingStatusService
 from yuki.services.processor import MessageProcessor, ProcessResult
 from yuki.services.semantic_participation import SemanticParticipationService
@@ -661,6 +662,8 @@ class ApplicationContainer:
         )
         self._cleanup_stop = asyncio.Event()
         self._cleanup_task: asyncio.Task[None] | None = None
+        self._cleanup_last_error: str | None = None
+        self.watchdog = self._build_watchdog()
         self._register_lifecycle()
 
     async def _promote_semantic_event(
@@ -937,9 +940,98 @@ class ApplicationContainer:
             "maintenance",
             start=self._start_cleanup,
             close=self._close_cleanup,
+            health=self._cleanup_health,
         )
         self.conversation_module.register_workers(self.conversation, self.lifecycle)
         self.automation_module.register_lifecycle(self.automation_bundle, self.lifecycle)
+        # Last: it reads the facts every loop above keeps, and closes first.
+        self.lifecycle.register(
+            "watchdog",
+            start=self.watchdog.start,
+            close=self.watchdog.close,
+            health=self.watchdog.health,
+        )
+
+    def _build_watchdog(self) -> Watchdog:
+        self.proactive_turns = ProactivePrivateTurns(
+            self.database,
+            router=self.presence_router,
+            scopes=self.conversation_scopes,
+            turn_coordinator=self.turn_coordinator,
+            concurrency=self.concurrency,
+            runtime_config=self.runtime_config,
+            generate=self.chat.generate_origin_turn,
+        )
+
+        async def loops() -> dict[str, dict[str, object]]:
+            work = self.work_scheduler.runtime_status()
+            facts: dict[str, dict[str, object]] = {
+                "runtime_work": {
+                    "running": work["running"],
+                    "errors": {"maintenance": work["maintenance_error_category"]},
+                },
+                "runtime_work_waits": {
+                    "running": work["wait_running"],
+                    "errors": {"wait": work["wait_error_category"]},
+                },
+                "maintenance": {
+                    "running": self._cleanup_task is not None and not self._cleanup_task.done(),
+                    "errors": {"cleanup": self._cleanup_last_error},
+                },
+            }
+            for name, health in (
+                ("subagents", await self.subagent_scheduler.health()),
+                ("sandbox_completions", await self.sandbox_completions.health()),
+                ("sandbox_continuations", await self.sandbox_continuations.health()),
+                ("plugin_background_turns", await self.plugin_background_turns.health()),
+            ):
+                facts[name] = {
+                    "running": health.get("running"),
+                    "errors": {"last": health.get("last_error_category")},
+                }
+            if self.settings.automation_enabled:
+                facts["automation_worker"] = {"running": self.automation_worker.running}
+            return facts
+
+        async def components() -> dict[str, dict[str, object]]:
+            facts: dict[str, dict[str, object]] = {}
+            platforms = await platform_health(
+                self.database,
+                self.gateway_providers,
+                self.gateway_registry,
+                self.gateway_health_sources,
+            )
+            for platform, health in platforms.items():
+                if health.enabled:
+                    facts[f"gateway:{platform}"] = {
+                        "healthy": health.healthy,
+                        "state": "unhealthy",
+                        "durable": False,
+                    }
+            dream = await self.conversation.memory_dream_worker.health()
+            if dream.enabled:
+                facts["memory_dream"] = {
+                    "healthy": dream.last_error_category is None,
+                    "state": dream.last_error_category or "ok",
+                    "durable": True,
+                }
+            embeddings = await self.memory_embeddings.health()
+            if embeddings.enabled:
+                facts["memory_embeddings"] = {
+                    "healthy": embeddings.failed_job_count == 0,
+                    "state": "failed_jobs",
+                    "durable": True,
+                }
+            return facts
+
+        return Watchdog(
+            self.database,
+            self.proactive_turns,
+            self.runtime_config,
+            loops=loops,
+            components=components,
+            device_online=self.external_agents.connections.online,
+        )
 
     def _register_platform_gateways(self) -> None:
         """Each platform key builds its gateway from the saved credentials alone."""
@@ -1014,6 +1106,12 @@ class ApplicationContainer:
             name="processed-event-cleanup",
         )
 
+    async def _cleanup_health(self) -> dict[str, object]:
+        return {
+            "running": self._cleanup_task is not None and not self._cleanup_task.done(),
+            "last_error_category": self._cleanup_last_error,
+        }
+
     async def _close_cleanup(self) -> None:
         self._cleanup_stop.set()
         if self._cleanup_task is not None:
@@ -1062,7 +1160,11 @@ class ApplicationContainer:
                     )
                 if self.models.traces is not None:
                     await self.models.traces.cleanup_expired()
-            except (SQLAlchemyError, OSError, RuntimeError) as exc:
+                self._cleanup_last_error = None
+            except Exception as exc:
+                # Any pass failure is reported and retried next round; the loop never
+                # ends silently (it was invisible to every health surface).
+                self._cleanup_last_error = type(exc).__name__
                 logger.error("processed_event_cleanup_failed", exc_info=exc)
             try:
                 await asyncio.wait_for(

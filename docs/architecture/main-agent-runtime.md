@@ -278,6 +278,27 @@ Social 回执来源键保留旧键；较长的完整内部身份沿共同 SHA256
 超级管理员可以管理全部任务。管理员更新不改变 canonical 创建者，后续执行仍按原创建者的当前权限
 重新核验，不能借一次管理操作永久提升任务权限。当前群自动化目录不再常驻注入；需要时按需调用原工具核实。
 
+### Yuki 主动发起的私聊（看门狗）
+
+`TurnOrigin.PROACTIVE_PRIVATE` 是 Yuki 自己开口的私聊来源，第一个来源是只读看门狗
+（[任务书](Yuki-看门狗与主动私聊任务书-2026-11-20.md)）。`ProactivePrivateTurns`
+（`services/proactive_turns.py`）对一条 `proactive_turns` 回合：复核收件人仍是超管，只用该人物
+已设置的 `person_active_routes`（不自动建立路由；缺失、暂停或连接不可用时回合保持 pending、
+不调模型），经 `conversation_for_binding` 找到该入口的私聊会话，在会话空闲时
+（`background_turn` 取得令牌并持会话锁；忙则下次再试）调用共同的 `generate_origin_turn`。
+主体是 SELF（`proactive_turn_id` 锚定，无 group、无借用的人物或事件），`ConversationTurnSnapshot`
+以 `proactive_turn_id` 为第四种锚点，不被后来的用户输入版本作废。来源资料只经
+`activation_context` 进入本轮 `<runtime_context>`，不建账本事件、不进公共历史；Yuki 用 `send`
+发出的消息是普通出站事件，`origin='proactive_private'`，历史渲染标为“主动消息｜Yuki 主动发起”。
+
+只汇报：这个来源不绑定 WorkControl（`MainAgentTurnService.run` 对它不走持久调用接纳），
+所以 `get_tasks/manage_task/start_subtask/message_task/wait` 都返回 `work_control_unavailable`；
+私聊 Host 接纳本就只对 `user_message`。目录工具在 `MainAgentBackend.execute_call` 按实际参数的
+风险判断，除 `send` 外凡非只读调用一律 `report_only_source`、不执行。工具声明与系统提示不变。
+管理动作只在主人随后的普通轮里以主人自己的授权执行。本回合不建 Work、不写协议检查点，
+因此在协议存储满时仍能发出消息。失败回合由调用方在一个检查周期后重试一次；进程丢失时按
+Social 回执结算：已成功发送算已告知，有发送记录但结果未知记 unknown、不重发，没有发送记录算失败。
+
 ## 所有者与恢复
 
 | 来源 | 恢复所有者 | 交付所有者 |
@@ -416,8 +437,9 @@ Work 输入准备恢复使用 pending 且 ready 为 false 的部分索引发现�
 时限的判定不变，unknown owner 的 SQL NULL 语义不变；取得 writer 后按原 ID、
 state、ready、owner 和时限复核，保留原输入、Work 与累计预算。
 
-Protocol GC 分 deleting 恢复与普通过期两个索引分支，先取有界 metadata 页再批读真实 refs；
-owned 页也推进原进程内游标，固定 cutoff 和同排序高水位，次轮回访新插入及状态变化。
+Protocol GC 分 deleting 恢复与普通过期两个索引分支，每支直接沿 `(deleting, prepared_at)`
+索引选出最旧一页无拥有者的对象（不翻读仍被引用的行，不在内存保存扫描位置，重启后照常命中），
+宽限期 `GC_GRACE_SECONDS`（24 小时）内的对象不删；有回收则下一 tick 继续，否则回到 600 秒周期。
 短 writer 重新核对原 metadata、期限和无拥有者条件并提交 deleting 屏障；文件锁只保护
 实际文件查证/删除，释放后批量确认仍 deleting 且无拥有者的 metadata。GC 不持 writer
 等待文件锁；publication 保留文件核验至原 journal/ref 提交的保护。同内容对象的新引用在

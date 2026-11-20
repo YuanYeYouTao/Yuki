@@ -605,6 +605,8 @@ class MainAgentTurnService:
                 control is None
                 and self._invocations is not None
                 and runtime.canonical_conversation_id
+                # A proactive private turn only reports: no Work control is bound.
+                and runtime.origin is not TurnOrigin.PROACTIVE_PRIVATE
             ):
                 previous = None
                 if not self._composer._settings.runtime_work_enabled:

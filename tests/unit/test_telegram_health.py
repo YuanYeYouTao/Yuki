@@ -75,6 +75,20 @@ def health_container(database, gateway):
             health=AsyncMock(return_value={}), runtime_status=lambda: {}
         ),
         subagent_scheduler=worker(),
+        watchdog=SimpleNamespace(
+            status=lambda: {"running": False},
+            health=AsyncMock(
+                return_value={
+                    "running": False,
+                    "last_check_at": None,
+                    "last_error_category": None,
+                    "check_errors": {},
+                    "open_issues": 0,
+                    "open_turns": [],
+                    "last_turn": None,
+                }
+            ),
+        ),
         main_agent_contract=SimpleNamespace(health=lambda: {}),
         memory_maintenance_worker=SimpleNamespace(running=False),
         memory_metrics=SimpleNamespace(maintenance_last_success_at=None),

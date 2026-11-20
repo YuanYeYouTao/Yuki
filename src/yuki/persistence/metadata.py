@@ -28,6 +28,7 @@ from yuki.memory.self_reflection import db_models as _self_reflection_db_models 
 from yuki.model_runtime import db_models as _model_runtime_db_models  # noqa: F401
 from yuki.persistence.models import Base
 from yuki.plugin_host import db_models as _plugin_db_models  # noqa: F401
+from yuki.runtime import proactive_schema as _proactive_schema  # noqa: F401
 from yuki.runtime import protocol_schema as _protocol_schema  # noqa: F401
 from yuki.runtime import work_observation_schema as _work_observation_schema  # noqa: F401
 from yuki.runtime import work_query_schema as _work_query_schema  # noqa: F401

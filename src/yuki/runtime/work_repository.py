@@ -2853,3 +2853,28 @@ class WorkRepository:
                     )
             if changed is not None:
                 return
+
+
+async def suspended_works(reader: AsyncSession, *, page: int = 256) -> list[dict[str, Any]]:
+    """Every suspended Work's safe facts, paged on ``(state, updated)`` (watchdog)."""
+    found: list[dict[str, Any]] = []
+    after: tuple[float, str] | None = None
+    while True:
+        query = (
+            select(work.c.id, work.c.reason, work.c.updated, work.c.parent_work_id)
+            .where(work.c.state == "suspended")
+            .order_by(work.c.updated, work.c.id)
+            .limit(page)
+        )
+        if after is not None:
+            query = query.where(
+                or_(
+                    work.c.updated > after[0],
+                    and_(work.c.updated == after[0], work.c.id > after[1]),
+                )
+            )
+        rows = [dict(row) for row in (await reader.execute(query)).mappings()]
+        found.extend(rows)
+        if len(rows) < page:
+            return found
+        after = (rows[-1]["updated"], rows[-1]["id"])

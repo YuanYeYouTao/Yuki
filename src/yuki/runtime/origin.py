@@ -26,3 +26,5 @@ class TurnOrigin(StrEnum):
     PLUGIN_SESSION = "plugin_session"
     PLUGIN_BACKGROUND = "plugin_background"
     SYSTEM_TASK = "system_task"
+    # Yuki herself opens a private turn with a Person (first source: the watchdog).
+    PROACTIVE_PRIVATE = "proactive_private"

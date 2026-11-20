@@ -1187,3 +1187,46 @@ def _redacted_json(value: dict[str, Any]) -> str:
         return item
 
     return json.dumps(redact(value), ensure_ascii=False, separators=(",", ":"))
+
+
+async def failing_automations(reader: AsyncSession) -> list[dict[str, Any]]:
+    """Live schedules whose definition failed or whose latest run did not succeed.
+
+    For the watchdog: IDs, statuses, error categories and times only, never the goal.
+    """
+    found: list[dict[str, Any]] = []
+    for automation_id, status in (
+        await reader.execute(
+            select(AutomationModel.id, AutomationModel.status).where(
+                AutomationModel.status.not_in(("cancelled", "completed"))
+            )
+        )
+    ).all():
+        run = (
+            await reader.execute(
+                select(
+                    AutomationRunModel.id,
+                    AutomationRunModel.status,
+                    AutomationRunModel.error_category,
+                    AutomationRunModel.scheduled_for,
+                )
+                .where(AutomationRunModel.automation_id == automation_id)
+                .order_by(AutomationRunModel.created_at.desc(), AutomationRunModel.id.desc())
+                .limit(1)
+            )
+        ).first()
+        run_failed = run is not None and run.status in {"failed", "uncertain", "blocked"}
+        if status in {"failed", "blocked"} or run_failed:
+            found.append(
+                {
+                    "automation_id": automation_id,
+                    "status": status,
+                    "run_id": run.id if run is not None else None,
+                    "run_status": run.status if run is not None else None,
+                    "error_category": run.error_category if run is not None else None,
+                    "scheduled_for": stored_utc(run.scheduled_for).isoformat()
+                    if run is not None and run.scheduled_for is not None
+                    else None,
+                }
+            )
+    return found

@@ -58,6 +58,8 @@ class CodeSnapshotBinding:
 
 _IDENTITY_CACHE_ENTRIES = 1024
 _GC_BRANCH_ROWS = 64  # Each of the two branches selects at most this many candidates per pass.
+#: An unowned object younger than this is kept (a Work may re-publish it).
+GC_GRACE_SECONDS = 86400.0
 _GC_FILE_SECONDS = 0.1  # Yield after the current filesystem operation completes.
 FileIdentity = tuple[int, int, int, int, int]
 
@@ -514,7 +516,7 @@ class ProtocolStore:
                 break
         return removed
 
-    async def cleanup(self, *, grace_seconds: float = 86400) -> int:
+    async def cleanup(self, *, grace_seconds: float = GC_GRACE_SECONDS) -> int:
         """CAS deletion barriers, briefly fence files, then batch durable acknowledgement."""
         async with self._gc_lock:
             cutoff = time.time() - grace_seconds
@@ -625,3 +627,32 @@ class ProtocolStore:
                     )
                 )
             return len(deleted)
+
+
+async def stalled_unowned_object(reader: AsyncSession, before: float) -> dict[str, Any] | None:
+    """The oldest unowned object GC was allowed to reclaim before ``before`` (watchdog).
+
+    Same index walk as the GC's own candidate page, limited to one row.
+    """
+    row = (
+        (
+            await reader.execute(
+                select(objects.c.sha256, objects.c.byte_size, objects.c.prepared_at)
+                .where(
+                    objects.c.deleting.is_(False),
+                    objects.c.prepared_at < before,
+                    ~select(refs.c.sha256).where(refs.c.sha256 == objects.c.sha256).exists(),
+                )
+                .order_by(objects.c.prepared_at, objects.c.sha256)
+                .limit(1)
+            )
+        )
+        .mappings()
+        .first()
+    )
+    return dict(row) if row is not None else None
+
+
+async def usage_bytes(reader: AsyncSession) -> int:
+    """Registered protocol bytes (owned and unowned), from the singleton counter."""
+    return int(await reader.scalar(select(usage.c.byte_size).where(usage.c.id == 1)) or 0)

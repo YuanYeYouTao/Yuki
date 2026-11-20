@@ -36,6 +36,7 @@ from yuki.admin.models import (
     RuntimeConfigSnapshot,
     ToolingRuntimeConfig,
     VisionRuntimeConfig,
+    WatchdogRuntimeConfig,
     WebRuntimeConfig,
     WorkStorageRuntimeConfig,
 )
@@ -1642,10 +1643,20 @@ class RuntimeConfigService:
                 disk_reserve_bytes=int(cast(int, value("storage.protocol_disk_reserve_bytes"))),
             ),
             computer=ComputerRuntimeConfig(
-                screenshot_max_dimension=int(
-                    cast(int, value("computer.screenshot_max_dimension"))
-                ),
+                screenshot_max_dimension=int(cast(int, value("computer.screenshot_max_dimension"))),
                 screenshot_max_pixels=int(cast(int, value("computer.screenshot_max_pixels"))),
+            ),
+            watchdog=WatchdogRuntimeConfig(
+                check_interval_seconds=float(
+                    cast(float | int, value("watchdog.check_interval_seconds"))
+                ),
+                no_progress_seconds=float(cast(float | int, value("watchdog.no_progress_seconds"))),
+                notify_min_interval_seconds=float(
+                    cast(float | int, value("watchdog.notify_min_interval_seconds"))
+                ),
+                protocol_storage_warn_ratio=float(
+                    cast(float | int, value("watchdog.protocol_storage_warn_ratio"))
+                ),
             ),
             web=WebRuntimeConfig(
                 mode=self._settings.web.mode.value,
