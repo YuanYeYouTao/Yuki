@@ -43,6 +43,7 @@ SELECT id, person_id, state, reason, attempts, datetime(started, 'unixepoch')
 
 ## 它不会做的事
 
-- 不执行任何管理动作；通知回合里除 `send` 外的非只读调用都返回 `report_only_source`，Work 控制工具返回 `work_control_unavailable`。处理由主人在普通对话里同意后进行。
+- 不执行任何管理动作；通知回合里除 `send` 外的非只读调用都返回 `report_only_source`，Work 控制工具返回 `work_control_unavailable`，`send` 只能发到当前私聊（带 `target` 返回 `permission_denied`）。处理由主人在普通对话里同意后进行。
+- 通知里只有内部 ID、状态、原因代码、计数和时间；不含任务目标、委派说明、原生请求参数或任何人的消息正文。
 - 不检测 Bot 自身宕机（Bot 无法报告自己的死亡）。
 - 不发每日摘要；没有新问题时不说话。

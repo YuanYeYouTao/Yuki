@@ -30,6 +30,9 @@ async def invoke_social(
             raise SocialError("permission_denied")
         scheduled_run = actor.automation_run_id
         refs: dict[str, str] = {}
+        if actor.proactive_turn_id is not None and name == "send" and arguments.get("target"):
+            # A proactive private turn speaks only in its own private Conversation.
+            raise SocialError("permission_denied")
         if actor.proactive_turn_id is not None:
             # The private turn's own recipient: the Person of its Conversation.
             from yuki.conversation.canonical_db_models import CanonicalConversationModel

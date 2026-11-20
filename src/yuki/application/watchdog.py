@@ -17,8 +17,10 @@ Nothing here gates real work: every interval is reporting pace.
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import logging
+import re
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -102,6 +104,8 @@ class Watchdog:
         self._present: set[str] = set()
         self._task: asyncio.Task[None] | None = None
         self._attempts: dict[str, asyncio.Task[str]] = {}
+        self._attempt_error: str | None = None
+        self.outcomes: list[str] = []
         self._last_check: float | None = None
         self._last_error: str | None = None
         self._check_errors: dict[str, str] = {}
@@ -145,6 +149,8 @@ class Watchdog:
             "last_error_category": self._last_error,
             "check_errors": dict(self._check_errors),
             "open_issues": len(self._present),
+            "attempts_running": len(self._attempts),
+            "last_attempt_error_category": self._attempt_error,
         }
 
     async def health(self) -> dict[str, Any]:
@@ -212,21 +218,41 @@ class Watchdog:
             self.writes += 1
         self._present = set(observation.present)
         self._last_check = now
+        # A turn left running with no live attempt here (its attempt or process was
+        # lost) is settled from its receipts, so the person is not blocked forever.
+        await self.turns.recover(active=frozenset(self._attempts))
         for turn_id in await self.turns.due(
             now,
             min_interval=pace.notify_min_interval_seconds,
             retry_after=pace.check_interval_seconds,
         ):
-            if turn_id not in self._attempts or self._attempts[turn_id].done():
-                self._attempts[turn_id] = asyncio.create_task(
+            if turn_id not in self._attempts:
+                task = asyncio.create_task(
                     self.turns.attempt(turn_id), name=f"proactive-turn-{turn_id}"
                 )
+                self._attempts[turn_id] = task
+                task.add_done_callback(functools.partial(self._attempt_done, turn_id))
+
+    def _attempt_done(self, turn_id: str, task: asyncio.Task[str]) -> None:
+        if self._attempts.get(turn_id) is task:
+            del self._attempts[turn_id]
+        if task.cancelled():
+            return
+        error = task.exception()
+        if error is not None:
+            self._attempt_error = type(error).__name__
+            logger.warning(
+                "proactive_turn_attempt_failed turn=%s category=%s", turn_id, self._attempt_error
+            )
+        else:
+            self.outcomes.append(task.result())
 
     async def drain(self) -> list[str]:
-        """Wait for the turn attempts started so far (tests and shutdown)."""
+        """Wait for the turn attempts started so far; their outcomes (tests and shutdown)."""
         tasks = list(self._attempts.values())
-        self._attempts.clear()
-        return list(await asyncio.gather(*tasks))
+        await asyncio.gather(*tasks, return_exceptions=True)
+        outcomes, self.outcomes = self.outcomes, []
+        return outcomes
 
     # ---- planning (pure) ---------------------------------------------------------------
 
@@ -298,14 +324,21 @@ class Watchdog:
                 )
             )
         for person_id, turn_id, keys in plan.batches:
+            target = watchdog_issues.c.person_id == person_id
             if turn_id is None:
                 turn_id = await ProactivePrivateTurns.enqueue(writer, person_id, SOURCE_KIND, now)
+            else:
+                # Only a turn not yet claimed takes new rows; a claimed one keeps what
+                # it read, and these rows wait for the next batch.
+                target = and_(
+                    target,
+                    select(proactive_turns.c.id)
+                    .where(proactive_turns.c.id == turn_id, proactive_turns.c.state == "pending")
+                    .exists(),
+                )
             await writer.execute(
                 update(watchdog_issues)
-                .where(
-                    watchdog_issues.c.person_id == person_id,
-                    watchdog_issues.c.issue_key.in_(keys),
-                )
+                .where(target, watchdog_issues.c.issue_key.in_(keys))
                 .values(turn_id=turn_id)
             )
 
@@ -317,6 +350,7 @@ class Watchdog:
                 (
                     await reader.execute(
                         select(
+                            watchdog_issues.c.person_id,
                             watchdog_issues.c.issue_key,
                             watchdog_issues.c.opened,
                             watchdog_issues.c.facts_json,
@@ -333,16 +367,19 @@ class Watchdog:
                 "facts": json.loads(row["facts_json"]),
             }
             for row in rows
-            if row["issue_key"] in self._present
+            # Only a problem observed healthy is left out; an undetermined one is said.
+            if (row["person_id"], row["issue_key"]) not in self._absent_since
         ]
         if not issues:
             return None
         return {"watchdog": {"issues": issues, "issues_total": len(issues)}}
 
     @staticmethod
-    async def _on_claim(writer: AsyncSession, turn_id: str, material: dict[str, Any]) -> None:
-        """Rows this turn will not mention are not told by it."""
-        said = [issue["key"] for issue in material["watchdog"]["issues"]]
+    async def _on_claim(
+        writer: AsyncSession, turn_id: str, material: dict[str, Any] | None
+    ) -> None:
+        """Rows this turn will not mention are not told by it (all, when it says nothing)."""
+        said = [issue["key"] for issue in material["watchdog"]["issues"]] if material else []
         await writer.execute(
             update(watchdog_issues)
             .where(watchdog_issues.c.turn_id == turn_id, watchdog_issues.c.issue_key.not_in(said))
@@ -389,7 +426,7 @@ class Watchdog:
             if row["reason"] not in CAPACITY_REASONS:
                 observation.present[f"work_suspended:{row['id']}"] = {
                     "work_id": row["id"],
-                    "reason": row["reason"],
+                    "reason": _code(row["reason"]),
                     "parent_work_id": row["parent_work_id"],
                     "suspended_at": _iso(row["updated"]),
                 }
@@ -447,7 +484,7 @@ class Watchdog:
                 "record_id": record["id"],
                 "parent_work_id": record["parent_work_id"],
                 "state": record["state"],
-                "reason": record["reason"],
+                "reason": _code(record["reason"]),
             }
             waiting = record["waiting_on_parent"]
             if record["state"] == "waiting_user" and waiting:
@@ -455,7 +492,15 @@ class Watchdog:
                 if _parse(oldest["received_at"]) < cutoff:
                     observation.present[f"delegation_waiting_parent:{record['id']}"] = {
                         **base,
-                        "requests": waiting[:_LISTED_IDS],
+                        "requests": [
+                            {
+                                "permission_id": item["permission_id"],
+                                "kind": _code(item["kind"]),
+                                "tool": _code(item["tool"]),
+                                "received_at": item["received_at"],
+                            }
+                            for item in waiting[:_LISTED_IDS]
+                        ],
                         "request_count": len(waiting),
                     }
                 continue
@@ -484,6 +529,7 @@ class Watchdog:
         async with self.database.read_session() as reader:
             failing = await failing_automations(reader)
         for item in failing:
+            item["error_category"] = _code(item["error_category"])
             observation.present[f"automation:{item['automation_id']}"] = item
 
     async def _check_loops(
@@ -499,6 +545,7 @@ class Watchdog:
                     for seen in [key for key in self._first_seen if key.startswith(prefix)]:
                         del self._first_seen[seen]
                     continue
+                category = _code(category)
                 key = f"{prefix}{category}"
                 first = self._first_seen.setdefault(key, now)
                 if now - first >= window:
@@ -525,12 +572,13 @@ class Watchdog:
                 for seen in [key for key in self._first_seen if key.startswith(prefix)]:
                     del self._first_seen[seen]
                 continue
-            key = f"{prefix}{fact.get('state') or 'unhealthy'}"
+            state = _code(fact.get("state")) or "unhealthy"
+            key = f"{prefix}{state}"
             first = self._first_seen.setdefault(key, now)
             if fact.get("durable") or now - first >= window:
                 observation.present[key] = {
                     "component": name,
-                    "state": fact.get("state"),
+                    "state": state,
                     "since": _iso(first),
                 }
             else:
@@ -546,6 +594,17 @@ class _Plan:
     @property
     def changed(self) -> bool:
         return bool(self.inserts or self.deletes or self.batches)
+
+
+_CODE = re.compile(r"[A-Za-z0-9_.:-]{1,64}")
+
+
+def _code(value: Any) -> str | None:
+    """A reason/category code as facts carry it; free text never passes."""
+    if value is None:
+        return None
+    text = str(value)
+    return text if _CODE.fullmatch(text) else "other"
 
 
 def _iso(epoch: float) -> str:

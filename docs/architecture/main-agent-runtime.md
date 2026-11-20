@@ -294,10 +294,10 @@ Social 回执来源键保留旧键；较长的完整内部身份沿共同 SHA256
 只汇报：这个来源不绑定 WorkControl（`MainAgentTurnService.run` 对它不走持久调用接纳），
 所以 `get_tasks/manage_task/start_subtask/message_task/wait` 都返回 `work_control_unavailable`；
 私聊 Host 接纳本就只对 `user_message`。目录工具在 `MainAgentBackend.execute_call` 按实际参数的
-风险判断，除 `send` 外凡非只读调用一律 `report_only_source`、不执行。工具声明与系统提示不变。
+风险判断，除 `send` 外凡非只读调用一律 `report_only_source`、不执行；`send` 不能带 `target`（`permission_denied`），只发当前私聊，每次模型请求与发送前核回合仍在运行、会话人物仍属收件人人物族且收件人仍是超管。事实投影只含内部 ID、状态、原因／类别代码（自由文本记 `other`）、计数与时间，原生请求只给工具名。工具声明与系统提示不变。
 管理动作只在主人随后的普通轮里以主人自己的授权执行。本回合不建 Work、不写协议检查点，
 因此在协议存储满时仍能发出消息。失败回合由调用方在一个检查周期后重试一次；进程丢失时按
-Social 回执结算：已成功发送算已告知，有发送记录但结果未知记 unknown、不重发，没有发送记录算失败。
+Social 回执（`send_message` 等）结算：已成功发送算已告知，有发送记录但结果未知记 unknown、不重发，没有发送记录算失败；模型在发送之后失败时同样按回执判断，不重发。
 
 ## 所有者与恢复
 

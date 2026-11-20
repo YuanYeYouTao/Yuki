@@ -1066,6 +1066,12 @@ def receipt_final(receipt: dict[str, Any] | None) -> bool:
     )
 
 
+def tool_name(tool: Any) -> str | None:
+    """Only a tool's name: an ACP tool is a whole ToolCallUpdate (title, rawInput)."""
+    name = tool.get("kind") or tool.get("name") if isinstance(tool, dict) else tool
+    return name[:64] if isinstance(name, str) and name else None
+
+
 def _epoch(value: Any) -> float:
     return float(
         value.replace(tzinfo=UTC).timestamp() if value.tzinfo is None else value.timestamp()
@@ -1111,10 +1117,27 @@ async def watch_records(reader: AsyncSession) -> list[dict[str, Any]]:
                     "unknown": receipt is None or receipt.get("status", "unknown") == "unknown",
                 }
             )
-        last_event = await reader.scalar(
-            select(func.max(AgentEventModel.created_at))
-            .join(AgentOperationModel, AgentOperationModel.id == AgentEventModel.operation_id)
-            .where(AgentOperationModel.work_id == row["id"])
+        # Newest event per operation through ``(operation_id, id)``; no event scan.
+        newest = [
+            await reader.scalar(
+                select(func.max(AgentEventModel.id)).where(
+                    AgentEventModel.operation_id == operation["id"]
+                )
+            )
+            for operation in operations
+        ]
+        last_id = max((identity for identity in newest if identity is not None), default=None)
+        last_event = (
+            await reader.scalar(
+                select(AgentEventModel.created_at).where(AgentEventModel.id == last_id)
+            )
+            if last_id is not None
+            else None
+        )
+        # Requests exist only while the record waits for an answer (``waiting_user``);
+        # only then are its events and answers read.
+        waiting = (
+            await waiting_on_parent(reader, row["id"]) if row["state"] == "waiting_user" else []
         )
         records.append(
             {
@@ -1131,10 +1154,10 @@ async def watch_records(reader: AsyncSession) -> list[dict[str, Any]]:
                     {
                         "permission_id": item["permission_id"],
                         "kind": item["kind"],
-                        "tool": item.get("tool"),
+                        "tool": tool_name(item.get("tool")),
                         "received_at": item["received_at"],
                     }
-                    for item in await waiting_on_parent(reader, row["id"])
+                    for item in waiting
                 ],
             }
         )

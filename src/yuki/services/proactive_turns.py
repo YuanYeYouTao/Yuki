@@ -24,13 +24,16 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from yuki.conversation.canonical_db_models import PersonActiveRouteModel
+from yuki.conversation.canonical_db_models import (
+    CanonicalConversationModel,
+    PersonActiveRouteModel,
+)
 from yuki.conversation.hydrate import conversation_for_binding
 from yuki.conversation.scope import ConversationTurnSnapshot
 from yuki.domain.conversations import ConversationScope, ScopeType
 from yuki.domain.tool_actor import ToolActor
 from yuki.identity.authority import person_is_superuser
-from yuki.identity.person_identity import current_person_id
+from yuki.identity.person_identity import current_person_id, same_person_id
 from yuki.identity.routing import RouteSendError
 from yuki.persistence.unit_of_work import optional_session
 from yuki.runtime.origin import TurnOrigin
@@ -49,6 +52,8 @@ logger = logging.getLogger(__name__)
 
 #: A failed attempt is retried once; a second failure waits for the source's next batch.
 MAX_ATTEMPTS = 2
+#: The Social receipt actions a ``send`` records (single, split parent, file caption).
+_SEND_ACTIONS = ("send_message", "send_message_sequence", "send_file_caption")
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,8 +63,8 @@ class ProactiveSource:
     content: str
     # The runtime material still worth saying for this turn, or None (nothing left).
     material: Callable[[str], Awaitable[dict[str, Any] | None]]
-    # Runs in the claim writer: fix what this turn covers (no reads of history).
-    on_claim: Callable[[AsyncSession, str, dict[str, Any]], Awaitable[None]]
+    # Runs in the start writer: fix what this turn covers (None: nothing; no history reads).
+    on_claim: Callable[[AsyncSession, str, dict[str, Any] | None], Awaitable[None]]
 
 
 async def validate_proactive_turn(
@@ -82,6 +87,13 @@ async def validate_proactive_turn(
             or row["state"] != "running"
             or row["conversation_id"] != conversation_id
             or row["presence_id"] != presence_id
+        ):
+            raise PermissionError("proactive_turn_changed")
+        conversation = await reader.get(CanonicalConversationModel, conversation_id)
+        if (
+            conversation is None
+            or conversation.person_id is None
+            or not await same_person_id(reader, conversation.person_id, row["person_id"])
         ):
             raise PermissionError("proactive_turn_changed")
         if not await person_is_superuser(reader, row["person_id"]):
@@ -136,8 +148,8 @@ class ProactivePrivateTurns:
         )
         return identity
 
-    async def recover(self) -> None:
-        """Settle turns a previous process left running, from their Social receipts."""
+    async def recover(self, active: frozenset[str] = frozenset()) -> None:
+        """Settle running turns no live attempt owns (a lost process or a lost attempt)."""
         async with self.database.read_session() as reader:
             rows = list(
                 (
@@ -147,6 +159,8 @@ class ProactivePrivateTurns:
                 ).mappings()
             )
         for row in rows:
+            if row["id"] in active:
+                continue
             sent, claimed = await self._receipts(row["conversation_id"], row["id"])
             if sent:
                 await self._settle(row["id"], "finished", "recovered_sent", None, expect="running")
@@ -218,13 +232,15 @@ class ProactivePrivateTurns:
                 return "recipient_not_superuser"
             person_id = await current_person_id(reader, row["person_id"])
             route = await reader.get(PersonActiveRouteModel, person_id)
-        # Only an already-set route: this entry never provisions one.
+        # Only an already-set route, resolved without provisioning one (§9-3).
         if route is None:
             return await self._note(turn_id, "route_none")
         if route.paused:
             return await self._note(turn_id, "route_paused")
         try:
-            resolved = await self._router.resolve_send_for_person(person_id)
+            resolved = await self._router.resolve_send_for_binding(
+                person_id, route.identity_binding_id, preferred_presence_id=route.presence_id
+            )
         except RouteSendError as exc:
             return await self._note(turn_id, f"route_{exc.category}"[:128])
         async with self.database.read_session() as reader:
@@ -244,79 +260,24 @@ class ProactivePrivateTurns:
         if state is None or state.id != conversation.id:
             return await self._note(turn_id, "conversation_missing")
         source = self._sources[row["source_kind"]]
-        material = await source.material(turn_id)
-        if material is None:
-            # Everything cleared before Yuki could say it: say nothing.
-            await self._settle(turn_id, "finished", "cleared_before_start", None)
-            return "cleared_before_start"
         key = state.runtime_scope_key or identity.key
         async with self._turns.background_turn(key, origin=TurnOrigin.PROACTIVE_PRIVATE) as token:
             if token is None:
                 return await self._note(turn_id, "conversation_busy")
             async with self._concurrency.conversation(key):
-                if not await self._claim(
-                    turn_id, conversation.id, resolved.presence_id, source, material
-                ):
+                if not await self._claim(turn_id, conversation.id, resolved.presence_id):
                     return "not_due"
-                snapshot = ConversationTurnSnapshot(
-                    state.id,
-                    key,
-                    state.generation,
-                    None,
-                    token.version,
-                    identity.key,
-                    proactive_turn_id=turn_id,
-                )
-                actor = ToolActor(
-                    user_id="",
-                    bot_user_id=resolved.sender_account_id,
-                    group_id=None,
-                    origin=TurnOrigin.PROACTIVE_PRIVATE,
-                    instruction=source.content,
-                    execution_id=f"proactive:{turn_id}",
-                    conversation_id=state.id,
-                    presence_id=resolved.presence_id,
-                    principal_kind="self",
-                    platform=resolved.platform,
-                    proactive_turn_id=turn_id,
-                )
-                presence_id = resolved.presence_id
-
-                async def validate() -> None:
-                    await validate_proactive_turn(
-                        self.database,
-                        turn_id,
-                        conversation_id=state.id,
-                        presence_id=presence_id,
-                    )
-
-                context = {
-                    "origin": TurnOrigin.PROACTIVE_PRIVATE.value,
-                    "proactive_turn_id": turn_id,
-                }
-                context.update(material)
-                from yuki.services.agent_tools import ToolRuntime
-
+                # Claimed under the lock: the source attaches nothing more to it, so the
+                # material read now is exactly what this turn covers.
                 try:
-                    result = await self._generate(
-                        content=source.content,
-                        identity=identity,
-                        runtime=await self._config.snapshot(),
-                        turn_token=token,
-                        turn_snapshot=snapshot,
-                        before_model_request=validate,
-                        source_runtime=ToolRuntime(
-                            inbound=None,
-                            actor_context=actor,
-                            actor_is_superuser=False,
-                            conversation_key=key,
-                            execution_id=actor.execution_id,
-                            origin=TurnOrigin.PROACTIVE_PRIVATE,
-                            conversation_id=state.id,
-                            scope_type=ScopeType.PRIVATE,
-                            external_target_id=resolved.external_target_id,
-                            activation_context=lambda: context,
-                        ),
+                    material = await source.material(turn_id)
+                    if material is None:
+                        # Everything cleared before Yuki could say it: say nothing.
+                        await self._start(turn_id, source, None)
+                        return "cleared_before_start"
+                    await self._start(turn_id, source, material)
+                    result = await self._run(
+                        turn_id, source, material, identity, state, key, token, resolved
                     )
                 except Exception as exc:
                     logger.warning(
@@ -334,15 +295,73 @@ class ProactivePrivateTurns:
         await self._settle(turn_id, "finished", None, summary, expect="running")
         return "finished"
 
-    async def _claim(
+    async def _run(
         self,
         turn_id: str,
-        conversation_id: str,
-        presence_id: str,
         source: ProactiveSource,
         material: dict[str, Any],
-    ) -> bool:
-        now = self._clock()
+        identity: ConversationScope,
+        state: Any,
+        key: str,
+        token: Any,
+        resolved: Any,
+    ) -> Any:
+        from yuki.services.agent_tools import ToolRuntime
+
+        snapshot = ConversationTurnSnapshot(
+            state.id,
+            key,
+            state.generation,
+            None,
+            token.version,
+            identity.key,
+            proactive_turn_id=turn_id,
+        )
+        actor = ToolActor(
+            user_id="",
+            bot_user_id=resolved.sender_account_id,
+            group_id=None,
+            origin=TurnOrigin.PROACTIVE_PRIVATE,
+            instruction=source.content,
+            execution_id=f"proactive:{turn_id}",
+            conversation_id=state.id,
+            presence_id=resolved.presence_id,
+            principal_kind="self",
+            platform=resolved.platform,
+            proactive_turn_id=turn_id,
+        )
+        presence_id = resolved.presence_id
+
+        async def validate() -> None:
+            await validate_proactive_turn(
+                self.database, turn_id, conversation_id=state.id, presence_id=presence_id
+            )
+
+        context = {"origin": TurnOrigin.PROACTIVE_PRIVATE.value, "proactive_turn_id": turn_id}
+        context.update(material)
+        return await self._generate(
+            content=source.content,
+            identity=identity,
+            runtime=await self._config.snapshot(),
+            turn_token=token,
+            turn_snapshot=snapshot,
+            before_model_request=validate,
+            source_runtime=ToolRuntime(
+                inbound=None,
+                actor_context=actor,
+                actor_is_superuser=False,
+                conversation_key=key,
+                execution_id=actor.execution_id,
+                origin=TurnOrigin.PROACTIVE_PRIVATE,
+                conversation_id=state.id,
+                scope_type=ScopeType.PRIVATE,
+                external_target_id=resolved.external_target_id,
+                activation_context=lambda: context,
+            ),
+        )
+
+    async def _claim(self, turn_id: str, conversation_id: str, presence_id: str) -> bool:
+        """CAS pending/failed → running; a running turn takes no new source rows."""
         async with self.database.immediate_session() as writer:
             claimed = await writer.execute(
                 update(proactive_turns)
@@ -355,15 +374,30 @@ class ProactivePrivateTurns:
                     reason=None,
                     conversation_id=conversation_id,
                     presence_id=presence_id,
-                    attempts=proactive_turns.c.attempts + 1,
-                    started=now,
-                    updated=now,
+                    updated=self._clock(),
                 )
             )
-            if claimed.rowcount != 1:  # type: ignore[attr-defined]
-                return False
+            return bool(claimed.rowcount == 1)  # type: ignore[attr-defined]
+
+    async def _start(
+        self, turn_id: str, source: ProactiveSource, material: dict[str, Any] | None
+    ) -> None:
+        """Fix what the turn covers; only a real activation counts an attempt."""
+        now = self._clock()
+        async with self.database.immediate_session() as writer:
             await source.on_claim(writer, turn_id, material)
-        return True
+            if material is None:
+                await writer.execute(
+                    update(proactive_turns)
+                    .where(proactive_turns.c.id == turn_id, proactive_turns.c.state == "running")
+                    .values(state="finished", reason="cleared_before_start", updated=now)
+                )
+                return
+            await writer.execute(
+                update(proactive_turns)
+                .where(proactive_turns.c.id == turn_id)
+                .values(attempts=proactive_turns.c.attempts + 1, started=now, updated=now)
+            )
 
     async def _fail(
         self,
@@ -372,11 +406,15 @@ class ProactivePrivateTurns:
         code: str,
         summary: dict[str, Any] | None = None,
     ) -> str:
-        sent, _ = await self._receipts(conversation_id, turn_id)
+        sent, claimed = await self._receipts(conversation_id, turn_id)
         if sent:
             # Already told: a later failure does not make it untold.
             await self._settle(turn_id, "finished", code, summary, expect="running")
             return "finished"
+        if claimed:
+            # A send was claimed with an unknown result: never resent.
+            await self._settle(turn_id, "unknown", code, summary, expect="running")
+            return "unknown"
         await self._settle(turn_id, "failed", code, summary, expect="running")
         return "failed"
 
@@ -389,7 +427,7 @@ class ProactivePrivateTurns:
                     select(SocialOperationModel.status).where(
                         SocialOperationModel.source_turn_id
                         == turn_source_key(conversation_id, turn_id),
-                        SocialOperationModel.action == "send",
+                        SocialOperationModel.action.in_(_SEND_ACTIONS),
                     )
                 )
             )

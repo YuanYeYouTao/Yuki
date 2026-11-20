@@ -30,6 +30,16 @@ F16 a failing check is notified or stops the loop;
 F17 the material enters the public ledger or a later ordinary request;
 F18 a key that clears and comes back within ``no_progress_seconds`` is told again;
 F19 several notices start for one person within ``notify_min_interval_seconds``.
+
+Added after the independent review of #664 (each failed on the first version):
+
+F20 the notice turn sends with ``target`` to a group or another person;
+F21 an ACP tool (a whole ToolCallUpdate: title, rawInput) reaches the facts;
+F22 a send claimed with an unknown result, then a model failure, is retried and
+    the owner gets the message twice;
+F23 an issue undetermined at the due tick, or cleared before the start and back
+    within the window, is never told;
+F24 a lost attempt leaves the turn running and blocks the person forever.
 """
 
 from __future__ import annotations
@@ -51,6 +61,9 @@ from tests.support.social_identity_cases import social_env
 
 from yuki.admin.models import WatchdogRuntimeConfig, WorkStorageRuntimeConfig
 from yuki.application.watchdog import Watchdog
+from yuki.automation.repository import AutomationRepository
+from yuki.automation.service import AutomationService
+from yuki.automation.tools import AutomationToolService
 from yuki.client_api.db_models import ClientDeviceModel
 from yuki.conversation.canonical_db_models import PersonActiveRouteModel
 from yuki.domain.conversations import ScopeType
@@ -78,6 +91,7 @@ from yuki.services.main_agent_contract import MainAgentContract
 from yuki.services.proactive_turns import ProactivePrivateTurns, turn_source_key
 from yuki.services.rate_limit import SlidingWindowRateLimiter
 from yuki.social.db_models import SocialOperationModel
+from yuki.time.service import TimeContextService
 from yuki.workspace.short_state import ShortState
 from yuki.workspace.store import WorkspaceStore
 
@@ -197,22 +211,25 @@ class Scene:
             if any(message.role == "tool" for message in request.messages):
                 return "说完了"
             if self.mode == "manage":
+                calls = {
+                    "m1": ("manage_task", {"action": "start", "goal": "恢复挂起的任务"}),
+                    "m1b": ("manage_task", {"action": "resume", "id": str(uuid.uuid4())}),
+                    "m2": ("set_short_note", {"slot": 1, "text": "x"}),
+                    "m4": (
+                        "message_task",
+                        {"id": str(uuid.uuid4()), "reply_to": "1", "answer": "allow"},
+                    ),
+                    "m5": ("manage_schedule", {"action": "pause", "id": 1}),
+                    "m6": ("run_command", {"command": "echo hi"}),
+                    "m7": ("send", {"text": "发到群", "target": {"space_id": self.env.space}}),
+                    "m3": ("send", {"text": "只汇报"}),
+                }
                 return ChatResponse(
                     "",
                     0,
-                    tool_calls=(
-                        ToolCall(
-                            "m1",
-                            ToolFunction(
-                                "manage_task",
-                                json.dumps({"action": "start", "goal": "恢复挂起的任务"}),
-                            ),
-                        ),
-                        ToolCall(
-                            "m2",
-                            ToolFunction("set_short_note", json.dumps({"slot": 1, "text": "x"})),
-                        ),
-                        ToolCall("m3", ToolFunction("send", json.dumps({"text": "只汇报"}))),
+                    tool_calls=tuple(
+                        ToolCall(identity, ToolFunction(name, json.dumps(arguments)))
+                        for identity, (name, arguments) in calls.items()
                     ),
                 )
             keys = ",".join(issue["key"] for issue in context["watchdog"]["issues"])
@@ -237,6 +254,12 @@ class Scene:
         self.chat._tools.short_state = state
         self.chat._tools.social_service = self.env.service
         self.env.service.runtime_config = self.chat._runtime_config
+        automations = AutomationService(
+            settings=settings,
+            repository=AutomationRepository(self.database),
+            time_service=TimeContextService(default_timezone=settings.default_timezone),
+        )
+        self.chat.set_automation_tools(AutomationToolService(automations))
         self.harness.processor._rate_limiter = SlidingWindowRateLimiter(
             per_user=1000, per_group=1000
         )
@@ -666,11 +689,21 @@ async def test_notice_turn_only_reports(database, tmp_path):
     works_before = await scene.count(work)
     assert await scene.tick() == ["finished"]
     results = _tool_results(scene.notice_requests[-1])
-    assert results["m1"]["error"] == "work_control_unavailable"
-    assert results["m2"]["error"] == "report_only_source"
+    refused = {key: value.get("error") for key, value in results.items() if key != "m3"}
+    assert refused == {
+        "m1": "work_control_unavailable",
+        "m1b": "work_control_unavailable",
+        "m4": "work_control_unavailable",
+        "m2": "report_only_source",
+        "m5": "report_only_source",
+        "m6": "report_only_source",
+        "m7": "permission_denied",
+    }, results
+    assert all(value.get("executed") is not True for value in results.values())
     assert len(scene.sends()) == 1
+    assert not any(action == "send_group_msg" for action, _ in scene.env.bot.calls)
     assert await scene.count(work) == works_before
-    RESULTS["S4_report_only"] = {key: results[key].get("error") for key in ("m1", "m2")}
+    RESULTS["S4_report_only"] = refused
 
 
 # --------------------------------------------------------------------------- S5 F9
@@ -734,7 +767,7 @@ async def test_lost_turn_is_settled_from_its_receipts(database, tmp_path):
                     source_turn_id=turn_source_key(conversation, ids[label]),
                     tool_call_id="c",
                     source_conversation_id=conversation,
-                    action="send",
+                    action="send_message",
                     payload_hash="0" * 64,
                     target_kind="person",
                     target_id=scene.env.person,
@@ -899,3 +932,138 @@ async def test_new_issues_inside_the_min_interval_are_merged(database, tmp_path)
     assert context is not None and context["watchdog"]["issues_total"] == 3
     assert len(scene.sends()) == 2
     RESULTS["S12_min_interval"] = [issue["key"] for issue in context["watchdog"]["issues"]]
+
+
+# --------------------------------------------------------------------------- review F21-F24
+
+
+async def test_acp_tool_payload_never_reaches_the_facts(database, tmp_path):
+    scene = await _scene(database, tmp_path)
+    delegated = await _delegation(
+        scene,
+        state="waiting_user",
+        reason="native_request",
+        receipt={"status": "accepted", "pending": True},
+        request=True,
+        age=WINDOW + 60,
+    )
+    async with database.immediate_session() as writer:
+        await writer.execute(
+            update(AgentEventModel)
+            .where(AgentEventModel.operation_id == delegated["operation"])
+            .values(
+                payload_json=json.dumps(
+                    {
+                        "payload": {
+                            "native_request_id": "native-1",
+                            "tool": {
+                                "toolCallId": "t1",
+                                "title": "Run SECRET-CMD rm -rf /",
+                                "kind": "execute",
+                                "rawInput": {"command": "SECRET-CMD"},
+                            },
+                            "options": [{"name": "SECRET-CMD"}],
+                        }
+                    }
+                )
+            )
+        )
+    assert await scene.tick() == ["finished"]
+    async with database.read_session() as reader:
+        facts = " ".join(await reader.scalars(select(watchdog_issues.c.facts_json)))
+    context = _runtime_context(scene.notice_requests[0])
+    _secret_free(facts)
+    _secret_free(context)
+    assert context is not None
+    requests = context["watchdog"]["issues"][0]["facts"]["requests"]
+    assert [item["tool"] for item in requests] == ["execute"]
+    RESULTS["S13_acp_tool"] = requests
+
+
+async def test_unknown_send_then_model_failure_is_not_resent(database, tmp_path):
+    scene = await _scene(database, tmp_path)
+    bot = scene.env.bot
+    original = bot.call_api
+    first = {"pending": True}
+
+    async def call_api(action, **params):
+        if action == "send_private_msg" and first["pending"]:
+            first["pending"] = False
+            bot.calls.append((action, params))
+            raise RuntimeError("transport timeout after dispatch")
+        return await original(action, **params)
+
+    bot.call_api = call_api
+
+    def respond(request):
+        context = _runtime_context(request)
+        if context is not None and "watchdog" in context:
+            scene.notice_requests.append(request)
+            if any(message.role == "tool" for message in request.messages):
+                raise LLMUnavailableError("provider down")
+            return _call("send", {"text": "notice"}, "n1")
+        return "好"
+
+    scene.respond = respond
+    scene.provider._responder = respond
+    scene.loops = {"runtime_work": {"running": False, "errors": {}}}
+    assert await scene.tick() == ["unknown"]
+    for _ in range(3):
+        assert await scene.tick(MIN_INTERVAL) == []
+    private = [call for call in bot.calls if call[0] == "send_private_msg"]
+    assert len(private) == 1
+    RESULTS["S14_unknown_not_resent"] = [
+        {key: row[key] for key in ("state", "reason", "attempts")}
+        for row in await scene.rows(proactive_turns)
+    ]
+
+
+async def test_undetermined_at_the_due_tick_is_still_told(database, tmp_path):
+    scene = await _scene(database, tmp_path)
+    scene.loops = {"runtime_work": {"running": False, "errors": {}}}
+    assert await scene.tick() == ["finished"]
+    scene.components = {"gateway:qq": {"healthy": False, "state": "unhealthy", "durable": True}}
+    assert await scene.tick(CHECK) == []  # inside the minimum interval
+    scene.components = {"gateway:qq": {"healthy": None}}  # momentarily undetermined
+    assert await scene.tick(MIN_INTERVAL) == ["finished"]
+    assert len(scene.sends()) == 2 and "component:gateway:qq:unhealthy" in scene.sends()[1]
+    RESULTS["S15_undetermined_due"] = scene.sends()
+
+
+async def test_cleared_before_start_and_back_within_the_window_is_told(database, tmp_path):
+    scene = await _scene(database, tmp_path)
+    scene.loops = {"runtime_work": {"running": False, "errors": {}}}
+    assert await scene.tick() == ["finished"]
+    scene.loops["maintenance"] = {"running": False, "errors": {}}
+    assert await scene.tick(CHECK) == []  # pending: inside the minimum interval
+    scene.loops["maintenance"] = {"running": True, "errors": {}}
+    assert await scene.tick(MIN_INTERVAL) == ["cleared_before_start"]
+    issue = await scene.rows(
+        watchdog_issues, watchdog_issues.c.issue_key == "loop_stopped:maintenance"
+    )
+    assert issue and issue[0]["turn_id"] is None  # not told, row kept for the window
+    scene.loops["maintenance"] = {"running": False, "errors": {}}  # back within the window
+    assert await scene.tick(CHECK) == ["finished"]
+    assert len(scene.sends()) == 2 and "loop_stopped:maintenance" in scene.sends()[1]
+    RESULTS["S16_back_within_window"] = scene.sends()
+
+
+async def test_a_lost_attempt_does_not_block_the_person(database, tmp_path):
+    scene = await _scene(database, tmp_path)
+    scene.loops = {"runtime_work": {"running": False, "errors": {}}}
+    original = scene.turns._run
+
+    async def lost(*args, **kwargs):
+        raise asyncio.CancelledError  # the attempt dies without settling its turn
+
+    scene.turns._run = lost
+    await scene.tick()
+    turns = await scene.rows(proactive_turns)
+    assert [row["state"] for row in turns] == ["running"]
+    scene.turns._run = original
+    await scene.tick(CHECK)  # no live attempt owns it: settled from its receipts
+    turns = await scene.rows(proactive_turns)
+    assert [row["state"] for row in turns] == ["failed"]
+    assert await scene.tick(MIN_INTERVAL) == ["finished"]
+    assert len(scene.sends()) == 1
+    RESULTS["S17_lost_attempt"] = [row["reason"] for row in await scene.rows(proactive_turns)]
