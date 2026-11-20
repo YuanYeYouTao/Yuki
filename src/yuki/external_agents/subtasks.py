@@ -81,9 +81,10 @@ async def start_external(control: Any, args: dict[str, Any], key: str) -> dict[s
         raise ValueError("external_agent_target_mismatch")
     session_id = args.get("session")
     if session_id is not None:
-        resource = await service.repository.native_session(session_id, actor)
+        resource = await service.repository.native_session(session_id, actor, instance.id)
         if resource.instance_id != instance.id:
             raise ValueError("external_agent_target_mismatch")
+        session_id = resource.id
     executor: dict[str, Any] = {
         "device_id": instance.device_id,
         "instance_id": instance.id,
@@ -455,6 +456,8 @@ async def browse(control: Any, agents: dict[str, Any], args: dict[str, Any]) -> 
     request_id = f"browse:{time.time_ns()}"
     if "session" in agents:
         wire: dict[str, Any] = {"action": "get", "session_id": agents["session"]}
+        if "agent" in agents:
+            wire["instance_id"] = agents["agent"]
         if args.get("history"):
             wire["include_history"] = True
         if "cursor" in args:
