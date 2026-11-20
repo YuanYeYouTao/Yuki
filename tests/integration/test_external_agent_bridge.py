@@ -197,6 +197,14 @@ class NativeComputer:
                         "admitted": True,
                     }
                     self.results[message["id"]] = result
+                elif action == "respond":
+                    # What every real driver returns once the native callback took it.
+                    result = {
+                        "status": "response_submitted",
+                        "pending": False,
+                        "response_submitted": True,
+                        "admitted": True,
+                    }
                 else:
                     result = {"status": "accepted", "pending": True, "admitted": True}
                 await self.reply(message, result)

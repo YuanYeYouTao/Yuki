@@ -16,7 +16,7 @@ from datetime import UTC
 from typing import Any
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
-from sqlalchemy import func, select, update
+from sqlalchemy import ColumnElement, func, or_, select, update
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -886,6 +886,25 @@ async def release_answer(reader: AsyncSession, row: AgentOperationModel) -> bool
     return release is not None and release.work_id == row.work_id
 
 
+async def waiting_on_parent(reader: AsyncSession, work_id: str) -> list[dict[str, Any]]:
+    """Requests a live delegation record is waiting on its parent to answer (or deny).
+
+    Read from facts (events and answers), never from whether a card was consumed. An
+    observation's waits are handled at the native terminal and are never included.
+    """
+    executor = await executor_of(reader, work_id)
+    if executor is None or executor["relationship"] == "observe":
+        return []
+    state = await reader.scalar(select(work.c.state).where(work.c.id == work_id))
+    if state is None or state in TERMINAL:
+        return []
+    return [
+        request
+        for request in await pending_requests(reader, work_id, executor["relationship"])
+        if request["answer_at"] in {"yuki_or_user", "deny_only"}
+    ]
+
+
 async def executor_of(reader: AsyncSession, work_id: str | None) -> dict[str, Any] | None:
     if work_id is None:
         return None
@@ -913,18 +932,7 @@ async def pending_requests(
             .order_by(AgentEventModel.id)
         )
     )
-    answered = {
-        str(json.loads(command).get("arguments", {}).get("native_request_id"))
-        for command, result in (
-            await reader.execute(
-                select(AgentOperationModel.command_json, AgentOperationModel.result_json).where(
-                    AgentOperationModel.work_id == work_id,
-                    AgentOperationModel.action == "respond",
-                )
-            )
-        ).all()
-        if result is not None and json.loads(result).get("error") is None
-    }
+    answered = await _answered(reader, AgentOperationModel.work_id == work_id)
     pending: dict[str, dict[str, Any]] = {}
     for identity, kind, payload_json, created, operation_id in rows:
         payload = json.loads(payload_json).get("payload") or {}
@@ -951,6 +959,32 @@ async def pending_requests(
     return list(pending.values())
 
 
+def answer_taken() -> ColumnElement[bool]:
+    """A respond counts while in flight (no receipt yet), once the native callback took
+    it, or once the device said that callback is gone (``request_resolved``).
+
+    Any other unknown or failed receipt leaves the request pending and answerable
+    again; the native owner still lets only a still-pending request take an answer.
+    """
+    return or_(
+        AgentOperationModel.result_json.is_(None),
+        func.json_type(AgentOperationModel.result_json, "$.response_submitted") == "true",
+        func.json_extract(AgentOperationModel.result_json, "$.error.code") == "request_resolved",
+        func.json_extract(AgentOperationModel.result_json, "$.error") == "request_resolved",
+    )
+
+
+async def _answered(reader: AsyncSession, scope: ColumnElement[bool]) -> set[str]:
+    return {
+        str(json.loads(command).get("arguments", {}).get("native_request_id"))
+        for command in await reader.scalars(
+            select(AgentOperationModel.command_json).where(
+                scope, AgentOperationModel.action == "respond", answer_taken()
+            )
+        )
+    }
+
+
 async def _unowned_waits(
     reader: AsyncSession, work_id: str, answered: set[str]
 ) -> dict[str, dict[str, Any]]:
@@ -961,15 +995,23 @@ async def _unowned_waits(
     sessions = list(
         (
             await reader.execute(
-                select(AgentSessionModel.instance_id, AgentSessionModel.native_id)
+                select(
+                    AgentSessionModel.id,
+                    AgentSessionModel.instance_id,
+                    AgentSessionModel.native_id,
+                )
                 .join(AgentOperationModel, AgentOperationModel.session_id == AgentSessionModel.id)
                 .where(AgentOperationModel.work_id == work_id)
                 .distinct()
             )
         ).all()
     )
+    # The parent's deny of such a wait names the session, not one of this record's operations.
+    answered = answered | await _answered(
+        reader, AgentOperationModel.session_id.in_([row[0] for row in sessions])
+    )
     waits_found: dict[str, dict[str, Any]] = {}
-    for instance_id, native_session in sessions:
+    for _, instance_id, native_session in sessions:
         rows = (
             await reader.execute(
                 select(

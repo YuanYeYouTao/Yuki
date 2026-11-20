@@ -331,8 +331,10 @@ async def test_desktop_answer_of_an_observed_request_is_refused(bridge):
         await computer.close()
 
 
-# F6: a request that arrived before the parent registers wait(run) still wakes it at once.
-async def test_request_before_wait_satisfies_the_new_wait(bridge):
+# F6: a request that arrived before the parent registers wait(run) is never slept on.
+# Since 2026-11-20 (delegation wait deadlock) the wait is refused with the request
+# instead of registered and woken; the card stays the next model input either way.
+async def test_request_before_wait_is_never_slept_on(bridge):
     computer = await NativeComputer(bridge).start()
     try:
         instance, session_id = await directory(bridge)
@@ -342,7 +344,10 @@ async def test_request_before_wait_satisfies_the_new_wait(bridge):
                 operation.id, "question", {"native_request_id": "q", "question": "?"}
             )
             outcome = await control.tool_outcome("wait", {"for": [{"run": identity}]}, "late-wait")
-            assert outcome.ok, outcome
+            assert not outcome.ok and outcome.error_code == "run_waiting_for_you"
+            card = json.loads(_texts(await _inputs(bridge, control.current["id"]))[0])
+            assert f"permission_id={card['permission_id']}（question" in outcome.public_message
+            assert control.accepted is None
             assert await control.has_pending_business_inputs()
     finally:
         await computer.close()

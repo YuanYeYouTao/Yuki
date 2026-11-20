@@ -21,12 +21,15 @@ from yuki.external_agents.delegation import (
     Delegations,
     executor_of,
     native_prompt,
+    waiting_on_parent,
 )
 from yuki.external_agents.errors import ExternalAgentArgumentError
 from yuki.runtime.work_repository import TERMINAL
 from yuki.runtime.work_schema_v1 import work
 
 _BRIEF = ("goal", "context", "acceptance", "files")
+# What an answer lists of each request still waiting on the parent.
+_LISTED = ("permission_id", "kind", "tool", "received_at", "answer_at")
 
 
 def _service(control: Any) -> Any:
@@ -259,7 +262,12 @@ async def message_external(
                 native, _request_id(identity, key, "answer"), source, owner_work_id=identity
             )
         )
-        return {"id": identity, "answered": str(event_key), "status": result.get("status")}
+        return {
+            "id": identity,
+            "answered": str(event_key),
+            "status": result.get("status"),
+            "remaining": await _remaining(control, identity),
+        }
     if not text:
         raise ValueError("invalid_subagent_message")
     latest = await _latest_operation(control, identity)
@@ -311,7 +319,23 @@ async def _deny_unowned(
     result = _dispatched(
         await service.execute(native, _request_id(identity, key, "deny"), control.source)
     )
-    return {"id": identity, "answered": str(event.id), "status": result.get("status")}
+    return {
+        "id": identity,
+        "answered": str(event.id),
+        "status": result.get("status"),
+        "remaining": await _remaining(control, identity),
+    }
+
+
+async def _remaining(control: Any, identity: str) -> list[dict[str, Any]]:
+    """Every other request of this record still waiting on the parent, one by one.
+
+    The answer just registered counts while in flight; if its receipt comes back
+    unknown or failed, the request is pending again (on the card, and in a refused wait).
+    """
+    async with control.repository.database.read_session() as reader:
+        waiting = await waiting_on_parent(reader, identity)
+    return [{key: item[key] for key in _LISTED} for item in waiting]
 
 
 async def unowned_session(database: Any, identity: str, event: Any) -> str | None:

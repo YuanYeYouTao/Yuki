@@ -28,6 +28,7 @@ from yuki.domain.messages import ChatResponse
 from yuki.external_agents import repository as agent_repository
 from yuki.external_agents.cards import external_agent_card
 from yuki.external_agents.db_models import AgentOperationModel
+from yuki.external_agents.delegation import waiting_on_parent
 from yuki.llm.anthropic_messages import AnthropicMessagesProvider
 from yuki.llm.fake import FakeLLMProvider
 from yuki.llm.openai_compatible import OpenAICompatibleProvider
@@ -139,6 +140,22 @@ async def test_dispatch_and_settlement_only_append_after_the_stable_prefix(
 
     async def record(scenario, request):
         response = await original(scenario, request)
+        if response is not None and [item.function.name for item in response.tool_calls] == [
+            "wait"
+        ]:
+            # A parent answers what its delegation waits on before waiting on it; that
+            # wait is refused (run_waiting_for_you, 2026-11-20 delegation deadlock fix).
+            async with scenario.container.database.read_session() as reader:
+                waiting = await waiting_on_parent(reader, scenario.delegation_id)
+            if waiting:
+                response = call(
+                    "message_task",
+                    {
+                        "id": scenario.delegation_id,
+                        "reply_to": waiting[0]["permission_id"],
+                        "answer": "allow",
+                    },
+                )
         if response is not None:
             name = response.tool_calls[0].function.name if response.tool_calls else None
             captured.append((request, name))
