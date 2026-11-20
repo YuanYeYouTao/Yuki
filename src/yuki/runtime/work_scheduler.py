@@ -54,6 +54,7 @@ class WorkScheduler:
         self._last_wait_error: str | None = None
         self._last_maintenance_error: str | None = None
         self._last_reclaim = 0.0
+        self._protocol_backlog = False
         self._phase_timings = {
             name: TimingSummary()
             for name in (
@@ -213,28 +214,37 @@ class WorkScheduler:
         if started:
             await asyncio.wait(started)
 
+    async def _protocol_cleanup(self) -> None:
+        # A reclaimed page means more unowned objects may follow: continue on the
+        # next tick instead of one page per 600 s window, and stop once a pass
+        # reclaims nothing (or fails) so an idle store costs no extra ticks.
+        self._protocol_backlog = False
+        self._protocol_backlog = await ProtocolStore(self.repository.database).cleanup() > 0
+
     async def dispatch_once(self) -> list[asyncio.Task[None]]:
         """Maintain, select and dispatch without waiting for any resume to finish."""
 
         with self._timed("repair_inputs"):
             await self.repository.repair_abandoned_inputs(PROCESS_ID)
+        maintenance: list[tuple[str, Callable[[], Awaitable[object]]]] = []
         if time.monotonic() - self._last_reclaim > 600:
             self._last_reclaim = time.monotonic()
             self._last_maintenance_error = None
-            for phase, maintain in (
-                ("reclaim", self.repository.reclaim_unreferenced_media),
-                ("protocol_cleanup", ProtocolStore(self.repository.database).cleanup),
-            ):
-                try:
-                    with self._timed(phase):
-                        await maintain()
-                except Exception as exc:
-                    self._last_maintenance_error = type(exc).__name__
-                    logger.warning(
-                        "work_maintenance_failed phase=%s category=%s",
-                        phase,
-                        self._last_maintenance_error,
-                    )
+            maintenance.append(("reclaim", self.repository.reclaim_unreferenced_media))
+            maintenance.append(("protocol_cleanup", self._protocol_cleanup))
+        elif self._protocol_backlog:
+            maintenance.append(("protocol_cleanup", self._protocol_cleanup))
+        for phase, maintain in maintenance:
+            try:
+                with self._timed(phase):
+                    await maintain()
+            except Exception as exc:
+                self._last_maintenance_error = type(exc).__name__
+                logger.warning(
+                    "work_maintenance_failed phase=%s category=%s",
+                    phase,
+                    self._last_maintenance_error,
+                )
 
         try:
             with self._timed("settle_schedules"):
