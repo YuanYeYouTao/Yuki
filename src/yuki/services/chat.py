@@ -931,6 +931,14 @@ class ChatService:
     ) -> None:
         if self._tool_receipts is None:
             return
+        actor = runtime.actor_context
+        if actor is not None and actor.proactive_turn_id is not None:
+            # A tool receipt is Memory evidence of its original source: a trigger
+            # event, a SELF initiative or a SELF scheduled run. A proactive private
+            # turn has none of them, so, like a person turn without a trigger event,
+            # it records none (resolving a SELF source for it would fail after the
+            # tool already ran).
+            return
         from yuki.services.invocation_service import defer_tool_audit, tool_audit_source
 
         audit_source = tool_audit_source(tool_call_id) if tool_call_id is not None else None
