@@ -261,9 +261,9 @@ async def test_desktop_contract_owner_stop_resume_and_refusals(tmp_path: Path) -
 
             # Refusals before any input: no events, no activity lines.
             quiet = len(desktop_lines(process))
-            unknown_key = (await call("computer", "key", "key-bad", text="ctrl+nonsense"))
+            unknown_key = await call("computer", "key", "key-bad", text="ctrl+nonsense")
             assert unknown_key["result"]["error"] == "invalid_arguments"
-            window = (await call("computer", "click", "window-1", x=1, y=1, window="0x1"))
+            window = await call("computer", "click", "window-1", x=1, y=1, window="0x1")
             assert window["result"]["error"] == "window_not_found"
             missing = (await call("computer", "click", "no-point"))["result"]
             assert missing["error"] == "invalid_arguments"
@@ -412,9 +412,7 @@ async def test_restart_keeps_the_desktop_stop_and_never_redrives(tmp_path: Path)
         held = await cloud.command("computer", "click", "after-restart", {**LIMITS, "x": 1, "y": 1})
         assert held["result"]["error"] == "control_held"
         # C5: the original call is unknown and is never driven again.
-        replay = await cloud.command(
-            "computer", "click", "click-crash", {**LIMITS, "x": 5, "y": 5}
-        )
+        replay = await cloud.command("computer", "click", "click-crash", {**LIMITS, "x": 5, "y": 5})
         assert replay["result"]["status"] == "unknown"
         assert replay["result"]["reason"] == "original_dispatch_not_confirmed"
         assert events(state) == []
@@ -447,4 +445,3 @@ async def test_plain_run_prints_no_desktop_lines(tmp_path: Path) -> None:
         await process.kill()
     write_artifact("plain-run", {"stdout": process.raw})
     assert process.lines == [] and process.raw == []
-

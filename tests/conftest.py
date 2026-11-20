@@ -94,6 +94,13 @@ def tool_delivery_evidence(request):
         )
 
 
+@pytest.fixture
+def socket_dir() -> Iterator[Path]:
+    """A short directory for Unix sockets; macOS caps AF_UNIX paths below pytest's tmp_path."""
+    with tempfile.TemporaryDirectory(prefix="yk-") as directory:
+        yield Path(directory).resolve()
+
+
 class MemorySender:
     """Record outbound messages and optionally fail every send."""
 

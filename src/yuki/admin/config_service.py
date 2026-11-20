@@ -1642,9 +1642,7 @@ class RuntimeConfigService:
                 disk_reserve_bytes=int(cast(int, value("storage.protocol_disk_reserve_bytes"))),
             ),
             computer=ComputerRuntimeConfig(
-                screenshot_max_dimension=int(
-                    cast(int, value("computer.screenshot_max_dimension"))
-                ),
+                screenshot_max_dimension=int(cast(int, value("computer.screenshot_max_dimension"))),
                 screenshot_max_pixels=int(cast(int, value("computer.screenshot_max_pixels"))),
             ),
             web=WebRuntimeConfig(

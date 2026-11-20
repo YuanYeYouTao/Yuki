@@ -219,8 +219,10 @@ def shareable() -> Any:
     import ScreenCaptureKit
 
     return wait(
-        lambda finished: ScreenCaptureKit.SCShareableContent.getShareableContentExcludingDesktopWindows_onScreenWindowsOnly_completionHandler_(  # noqa: E501
-            True, False, finished
+        lambda finished: (
+            ScreenCaptureKit.SCShareableContent.getShareableContentExcludingDesktopWindows_onScreenWindowsOnly_completionHandler_(
+                True, False, finished
+            )
         )
     )
 
@@ -607,9 +609,7 @@ class MacScreen(Keys):
         self._mouse(Quartz.kCGEventMouseMoved, x, y, Quartz.kCGMouseButtonLeft)
         return self.route
 
-    def click(
-        self, x: float, y: float, button: str, count: int, modifiers: tuple[str, ...]
-    ) -> str:
+    def click(self, x: float, y: float, button: str, count: int, modifiers: tuple[str, ...]) -> str:
         down, up, code = BUTTONS[button]
         flags = flags_of(modifiers)
         self.move(x, y)
@@ -618,9 +618,7 @@ class MacScreen(Keys):
             self._mouse(up, x, y, code, clicks, flags)
         return self.route
 
-    def drag(
-        self, x: float, y: float, x2: float, y2: float, modifiers: tuple[str, ...]
-    ) -> str:
+    def drag(self, x: float, y: float, x2: float, y2: float, modifiers: tuple[str, ...]) -> str:
         flags = flags_of(modifiers)
         self.move(x, y)
         self._mouse(Quartz.kCGEventLeftMouseDown, x, y, Quartz.kCGMouseButtonLeft, 1, flags)
@@ -694,9 +692,7 @@ class MacScreen(Keys):
                 "这个窗口已最小化；Yuki 不还原它（还原会抢走前台）。本人还原后再试，"
                 "或省略 window 在前台操作。",
             )
-        selection = ScreenCaptureKit.SCContentFilter.alloc().initWithDesktopIndependentWindow_(
-            item
-        )
+        selection = ScreenCaptureKit.SCContentFilter.alloc().initWithDesktopIndependentWindow_(item)
         scale = float(selection.pointPixelScale())
         bounds = item.frame()
         return MacTarget(
@@ -889,9 +885,7 @@ class MacTarget(Keys):
             return "window_events"
         return "accessibility"
 
-    def click(
-        self, x: float, y: float, button: str, count: int, modifiers: tuple[str, ...]
-    ) -> str:
+    def click(self, x: float, y: float, button: str, count: int, modifiers: tuple[str, ...]) -> str:
         # Accessibility actions carry no modifiers, click states or other buttons (A7).
         if count == 1 and not modifiers and button in {"left", "right"}:
             self._accessible()
@@ -952,9 +946,7 @@ class MacTarget(Keys):
         self._stamped(Quartz.kCGEventMouseMoved, x, y, Quartz.kCGMouseButtonLeft, 0)
         return self.route
 
-    def drag(
-        self, x: float, y: float, x2: float, y2: float, modifiers: tuple[str, ...]
-    ) -> str:
+    def drag(self, x: float, y: float, x2: float, y2: float, modifiers: tuple[str, ...]) -> str:
         flags = flags_of(modifiers)
         self._prime(x, y)
         self._stamped(Quartz.kCGEventLeftMouseDown, x, y, Quartz.kCGMouseButtonLeft, 1, flags)
@@ -971,9 +963,7 @@ class MacTarget(Keys):
                     flags,
                 )
         finally:
-            self._stamped(
-                Quartz.kCGEventLeftMouseUp, x2, y2, Quartz.kCGMouseButtonLeft, 1, flags
-            )
+            self._stamped(Quartz.kCGEventLeftMouseUp, x2, y2, Quartz.kCGMouseButtonLeft, 1, flags)
         return self.route
 
     def scroll(self, x: float, y: float, dx: int, dy: int, modifiers: tuple[str, ...]) -> str:

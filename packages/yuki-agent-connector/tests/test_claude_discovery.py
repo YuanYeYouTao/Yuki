@@ -9,6 +9,18 @@ from yuki_agent_connector import discovery
 from yuki_agent_connector.config import Instance
 
 
+@pytest.fixture(autouse=True)
+def host_installs_are_not_fixtures(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Discovery also probes fixed host locations such as /opt/homebrew/bin; a real
+    # Claude Code installed there must not join the fixture's candidates.
+    installed = discovery.installed_executable
+    monkeypatch.setattr(
+        discovery,
+        "installed_executable",
+        lambda path: path.is_relative_to(tmp_path) and installed(path),
+    )
+
+
 def executable(path: Path) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(b"native fixture, never launched")

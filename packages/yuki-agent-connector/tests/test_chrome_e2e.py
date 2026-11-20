@@ -117,9 +117,9 @@ async def test_dedicated_chrome_outlives_the_connector_and_reopens(
     try:
         async with serve(cloud.handler, "127.0.0.1", 0) as server:
             port = server.sockets[0].getsockname()[1]
-            Config(
-                f"ws://127.0.0.1:{port}/", "original-device", "fixture", full_access=True
-            ).save(data / "config.json")
+            Config(f"ws://127.0.0.1:{port}/", "original-device", "fixture", full_access=True).save(
+                data / "config.json"
+            )
             first = ConnectorProcess(state, data)
             await first.start()
             await cloud.connected.wait_for(1)
