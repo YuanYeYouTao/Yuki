@@ -31,9 +31,29 @@ class ToolActor:
     automation_run_id: int | None = None
     platform: str = "qq"
     space_id: str | None = None
+    proactive_turn_id: str | None = None
 
     def __post_init__(self) -> None:
-        if self.principal_kind == "self":
+        if self.principal_kind == "self" and self.origin is TurnOrigin.PROACTIVE_PRIVATE:
+            # Yuki opening a private turn: anchored on its own turn row, no group,
+            # no borrowed person, event or other run.
+            if (
+                not self.proactive_turn_id
+                or not self.execution_id
+                or self.initiative_run_id is not None
+                or self.automation_run_id is not None
+                or not self.conversation_id
+                or not self.presence_id
+                or self.group_id is not None
+                or not self.bot_user_id
+                or self.user_id
+                or self.person_id
+                or self.event_id is not None
+                or self.mentioned_user_ids
+                or self.mentioned_person_ids
+            ):
+                raise ValueError("invalid_self_tool_actor")
+        elif self.principal_kind == "self":
             if (
                 self.origin not in {TurnOrigin.SELF_INITIATIVE, TurnOrigin.SCHEDULED_AUTOMATION}
                 or (self.origin is TurnOrigin.SELF_INITIATIVE and not self.initiative_run_id)
@@ -57,24 +77,26 @@ class ToolActor:
                 or self.event_id is not None
                 or self.mentioned_user_ids
                 or self.mentioned_person_ids
+                or self.proactive_turn_id is not None
             ):
                 raise ValueError("invalid_self_tool_actor")
         elif (
             self.principal_kind != "person"
             or self.initiative_run_id is not None
             or self.automation_run_id is not None
-            or self.origin is TurnOrigin.SELF_INITIATIVE
+            or self.proactive_turn_id is not None
+            or self.origin in {TurnOrigin.SELF_INITIATIVE, TurnOrigin.PROACTIVE_PRIVATE}
         ):
             raise ValueError("invalid_tool_actor_principal")
 
     @property
     def source_key(self) -> str:
         if self.principal_kind == "self":
-            return (
-                f"initiative:{self.initiative_run_id}"
-                if self.initiative_run_id is not None
-                else f"execution:{self.execution_id}"
-            )
+            if self.initiative_run_id is not None:
+                return f"initiative:{self.initiative_run_id}"
+            if self.proactive_turn_id is not None:
+                return f"proactive:{self.proactive_turn_id}"
+            return f"execution:{self.execution_id}"
         if self.event_id is not None:
             return f"event:{self.event_id}"
         if self.execution_id:

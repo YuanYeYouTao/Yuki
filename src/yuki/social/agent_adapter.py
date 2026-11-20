@@ -29,14 +29,29 @@ async def invoke_social(
         ):
             raise SocialError("permission_denied")
         scheduled_run = actor.automation_run_id
+        refs: dict[str, str] = {}
+        if actor.proactive_turn_id is not None and name == "send" and arguments.get("target"):
+            # A proactive private turn speaks only in its own private Conversation.
+            raise SocialError("permission_denied")
+        if actor.proactive_turn_id is not None:
+            # The private turn's own recipient: the Person of its Conversation.
+            from yuki.conversation.canonical_db_models import CanonicalConversationModel
+
+            async with service.database.read_session() as session:
+                conversation = await session.get(CanonicalConversationModel, actor.conversation_id)
+            if conversation is None or conversation.person_id is None:
+                raise SocialError("invalid_self_context")
+            refs["current_speaker"] = conversation.person_id
         context = SocialContext(
             turn_id=f"{actor.conversation_id}:{actor.source_key}",
             call_id=invocation.invocation_key,
             conversation_id=actor.conversation_id or "",
+            person_refs=refs,
             space_id=runtime.space_id,
             origin=runtime.origin.value,
             initiative_run_id=actor.initiative_run_id,
             automation_run_id=scheduled_run,
+            proactive_turn_id=actor.proactive_turn_id,
             presence_id=actor.presence_id,
             actor=actor,
             runtime_snapshot=getattr(runtime, "runtime_config", None),

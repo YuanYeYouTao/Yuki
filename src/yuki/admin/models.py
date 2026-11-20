@@ -244,6 +244,16 @@ class WorkStorageRuntimeConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class WatchdogRuntimeConfig:
+    """Reporting pace of the read-only watchdog; none of it gates real work."""
+
+    check_interval_seconds: float = 300.0
+    no_progress_seconds: float = 900.0
+    notify_min_interval_seconds: float = 1800.0
+    protocol_storage_warn_ratio: float = 0.8
+
+
+@dataclass(frozen=True, slots=True)
 class ToolingRuntimeConfig:
     max_parallel_calls: int
     result_token_budget: int | None
@@ -291,6 +301,7 @@ class RuntimeConfigSnapshot:
     tooling: ToolingRuntimeConfig | None = None
     work_storage: WorkStorageRuntimeConfig = WorkStorageRuntimeConfig()
     computer: ComputerRuntimeConfig = ComputerRuntimeConfig()
+    watchdog: WatchdogRuntimeConfig = WatchdogRuntimeConfig()
 
     def conversation_policy(self) -> ConversationRuntimeConfig:
         """Return the autonomous-conversation policy for this snapshot."""

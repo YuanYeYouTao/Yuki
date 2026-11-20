@@ -54,6 +54,22 @@ async def runtime_health(app: ApplicationContainer) -> list[dict[str, Any]]:
                 "checked_at": checked_at,
             }
         )
+    watchdog = await app.watchdog.health()
+    rows.append(
+        {
+            "name": "watchdog",
+            "enabled": watchdog["enabled"],
+            "running": watchdog["running"],
+            "healthy": None,
+            "checked_at": checked_at,
+            "last_check_at": watchdog["last_check_at"],
+            "error_category": watchdog["last_error_category"],
+            "check_errors": watchdog["check_errors"],
+            "open_issues": watchdog["open_issues"],
+            "open_turns": watchdog["open_turns"],
+            "last_turn": watchdog["last_turn"],
+        }
+    )
     completion = await app.sandbox_completions.health()
     rows.append(
         {
