@@ -222,9 +222,10 @@ async def _execute_stretch(
     A serial batch stops at its first failing call and raises that call's own exception,
     a call cancelled from inside included. Here the first failure cancels the calls still
     running and is raised itself: never wrapped in an ExceptionGroup, never dropped as a
-    missing result. A call cancelled by the stretch or by the turn is not a failure. A
-    turn cancellation that coincides with a failure still arrives after it, as after a
-    failed serial call.
+    missing result. A call cancelled by the stretch or by the turn is not a failure. The
+    turn's own cancellation, which reaches it while it awaits the stretch, propagates as
+    it would into an awaited serial call, even if a call failed meanwhile: its canceller
+    (a lease supervisor, a deadline) handles it within its own scope.
     """
     failure: BaseException | None = None
     children: list[asyncio.Task[None]] = []
@@ -249,13 +250,10 @@ async def _execute_stretch(
     try:
         async with asyncio.TaskGroup() as group:
             children.extend(group.create_task(run(call)) for call in calls)
-    except asyncio.CancelledError:
-        if failure is None or isinstance(failure, asyncio.CancelledError):
-            raise
-        _keep_cancellation_pending()
-    # The raised failure's traceback keeps this frame; a cancelled call's frames must
-    # not live on through it.
-    children.clear()
+    finally:
+        # A raised exception's traceback keeps this frame; a cancelled call's frames
+        # must not live on through it.
+        children.clear()
     if failure is not None:
         # Outside the handler, so the call keeps its own cause and context.
         raise failure
@@ -266,14 +264,6 @@ def _cancel_requested() -> bool:
     task = asyncio.current_task()
     assert task is not None
     return task.cancelling() > 0
-
-
-def _keep_cancellation_pending() -> None:
-    """Deliver this task's cancellation, already counted, again at its next await."""
-    task = asyncio.current_task()
-    assert task is not None
-    task.uncancel()
-    task.cancel()
 
 
 def _attach_batch_results(

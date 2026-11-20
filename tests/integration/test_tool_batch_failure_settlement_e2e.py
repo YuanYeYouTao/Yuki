@@ -30,10 +30,22 @@ F7  ``WorkCapacityError`` keeps the capacity suspension of an owned Work;
 F8  ``WorkConflict`` keeps its class and code;
 F9  a call cancelled from inside (``CancelledError``) ends the turn cancelled; the
     parallel batch must not drop it as a missing result and continue the turn;
-F10 the turn is cancelled from outside while a call fails: the failure is handled as
-    in a serial batch and the cancellation still arrives afterwards; it is not lost;
+F10 the turn is cancelled from outside while it awaits the batch and a call fails in
+    that window: the turn ends cancelled, as a serial call awaited at that moment is
+    cancelled; neither the cancellation nor its owner's handling of it is lost;
 F11 which faults abort the turn is unchanged: after every fault above the model sees
     no batch result.
+
+Added in the review of #672 (each failed on the first version, which raised the
+failure and delivered the cancellation again after it):
+
+F12 the Work lease heartbeat fails while the turn awaits the batch and a call fails in
+    that window (private turn only; a proactive turn holds no Work lease): the lease
+    supervisor receives its own cancellation inside its scope and raises the
+    heartbeat failure, as when a serial call is interrupted.
+
+The artifact records the hash of the code under test and, per scenario, whether
+serial and parallel matched, so a table produced from other code identifies itself.
 """
 
 from __future__ import annotations
@@ -56,10 +68,12 @@ from tests.integration.test_watchdog_capacity_incident_e2e import (
     _tool_results,
 )
 
+from yuki.capabilities.coordinator import ToolInvocationCoordinator
 from yuki.domain.messages import ChatResponse, ToolCall, ToolFunction
 from yuki.memory.partition import MemoryPartitionResolutionError
 from yuki.persistence.database import Database
 from yuki.persistence.event_repository import ConversationReadVersion
+from yuki.runtime import lease_heartbeat
 from yuki.runtime.proactive_schema import proactive_turns
 from yuki.runtime.work_budget import WorkBudgetExceeded
 from yuki.runtime.work_journal import WorkJournal
@@ -76,6 +90,8 @@ RESULTS: dict[str, Any] = {}
 DIAGNOSTICS: dict[str, Any] = {}
 # Three parallel-safe catalog tools that succeed in this scene.
 TOOLS = ("get_environment", "get_schedules", "get_members")
+ROOT = Path(__file__).resolve().parents[2]
+CODE_UNDER_TEST = ("src/yuki/capabilities/coordinator.py", "src/yuki/services/agent_runner.py")
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -90,6 +106,10 @@ def _write_artifact():
                 "suite": "tests/integration/test_tool_batch_failure_settlement_e2e.py",
                 "generated_at": datetime.now(UTC).isoformat(),
                 "suite_sha256": hashlib.sha256(source).hexdigest(),
+                "code_sha256": {
+                    path: hashlib.sha256((ROOT / path).read_bytes()).hexdigest()
+                    for path in CODE_UNDER_TEST
+                },
                 "scenarios_sha256": hashlib.sha256(table.encode()).hexdigest(),
                 "scenarios": RESULTS,
                 # Timing-dependent statement diagnostics, kept out of the hashed table.
@@ -131,6 +151,7 @@ FAULTS: dict[str, Any] = {
     "F8_conflict": lambda: [WorkConflict("work_activation_obsolete")],
     "F9_inner_cancel": lambda: [asyncio.CancelledError()],
     "F10_outer_cancel": lambda: [MemoryPartitionResolutionError("self_execution_source_missing")],
+    "F12_lease_lost": lambda: [MemoryPartitionResolutionError("self_execution_source_missing")],
 }
 _IDS = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|\b[0-9a-f]{32}\b")
 
@@ -150,11 +171,14 @@ class Fault:
         self.errors = FAULTS[fault]()
         self.failing = TOOLS[: len(self.errors)]
         self.outer: asyncio.Task[Any] | None = None
+        self.turn: asyncio.Task[Any] | None = None  # the task that awaits the batch
+        self.lease_lost = asyncio.Event()
         # F2/F3: in a parallel stretch both failing calls reach their failing step
         # together; the second fails in the same loop iteration right after the first
         # (a bare TaskGroup collected both into one group). Serially it never runs.
         self.arrived = asyncio.Barrier(len(self.errors))
         self.first_failed = asyncio.Event()
+        execute_batch = ToolInvocationCoordinator.execute_batch
         render = MainAgentBackend.render_result
         record_effect = WorkJournal.record_effect
         parallel_safe = MainAgentBackend.parallel_safe
@@ -170,10 +194,30 @@ class Fault:
                 if position:
                     await fixture.first_failed.wait()
             fixture.first_failed.set()
-            if fixture.fault == "F10_outer_cancel":
-                assert fixture.outer is not None
-                fixture.outer.cancel()
+            if fixture.fault in {"F10_outer_cancel", "F12_lease_lost"}:
+                # The turn's cancellation arrives while it awaits this call; the call
+                # fails at its next step. A serial call is awaited by the turn itself,
+                # so it receives the cancellation there and never gets to fail.
+                turn = fixture.turn
+                assert turn is not None
+                if fixture.fault == "F10_outer_cancel":
+                    asyncio.get_running_loop().call_soon(turn.cancel)
+                else:
+                    fixture.lease_lost.set()
+                for _ in range(100):
+                    await asyncio.sleep(0)
+                    if turn.cancelling():
+                        break
+                assert turn.cancelling(), "the turn was never cancelled"
             raise error
+
+        async def capturing_batch(self, *args, **kwargs):
+            fixture.turn = asyncio.current_task()
+            return await execute_batch(self, *args, **kwargs)
+
+        async def lost_lease(renew, expiry, **kwargs):
+            await fixture.lease_lost.wait()
+            raise RuntimeError("lease_renew_failed")
 
         async def failing_render(self, outcome):
             text = await render(self, outcome)
@@ -193,6 +237,9 @@ class Fault:
         else:
             monkeypatch.setattr(WorkJournal, "record_effect", failing_record)
         monkeypatch.setattr(MainAgentBackend, "parallel_safe", serial_or_catalog)
+        monkeypatch.setattr(ToolInvocationCoordinator, "execute_batch", capturing_batch)
+        if fault == "F12_lease_lost":
+            monkeypatch.setattr(lease_heartbeat, "lease_heartbeat", lost_lease)
 
 
 def _batch() -> ChatResponse:
@@ -300,8 +347,15 @@ async def _private(database, tmp_path, monkeypatch, caplog, fault_name, mode):
 ORIGINS = {"proactive": _proactive, "private": _private}
 
 
-@pytest.mark.parametrize("fault", list(FAULTS))
-@pytest.mark.parametrize("origin", list(ORIGINS))
+@pytest.mark.parametrize(
+    ("origin", "fault"),
+    [
+        (origin, fault)
+        for origin in ORIGINS
+        for fault in FAULTS
+        if (origin, fault) != ("proactive", "F12_lease_lost")
+    ],
+)
 async def test_serial_and_parallel_batches_settle_a_post_call_failure_the_same(
     database, _database_template, tmp_path, monkeypatch, caplog, origin, fault
 ):
@@ -320,12 +374,16 @@ async def test_serial_and_parallel_batches_settle_a_post_call_failure_the_same(
                 )
     finally:
         await databases["parallel"].close()
-    RESULTS[f"{origin}:{fault}"] = {mode: _settlement(value) for mode, value in observed.items()}
+    settled = {mode: _settlement(value) for mode, value in observed.items()}
+    RESULTS[f"{origin}:{fault}"] = {
+        **settled,
+        "serial_equals_parallel": settled["serial"] == settled["parallel"],
+    }
     DIAGNOSTICS[f"{origin}:{fault}"] = {
         mode: [line for line in value["logs"] if line.startswith(STATEMENT_DIAGNOSTIC)]
         for mode, value in observed.items()
     }
-    assert _settlement(observed["parallel"]) == _settlement(observed["serial"])
+    assert settled["parallel"] == settled["serial"]
     # F11: every fault still aborts the turn.
     assert observed["serial"]["model_saw_batch_result"] is False
     if fault == "F9_inner_cancel":
