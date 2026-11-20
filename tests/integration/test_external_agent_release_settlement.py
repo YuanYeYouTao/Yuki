@@ -26,7 +26,6 @@ Nothing about a settlement is kept in memory, so a bot restart is a reconnect (T
 
 import asyncio
 import json
-import logging
 from uuid import uuid4
 
 from sqlalchemy import select
@@ -35,6 +34,7 @@ from tests.integration.test_external_agent_bridge import (
     accepted_work,
     directory,
     settled,
+    until,
 )
 from tests.integration.test_external_agent_bridge import bridge as bridge
 from tests.integration.test_external_agent_delegation import _delegate, _inputs, _start
@@ -93,6 +93,22 @@ async def _attempts(bridge, identity):
                 .order_by(AgentOperationModel.created_at, AgentOperationModel.id)
             )
         )
+
+
+async def _resent_to(bridge, computer, identity, session_id):
+    """Wait for the resend to reach this peer.
+
+    settled() only waits until each unanswered command has reached some peer, and a
+    resend's ID already reached the dropped one.
+    """
+
+    async def arrived():
+        return len(_responds(computer)) == 1
+
+    try:
+        await until(arrived)
+    except TimeoutError:
+        raise AssertionError(await _diagnose(bridge, identity, session_id)) from None
 
 
 async def _diagnose(bridge, identity, session_id):
@@ -359,8 +375,7 @@ async def test_a_registered_release_deny_is_not_written_after_a_takeover(bridge)
 
 
 # T1: delivery unknown (the socket dropped on the write): the same ID again, once.
-async def test_an_unconfirmed_release_deny_is_resent_under_its_original_id(bridge, caplog):
-    caplog.set_level(logging.INFO, logger="yuki.external_agents")
+async def test_an_unconfirmed_release_deny_is_resent_under_its_original_id(bridge):
     computer = await NativeComputer(bridge).start()
     computer.drop_next = "respond"
     second = None
@@ -379,7 +394,7 @@ async def test_an_unconfirmed_release_deny_is_resent_under_its_original_id(bridg
             second.hold = {"respond"}
             await second.start()
             await settled(bridge)
-            assert len(_responds(second)) == 1, await _diagnose(bridge, identity, session_id)
+            await _resent_to(bridge, second, identity, session_id)
             [again] = _responds(second)
             assert again["id"] == first["id"] and again["arguments"] == first["arguments"]
             await second.answer(again["id"], SUBMITTED)
@@ -594,8 +609,7 @@ async def test_a_resume_after_the_release_ends_it(bridge):
 
 
 # T1: a resend that cannot be written records nothing; the next reconnect writes it.
-async def test_an_unwritable_resend_is_not_recorded_as_not_executed(bridge, monkeypatch, caplog):
-    caplog.set_level(logging.INFO, logger="yuki.external_agents")
+async def test_an_unwritable_resend_is_not_recorded_as_not_executed(bridge, monkeypatch):
     computer = await NativeComputer(bridge).start()
     computer.drop_next = "respond"
     second = third = None
@@ -622,7 +636,7 @@ async def test_an_unwritable_resend_is_not_recorded_as_not_executed(bridge, monk
             third.hold = {"respond"}
             await third.start()
             await settled(bridge)
-            assert len(_responds(third)) == 1, await _diagnose(bridge, identity, session_id)
+            await _resent_to(bridge, third, identity, session_id)
             [again] = _responds(third)
             assert again["id"] == first["id"]
     finally:
