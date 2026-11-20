@@ -384,20 +384,15 @@ class Delegations:
 
         Only metadata was uploaded, so it is answerable only with deny (§4.5, §15.2 #9):
         a delegation's parent gets the card; an observation's user is told where it is.
+        A session that record released is not asked about: the release settles it (#645).
         """
         from yuki.external_agents.cards import external_agent_card
 
-        last = await session.scalar(
-            select(AgentOperationModel.work_id)
-            .join(children, children.c.work_id == AgentOperationModel.work_id)
-            .where(
-                AgentOperationModel.session_id == session_id,
-                children.c.executor_json.is_not(None),
-            )
-            .order_by(AgentOperationModel.created_at.desc())
-            .limit(1)
-        )
+        last = await last_holder(session, session_id)
         if last is None:
+            return
+        if await release_operation(session, last, session_id) is not None:
+            # The record gave the session back; its release settles the wait (#645).
             return
         record = (await session.execute(select(work).where(work.c.id == last))).mappings().first()
         executor = await executor_of(session, last)
@@ -785,6 +780,88 @@ def operation_entry(item: AgentOperationModel) -> dict[str, Any]:
             error=result.get("error"),
         )
     return {key: value for key, value in entry.items() if value is not None}
+
+
+async def last_holder(reader: AsyncSession, session_id: str) -> str | None:
+    """The delegation or observation record that most recently acted on this session."""
+    return await reader.scalar(
+        select(AgentOperationModel.work_id)
+        .join(children, children.c.work_id == AgentOperationModel.work_id)
+        .where(
+            AgentOperationModel.session_id == session_id,
+            children.c.executor_json.is_not(None),
+        )
+        .order_by(AgentOperationModel.created_at.desc())
+        .limit(1)
+    )
+
+
+async def release_operation(
+    reader: AsyncSession, work_id: str, session_id: str
+) -> AgentOperationModel | None:
+    """This record's detach of this session that carried ``release``, if any.
+
+    It is registered before it is sent, and a connector turns a wait unowned only
+    after that detach arrives, so it never races the record's own state, which is
+    written after the detaches.
+    """
+    return (
+        await reader.scalars(
+            select(AgentOperationModel)
+            .where(
+                AgentOperationModel.work_id == work_id,
+                AgentOperationModel.session_id == session_id,
+                AgentOperationModel.action == "detach",
+                func.json_extract(AgentOperationModel.command_json, "$.arguments.release") == 1,
+            )
+            .order_by(AgentOperationModel.created_at, AgentOperationModel.id)
+            .limit(1)
+        )
+    ).first()
+
+
+async def release_reference(reader: AsyncSession, row: AgentOperationModel) -> bool:
+    """Whether a row names, by ID, the release it settles for (#645).
+
+    The named row must be this record's own detach of this session carrying
+    ``release``; a ``settled_by`` marker without that fact grants nothing.
+    """
+    source = json.loads(row.source_json)
+    named = source.get("release_operation_id")
+    if (
+        source.get("settled_by") != "release"
+        or not isinstance(named, str)
+        or row.work_id is None
+        or row.session_id is None
+    ):
+        return False
+    release = await reader.get(AgentOperationModel, named)
+    return (
+        release is not None
+        and release.action == "detach"
+        and release.work_id == row.work_id
+        and release.session_id == row.session_id
+        and json.loads(release.command_json).get("arguments", {}).get("release") is True
+    )
+
+
+async def release_answer(reader: AsyncSession, row: AgentOperationModel) -> bool:
+    """Whether a registered command is a release's deny of a session wait (#645).
+
+    Only facts decide: a deny of a wait no operation received (no target operation,
+    no response body), naming the record's own release of the session, while that
+    record is still the session's last holder (no later delegation took it over).
+    """
+    arguments = json.loads(row.command_json).get("arguments", {})
+    return (
+        row.action == "respond"
+        and arguments.get("option_id") == "deny"
+        and "response" not in arguments
+        and "operation_id" not in arguments
+        and await release_reference(reader, row)
+        and row.session_id is not None
+        and await last_holder(reader, row.session_id) == row.work_id
+    )
 
 
 async def executor_of(reader: AsyncSession, work_id: str | None) -> dict[str, Any] | None:

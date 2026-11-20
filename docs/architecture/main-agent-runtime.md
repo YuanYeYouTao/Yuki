@@ -470,7 +470,7 @@ SubagentScheduler 同样启动以恢复原子任务；新子任务接纳关闭�
 
 委派记录的状态由原生事实确定性结算：权限或提问 → `waiting_user`（父视角 `waiting_parent`）并以卡片唤醒父 Work；属于该委派的全部运行都结束 → completed／failed／cancelled，结果卡片经子任务结果通知交给父 Work；执行者消失（`status: unknown`、设备离线）只记原因并告诉父 Work 一次，不改判失败、不重派，设备重连后按真实终态结算。进展（文本、工具调用、计划、处置、已解决）只入时间线，不写 Work 输入、不唤醒、不打断时间或 `all` 等待。父 Work 只等消息（`waiting_user`）时，委派的请求也会唤醒它；挂起或终态的父 Work 保存卡片但不被复活。`message_task(id, text, mode?)` 向委派追加输入（默认 queue），`message_task(id, reply_to=permission_id, answer, text=理由)` 回答一个原生请求（先答者生效，回答者、选项、理由与原请求摘要写进时间线，批准只对该请求有效）；`manage_task(cancel)` 取消原生回合并结束关系，`resume` 带 text 在同一会话继续，`release` 只结束拥有关系，声明 `release` 的连接器在回合边界关闭 Yuki 自己持有的原生进程，以便用户接回而不分叉。`get_tasks(id)` 读卡片与时间线，`get_tasks(agents=…)` 浏览设备、Agent、会话与历史（在线只读查询）。
 
-没有任何操作接收的原生等待（只上传了元信息）交给最后持有该会话的记录：委派的父 Work 收到 `answer_at: deny_only` 的卡片，只能拒绝；观察记录只通知。连接器只接受一次性回答（`one_time_only`），持续性的"总是允许"不经 Yuki 或 Desktop 生效。
+没有任何操作接收的原生等待（只上传了元信息）交给最后持有该会话的记录：委派的父 Work 收到 `answer_at: deny_only` 的卡片，只能拒绝；观察记录只通知。最后持有者已经 `release` 该会话时不再问任何人（#645）：用户够不到 Yuki 进程里的回调，由交还以 deny 结算，结算挂在被交还记录的时间线上（`answered_via: release`），不唤醒父 Work。放行只认事实：该记录对该会话带 `release` 的 detach 行、仍是最后持有者，标记本身不授权；新委派接管后归新持有者的 deny-only 卡片。回调已消费、原生已解决或 `request_resolved` 即结束；其他拒绝只说明此刻没有 owner，在下一个事实（该会话又一个无主等待或设备重连）以新操作 ID 再试，不设定时重试；送达未知的答复在重连时以原 ID 重发（连接器按 ID 至多执行一次）。连接器只接受一次性回答（`one_time_only`），持续性的"总是允许"不经 Yuki 或 Desktop 生效。
 
 观察记录只看：服务端拒绝以观察记录或其操作为目标的输入、回答（含 deny）与原生控制（`observe_only`），观察到的请求不带 `permission_id`。唤醒更窄：同一请求只提醒一次，整轮失败、执行者消失或会话消失才提醒，回合结束只在用户要求“做完告诉我”时提醒（`notify_turn_end`）；提醒由原会话里的一次普通 Main（独立的通知 Work，沿原请求的来源）用 send 告诉用户。观察独立存在，直到用户停止或原生会话消失。
 
