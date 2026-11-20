@@ -25,7 +25,12 @@ from yuki.external_agents.db_models import (
     AgentOperationModel,
     AgentSessionModel,
 )
-from yuki.external_agents.delegation import Delegations, executor_of
+from yuki.external_agents.delegation import (
+    Delegations,
+    executor_of,
+    release_answer,
+    release_reference,
+)
 from yuki.external_agents.identity import ConnectorIdentityService
 from yuki.identity.credentials import require_person
 from yuki.identity.person_identity import person_family_condition, same_person_id
@@ -1152,9 +1157,12 @@ class AgentRepository:
             row = await reader.get(AgentOperationModel, identity)
             if row is None or row.result_json is not None:
                 return False
-            if row.action == "detach" and row.work_id is not None:
-                # Ending a relationship (release, stopping an observation) is written even
-                # though its record ended right after registering it.
+            if row.work_id is not None and (
+                row.action == "detach" or await release_answer(reader, row)
+            ):
+                # Ending a relationship (release, stopping an observation), and the
+                # release's deny of a wait nobody else can answer (#645), are written even
+                # though the record ended right after registering them.
                 return True
             if row.detached_at is not None:
                 return False
@@ -1202,6 +1210,9 @@ class AgentRepository:
                     else None
                 )
                 prepared = {row.work_id: await waits.prepare_external_action(reader, row.work_id)}
+                # A release's own answer is the record's fact: the settlement retries a
+                # failure at the next fact; it is never handed to the parent.
+                settling = await release_reference(reader, row)
             result = json.loads(row.result_json)
             input_json = encode_card(
                 {
@@ -1236,7 +1247,7 @@ class AgentRepository:
                     # not a model's context; only a failed control is told to the parent.
                     if result.get("error") is None and current.action == "respond":
                         await self.delegations.resolved(writer, current)
-                    elif result.get("error") is not None:
+                    elif result.get("error") is not None and not settling:
                         record = (
                             (await writer.execute(select(work).where(work.c.id == current.work_id)))
                             .mappings()
