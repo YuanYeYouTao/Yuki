@@ -150,14 +150,34 @@ user32.DestroyWindow.argtypes = [wintypes.HWND]
 
 def child(kind, text, style, x, y, width, height, identity):
     return user32.CreateWindowExW(
-        0, kind, text, WS_CHILD | WS_VISIBLE | style, x, y, width, height, main, identity,
-        instance, None,
+        0,
+        kind,
+        text,
+        WS_CHILD | WS_VISIBLE | style,
+        x,
+        y,
+        width,
+        height,
+        main,
+        identity,
+        instance,
+        None,
     )
 
 
 main = user32.CreateWindowExW(
-    0, "YukiTestHost", "Yuki test host", WS_OVERLAPPEDWINDOW, 200, 200, 520, 420, None, None,
-    instance, None,
+    0,
+    "YukiTestHost",
+    "Yuki test host",
+    WS_OVERLAPPEDWINDOW,
+    200,
+    200,
+    520,
+    420,
+    None,
+    None,
+    instance,
+    None,
 )
 button = child("BUTTON", "Press me", 0, 10, 10, 160, 32, 1)
 edit = child("EDIT", "", WS_BORDER | ES_AUTOHSCROLL, 180, 14, 300, 24, 2)
@@ -175,8 +195,18 @@ pad = child("YukiTestPad", "", 0, 10, 345, 480, 30, 4)
 user32.ShowWindow(main, SW_SHOWNOACTIVATE)
 # A topmost window over the host's upper half: screen capture would show it, PrintWindow not.
 cover = user32.CreateWindowExW(
-    WS_EX_TOPMOST | WS_EX_NOACTIVATE, "YukiTestHost", "Yuki test cover", WS_POPUP | WS_BORDER,
-    150, 180, 420, 120, None, None, instance, None,
+    WS_EX_TOPMOST | WS_EX_NOACTIVATE,
+    "YukiTestHost",
+    "Yuki test cover",
+    WS_POPUP | WS_BORDER,
+    150,
+    180,
+    420,
+    120,
+    None,
+    None,
+    instance,
+    None,
 )
 user32.ShowWindow(cover, SW_SHOWNOACTIVATE)
 user32.SetTimer(None, 0, 200, poll)

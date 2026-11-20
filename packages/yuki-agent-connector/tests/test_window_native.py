@@ -102,9 +102,7 @@ async def test_macos_window_in_the_background(tmp_path: Path) -> None:
         if not (screen and accessibility):
             # W5: without both grants a window is refused by name, never a stale picture.
             refused = await call("screenshot", window="1")
-            expected = (
-                "screen_permission_required" if not screen else "input_permission_required"
-            )
+            expected = "screen_permission_required" if not screen else "input_permission_required"
             assert refused["error"] == expected, refused
             return
         if not NATIVE:
@@ -159,6 +157,7 @@ async def _macos_host_session(
         assert (shot["width"], shot["height"]) == frame(window, **LIMITS)
         assert shot["window"] == str(a) and "display" not in shot
         assert not target.collides()
+
         # Content coordinates are AppKit's (bottom-up); the window image is top-down.
         def content(x: float, y: float) -> dict[str, int]:
             return image_point(window, x, window.height - y)
@@ -184,9 +183,14 @@ async def _macos_host_session(
             return str(attribute(fields[0], "AXValue") or "")
 
         until(lambda: field(a) == "abc")
-        await call("type", window=str(b), text="xyz", **image_point(
-            backend.window(str(b)).window, 290, backend.window(str(b)).window.height - 286
-        ))
+        await call(
+            "type",
+            window=str(b),
+            text="xyz",
+            **image_point(
+                backend.window(str(b)).window, 290, backend.window(str(b)).window.height - 286
+            ),
+        )
         until(lambda: field(b) == "xyz")
         await call("key", window=str(a), text="backspace", **content(290, 286))
         until(lambda: field(a) == "ab")
@@ -201,8 +205,13 @@ async def _macos_host_session(
         await call("right_click", window=str(a), **content(110, 50))
         await call("double_click", window=str(a), **content(120, 50))
         await call("scroll", window=str(a), dy=3, **content(130, 50))
-        await call("drag", window=str(a), **content(140, 50), x2=content(200, 60)["x"],
-                   y2=content(200, 60)["y"])
+        await call(
+            "drag",
+            window=str(a),
+            **content(140, 50),
+            x2=content(200, 60)["x"],
+            y2=content(200, 60)["y"],
+        )
         await call("move", window=str(a), **content(150, 50))
         await asyncio.sleep(0.5)
         pad = [e for e in host_events(log) if e.get("x") is not None]

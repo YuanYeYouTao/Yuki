@@ -185,12 +185,12 @@ async def test_manager_restart_publication_unknown_is_never_failed_or_replayed(
 
 
 async def test_lost_publication_ack_keeps_background_intent_unknown_without_resending(
-    manual_library, tmp_path
+    manual_library, socket_dir
 ):
     case = manual_library
     asset = await case.first_library.select("happy", platform="qq")
     intent = await case.first.intents.select(case.intent.id, asset.model_dump(mode="json"))
-    socket = tmp_path / "publication.sock"
+    socket = socket_dir / "publication.sock"
     requests = []
     handlers = set()
 
