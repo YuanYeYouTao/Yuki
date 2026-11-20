@@ -1285,6 +1285,9 @@ async def settled(bridge):
     ACKs after settling it; settled means every receipt sent so far is ACKed.
     """
     async with asyncio.timeout(5):
+        # Background work (e.g. a release settlement) registers and writes commands of
+        # its own; finish it first so the snapshot below counts them.
+        await bridge.service.drain()
         # A written command may not have reached the peer yet; give it a bounded moment
         # to arrive (commands written to a closed socket never do).
         async with bridge.database.read_session() as reader:

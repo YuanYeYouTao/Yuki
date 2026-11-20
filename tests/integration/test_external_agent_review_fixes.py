@@ -406,9 +406,15 @@ async def test_parent_initiated_end_does_not_wake_the_parent(bridge):
         await computer.close()
 
 
-async def _unowned(computer, native_request_id):
+async def _unowned(computer, native_request_id, event=None):
     import asyncio
 
+    if event is not None:
+        # The same fact again (its ACK was lost): one original event ID.
+        await computer.socket.send(json.dumps(event))
+        async with asyncio.timeout(5):
+            assert await computer.acknowledged.get() == event["event_id"]
+        return event
     computer.sequence += 1
     event = {
         "type": "event",
@@ -431,19 +437,18 @@ async def _unowned(computer, native_request_id):
     await computer.socket.send(json.dumps(event))
     async with asyncio.timeout(5):
         assert await computer.acknowledged.get() == event["event_id"]
+    return event
 
 
-# 6: an unowned wait after release reaches nobody, and nothing can deny it any more.
-async def test_unowned_wait_reaches_the_last_owner_and_is_deny_only(bridge):
+# 6: an unowned wait no release explains (a turn the CLI started by itself, owned by
+# nobody) reaches the record that last held the session, and only deny answers it.
+async def test_unowned_wait_without_release_reaches_the_parent_deny_only(bridge):
     computer = await NativeComputer(bridge).start()
     try:
         instance, session_id = await directory(bridge)
         async with accepted_work(bridge) as control:
-            identity, _operation = await _delegate(bridge, control, instance, session_id)
-            released = await control.tool_outcome(
-                "manage_task", {"action": "release", "id": identity}, "release-then-unowned"
-            )
-            assert released.ok, released
+            identity, operation = await _delegate(bridge, control, instance, session_id)
+            await computer.event(operation.id, "completed", {"status": "completed", "text": "a"})
             await settled(bridge)
             await _unowned(computer, "late-bash")
             cards = [

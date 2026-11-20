@@ -16,8 +16,10 @@ hours. Failure cases written before the implementation (taskbook
   listed after the parent denied it;
 - W7: an observation's waits (handled at the native terminal) block the parent;
 - W8: an answer does not list the record's other unanswered requests, lists the one
-  just answered while its receipt is in flight, or counts an answer whose receipt is
-  unknown or failed (which must leave the request pending and answerable again);
+  just answered while its receipt is in flight, counts an answer whose receipt is
+  unknown or failed (which must leave the request pending and answerable again), or
+  keeps listing a request whose answer came back ``request_resolved`` (the callback
+  is gone, so nothing can answer it and ``wait`` would be refused forever);
 - W9: ``get_tasks(id, cursor)`` cannot page a delegation's timeline
   (``invalid_work_progress_cursor``);
 - W10: with the real connector, two ``can_use_tool`` in one assistant message are not
@@ -324,13 +326,14 @@ async def test_w8_each_answer_lists_the_remaining_requests(bridge):
 
 
 # W8: unknown or failed receipts are not answers; the request can be answered again.
+# ``request_resolved`` says the callback is gone: that request has ended.
 async def test_w8_unknown_or_failed_answers_leave_the_request_pending(bridge):
     computer = await _computer(bridge).start()
     try:
         instance, session_id = await directory(bridge)
         async with accepted_work(bridge) as control:
-            identity, _, (first, second) = await _requests(
-                bridge, computer, control, instance, session_id
+            identity, _, (first, second, third) = await _requests(
+                bridge, computer, control, instance, session_id, count=3
             )
             await _answer(
                 bridge,
@@ -348,12 +351,22 @@ async def test_w8_unknown_or_failed_answers_leave_the_request_pending(bridge):
                 identity,
                 second,
                 "failed-2",
+                {"error": {"code": "owner_disconnected", "message": "native"}, "pending": False},
+            )
+            await _answer(
+                bridge,
+                computer,
+                control,
+                identity,
+                third,
+                "gone-3",
                 {"error": {"code": "request_resolved", "message": "gone"}, "pending": False},
             )
             refused = await control.tool_outcome("wait", {"for": [{"run": identity}]}, "wait-k")
             assert not refused.ok and refused.error_code == "run_waiting_for_you"
             assert f"permission_id={first}（" in refused.public_message
             assert f"permission_id={second}（" in refused.public_message
+            assert f"permission_id={third}（" not in refused.public_message
             again = await _answer(bridge, computer, control, identity, first, "retry-1")
             assert _ids(again.data["remaining"]) == [second]
     finally:
