@@ -9,6 +9,7 @@ Failure cases written before the change:
 - H2: a new Codex thread is started with a literal ``~`` cwd;
 - H3: a new ACP session is created with a literal ``~`` cwd;
 - H4: an absolute cwd is changed.
+Paths are compared as paths: on Windows ``~/work`` expands with a mixed separator.
 """
 
 from __future__ import annotations
@@ -43,7 +44,7 @@ async def test_claude_opens_in_the_expanded_home_directory(
             {"id": "home", "action": "prompt", "arguments": {"prompt": "go", "cwd": cwd}}
         )
         await claude.until(events, lambda kind, value: value["operation_id"] == "home")
-        assert str(configurations[0].cwd) == str(home / "work")
+        assert Path(configurations[0].cwd) == home / "work"
     finally:
         await driver.stop()
 
@@ -66,7 +67,7 @@ async def test_codex_starts_a_new_thread_in_the_expanded_home_directory(
                 }
             )
             started = next(c for c in owner.calls if c.get("method") == "thread/start")
-            assert started["params"]["cwd"] == str(home / "work")
+            assert Path(started["params"]["cwd"]) == home / "work"
         finally:
             await driver.stop()
 
@@ -79,6 +80,6 @@ async def test_acp_creates_a_session_in_the_expanded_home_directory(
     try:
         await driver.execute(acp.prompt("home", {"during": []}, cwd="~/work"))
         [session] = driver.sessions.values()
-        assert session.cwd == str(home / "work")
+        assert Path(session.cwd) == home / "work"
     finally:
         await driver.stop()
