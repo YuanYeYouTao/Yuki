@@ -3,6 +3,9 @@
 The scope only ever narrows what a native agent may do without asking. A native
 request is decided inside the scope only when every fact needed for that decision
 is present; anything else is reported to the owner, never silently allowed.
+
+A full scope (a filesystem root, network and every command) narrows nothing: the
+native agent runs in its own full-access mode (0.9.2, 2026-11-20 task book).
 """
 
 from __future__ import annotations
@@ -31,6 +34,15 @@ class Scope:
             tuple(_absolute(str(path), cwd) for path in paths),
             value.get("network") is True,
             tuple(str(prefix).strip() for prefix in value.get("commands") or [] if prefix),
+        )
+
+    @property
+    def full(self) -> bool:
+        """Every path, network and every command: nothing left to narrow."""
+        return (
+            self.network
+            and "*" in self.commands
+            and any(path.parent == path for path in self.write_paths)
         )
 
     def writes(self, path: str, cwd: str) -> bool:

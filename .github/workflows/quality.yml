@@ -210,6 +210,7 @@ jobs:
             test-results/delegation-parallel-requests/
           test "$(ls test-results/claude-connector-cross-version/ | wc -l)" -eq 3
           test -f test-results/codex-connector-delegation/run.json
+          test -f test-results/claude-connector-full-access/run.json
           test -f test-results/claude-release-pending-request/result.json
           test -f test-results/delegation-parallel-requests/result.json
       - uses: actions/upload-artifact@v4
@@ -219,6 +220,7 @@ jobs:
           path: |
             test-results/claude-connector-cross-version/
             test-results/codex-connector-delegation/
+            test-results/claude-connector-full-access/
             test-results/claude-release-pending-request/
             test-results/delegation-parallel-requests/
           retention-days: 7

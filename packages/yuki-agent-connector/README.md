@@ -1,13 +1,13 @@
 # Yuki Agent Connector
 
-Connector **0.9.1 / wire protocol 5** connects an existing computer to Yuki through
+Connector **0.9.2 / wire protocol 5** connects an existing computer to Yuki through
 one outbound WSS connection. It provides native Codex, Claude SDK and ACP
 connections, and optional local Shell/file capabilities. It does not
 install the Bot, create another business task system or mirror native histories.
 
 Desktop includes this locked Python runtime for the Connector. No user Python
 installation is required. Independent CLI installations use Python 3.12:
-`uv tool install path/to/yuki_agent_connector-0.9.1-py3-none-any.whl`.
+`uv tool install path/to/yuki_agent_connector-0.9.2-py3-none-any.whl`.
 
 ## Installation and ownership
 
@@ -215,7 +215,14 @@ not resumed (`session_live_elsewhere`) unless explicitly forked. A scope
 (`write_paths`, `network`, command prefixes) only narrows: Claude routes side
 effects through the connector with a `permissions.ask` override, Codex narrows
 and later restores the thread settings, ACP switches to an asking mode; anything
-outside the scope is reported. Codex thread settings apply to the thread's next
+outside the scope is reported. A full scope (`write_paths` containing `/`,
+`network: true`, `commands: ["*"]`, 0.9.2) narrows nothing: Claude opens in
+permission mode `auto` with only SendMessage forced to ask, Codex gets
+`dangerFullAccess` + approvals `never` (restored after Yuki's turn like any
+scope), ACP keeps the agent's own mode; whatever the agent still asks is
+approved except questions and cross-session messages. A Claude process opened
+in auto mode accepts only full-scope inputs (`scope_conflict` otherwise).
+Codex thread settings apply to the thread's next
 turns: a turn that starts before Yuki's queued input (for example the user's own)
 also runs with the narrowed settings until Yuki's turn ends or the item is
 cancelled; the receipt says so (`scope_race`) and carries the settings to restore

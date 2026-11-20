@@ -421,8 +421,8 @@ class ACPDriver:
     def _decide(session: Session, tool_call: Any, options: list[Any], scope: Scope) -> str | None:
         """The agent-offered one-time allow option, only when the scope covers the call."""
         allow = next((item.option_id for item in options if item.kind == "allow_once"), None)
-        if allow is None:
-            return None
+        if allow is None or scope.full:
+            return allow
         call = dump(tool_call)
         kind, raw = call.get("kind"), call.get("rawInput") or {}
         cwd = str(raw.get("cwd") or session.cwd)
@@ -805,7 +805,10 @@ class ACPDriver:
                 raise DriverError("conflict", "Original ACP session has an active prompt")
             scope = Scope.parse(arguments.get("scope"), session.cwd)
             if scope is not None:
-                await self._set_scope_mode(session, scope)
+                if not scope.full:
+                    # ACP has no standard full-access mode: a full scope keeps the
+                    # agent's own mode and approves whatever it still asks.
+                    await self._set_scope_mode(session, scope)
                 self.scopes[command["id"]] = scope
             await self._end_followup(session)
             session.owner_operation = command["id"]

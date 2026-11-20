@@ -73,7 +73,13 @@ async def test_two_parallel_requests_are_answered_one_by_one(bridge, tmp_path, m
             parent = control.current["id"]
             started = await control.tool_outcome(
                 "start_subtask",
-                {"goal": "run both checks", "executor": {"agent": instance["id"]}},
+                {
+                    "goal": "run both checks",
+                    "executor": {"agent": instance["id"]},
+                    # A narrow scope: both Bash calls are outside it, so each is a card
+                    # (an omitted scope is full access and asks the parent nothing).
+                    "scope": {"write_paths": [str(tmp_path)]},
+                },
                 "claude-start",
             )
             assert started.ok, started

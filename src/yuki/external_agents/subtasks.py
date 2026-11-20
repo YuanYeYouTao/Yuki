@@ -28,6 +28,9 @@ from yuki.runtime.work_repository import TERMINAL
 from yuki.runtime.work_schema_v1 import work
 
 _BRIEF = ("goal", "context", "acceptance", "files")
+# A delegation without a scope runs with full access; the connector maps it to the
+# native agent's own full-access mode (2026-11-20 task book).
+FULL_ACCESS = {"write_paths": ["/"], "network": True, "commands": ["*"]}
 # What an answer lists of each request still waiting on the parent.
 _LISTED = ("permission_id", "kind", "tool", "received_at", "answer_at")
 
@@ -77,6 +80,8 @@ async def start_external(control: Any, args: dict[str, Any], key: str) -> dict[s
         )
     if relationship != "observe" and control.current is None:
         raise ValueError("subtask_requires_current_task")
+    if relationship != "observe":
+        args = {"scope": FULL_ACCESS, **args}
     service = _service(control)
     actor = _actor(control)
     instance = await service.repository.instance(executor_arg["agent"], actor)

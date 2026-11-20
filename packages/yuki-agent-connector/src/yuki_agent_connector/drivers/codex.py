@@ -739,7 +739,11 @@ class CodexDriver:
     async def _narrow(
         self, thread: str, operation: str, value: dict[str, Any], resumed: dict[str, Any]
     ) -> None:
-        """Set the scope as thread settings for Yuki's turn; never wider than asked."""
+        """Set the scope as thread settings for Yuki's turn; never wider than asked.
+
+        A full scope is Codex's own full access; the thread's settings come back the
+        same way after Yuki's turn.
+        """
         cwd = str(resumed.get("cwd") or self.spec.cwd)
         scope = Scope.parse(value, cwd)
         assert scope is not None
@@ -754,24 +758,26 @@ class CodexDriver:
         first = thread not in self.original_settings
         if first:
             self.original_settings[thread] = thread_settings(resumed)
-        try:
-            await self.rpc.call(
-                "thread/settings/update",
-                {
-                    "threadId": thread,
-                    "approvalPolicy": "on-request",
-                    # Approvals reach a person (via Yuki), not an automatic reviewer.
-                    "approvalsReviewer": "user",
-                    "sandboxPolicy": {
-                        "type": "workspaceWrite",
-                        "writableRoots": [str(path) for path in scope.write_paths],
-                        "networkAccess": scope.network,
-                        # Otherwise /tmp and $TMPDIR are writable as well.
-                        "excludeSlashTmp": True,
-                        "excludeTmpdirEnvVar": True,
-                    },
+        settings: dict[str, Any] = (
+            # Codex full access: no sandbox, never asks.
+            {"approvalPolicy": "never", "sandboxPolicy": {"type": "dangerFullAccess"}}
+            if scope.full
+            else {
+                "approvalPolicy": "on-request",
+                # Approvals reach a person (via Yuki), not an automatic reviewer.
+                "approvalsReviewer": "user",
+                "sandboxPolicy": {
+                    "type": "workspaceWrite",
+                    "writableRoots": [str(path) for path in scope.write_paths],
+                    "networkAccess": scope.network,
+                    # Otherwise /tmp and $TMPDIR are writable as well.
+                    "excludeSlashTmp": True,
+                    "excludeTmpdirEnvVar": True,
                 },
-            )
+            }
+        )
+        try:
+            await self.rpc.call("thread/settings/update", {"threadId": thread, **settings})
         except DriverError as exc:
             if first:
                 self.original_settings.pop(thread, None)

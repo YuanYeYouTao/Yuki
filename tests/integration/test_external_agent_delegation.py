@@ -1,5 +1,6 @@
 """Phase-2 failure cases for the one subtask tool set (F3/F5 on records, F7, F8, F10,
-F14, F15, F18, F19, F20, observe records and release).
+F14, F15, F18, F19, F20, observe records and release), and the full-access default of
+the 2026-11-20 task book (B1-B5: a delegation that omits scope runs with full access).
 
 Real TLS device WebSocket, real SQLite Work rows, the real Work control tools; the
 native peer is the bridge suite's explicit protocol double (no model is called).
@@ -25,6 +26,8 @@ from yuki.runtime.subagent_schema import children
 from yuki.runtime.work_repository import WorkRepository
 from yuki.runtime.work_schema_v1 import inputs, work
 from yuki.runtime.work_wait import WorkWaitRepository
+
+FULL = {"write_paths": ["/"], "network": True, "commands": ["*"]}
 
 
 async def _start(control, key="call-start", **extra):
@@ -164,14 +167,14 @@ async def test_question_wakes_the_parent_with_a_card_and_completion_settles_the_
             ]
             assert (await _row(bridge, identity))["state"] == "waiting_external"
             assert view.data["card"]["pending"] == []
-            # The approval never widened the fixed scope of the record.
+            # The approval never changed the fixed scope of the record.
             async with bridge.database.read_session() as reader:
                 executor = json.loads(
                     await reader.scalar(
                         select(children.c.executor_json).where(children.c.work_id == identity)
                     )
                 )
-            assert "scope" not in executor
+            assert executor["scope"] == FULL
             await computer.event(operation.id, "completed", {"status": "completed", "text": "Done"})
             record = await _row(bridge, identity)
             assert record["state"] == "completed"
@@ -242,7 +245,9 @@ async def test_f7_second_delegation_never_takes_an_owned_session(bridge):
 
 
 async def test_f8_scoped_delegation_never_runs_on_a_connector_without_scope(bridge):
-    computer = await NativeComputer(bridge).start()
+    unscoped = NativeComputer(bridge)
+    unscoped.capabilities = [item for item in unscoped.capabilities if item != "scope"]
+    computer = await unscoped.start()
     try:
         instance, session_id = await directory(bridge)
         async with accepted_work(bridge) as control:
@@ -253,6 +258,11 @@ async def test_f8_scoped_delegation_never_runs_on_a_connector_without_scope(brid
                 scope={"write_paths": ["/tmp/fixture"], "network": False, "commands": ["pytest"]},
             )
             assert not outcome.ok and outcome.error_code == "connector_outdated"
+            # B4: the full-access default is a scope too; never run without it.
+            omitted = await _start(
+                control, "call-omitted", executor={"agent": instance}, session=session_id
+            )
+            assert not omitted.ok and omitted.error_code == "connector_outdated"
             await settled(bridge)
             assert not any(item["action"] == "prompt" for item in computer.commands)
             async with bridge.database.read_session() as reader:
@@ -263,11 +273,9 @@ async def test_f8_scoped_delegation_never_runs_on_a_connector_without_scope(brid
                         .where(children.c.executor_json.is_not(None))
                     )
                 )
-            assert states == ["failed"]
+            assert states == ["failed", "failed"]
         await computer.close()
-        scoped = NativeComputer(bridge)
-        scoped.capabilities = [*scoped.capabilities, "scope"]
-        computer = await scoped.start()
+        computer = await NativeComputer(bridge).start()
         async with accepted_work(bridge) as control:
             outcome = await _start(
                 control,
@@ -396,6 +404,8 @@ async def test_observation_never_inputs_answers_or_controls_and_tells_the_user(b
             assert record["parent_work_id"] is None and record["state"] == "waiting_external"
             [watch] = [item for item in computer.commands if item["action"] == "watch"]
             assert watch["arguments"]["observation"] == "observe"
+            # B3: an observation never carries a scope.
+            assert "scope" not in watch["arguments"]
             [operation] = await _operations(bridge, identity)
             await computer.event(
                 operation.id, "permission", {"native_request_id": "terminal-1", "tool": "Bash"}
@@ -647,16 +657,32 @@ async def test_release_of_an_idle_delegation_reaches_the_device(bridge):
 # Review B2: every dispatch of a scoped delegation carries its fixed scope (§4.4),
 # including text added later and a resume on the same session.
 async def test_follow_up_input_and_resume_carry_the_delegation_scope(bridge):
-    scope = {"write_paths": ["/tmp/fixture"], "network": False, "commands": ["pytest"]}
-    scoped = NativeComputer(bridge)
-    scoped.capabilities = [*scoped.capabilities, "scope"]
-    computer = await scoped.start()
+    await _follow_ups_carry(
+        bridge, {"write_paths": ["/tmp/fixture"], "network": False, "commands": ["pytest"]}
+    )
+
+
+# B1/B2/B5: a delegation that omits scope gets full access (not the model's choice),
+# stores it and sends it with every later input; an explicit scope is kept as given.
+async def test_delegation_without_scope_runs_with_full_access(bridge):
+    await _follow_ups_carry(bridge, None)
+
+
+async def _follow_ups_carry(bridge, given):
+    scope = FULL if given is None else given
+    computer = await NativeComputer(bridge).start()
     try:
         instance, session_id = await directory(bridge)
         async with accepted_work(bridge) as control:
-            identity, operation = await _delegate(
-                bridge, control, instance, session_id, scope=scope
-            )
+            extra = {} if given is None else {"scope": given}
+            identity, operation = await _delegate(bridge, control, instance, session_id, **extra)
+            async with bridge.database.read_session() as reader:
+                executor = json.loads(
+                    await reader.scalar(
+                        select(children.c.executor_json).where(children.c.work_id == identity)
+                    )
+                )
+            assert executor["scope"] == scope
             added = await control.tool_outcome(
                 "message_task", {"id": identity, "text": "also lint"}, "scoped-queue"
             )
