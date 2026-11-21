@@ -29,6 +29,7 @@ from sqlalchemy.orm import aliased
 from yuki.config import Settings
 from yuki.identity.db_models import CanonicalPersonModel
 from yuki.memory.resident import (
+    MAX_RESIDENT_SET,
     ResidentMemory,
     ResidentOwner,
     ResidentSet,
@@ -43,8 +44,6 @@ from yuki.persistence.models import MemoryFactModel, MemoryResidentSetModel
 from yuki.services.concurrency import ConcurrencyManager
 
 logger = logging.getLogger(__name__)
-
-RESIDENT_SET_LIMIT = 10
 
 _INSTRUCTION = """\
 你在为一个主人（一个人物或一个群）维护"常驻记忆核心集"：每轮对话都会原样放在眼前的
@@ -72,7 +71,7 @@ class ResidentSelectionOutput(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     selected: tuple[str, ...] = Field(
-        max_length=RESIDENT_SET_LIMIT,
+        max_length=MAX_RESIDENT_SET,
         description="Ordered kept_N / new_N aliases for the core set.",
     )
 
