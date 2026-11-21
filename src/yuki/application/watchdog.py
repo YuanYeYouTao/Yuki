@@ -36,7 +36,12 @@ from yuki.automation.repository import failing_automations
 from yuki.external_agents.delegation import watch_records
 from yuki.identity.db_models import CanonicalPersonModel
 from yuki.runtime.proactive_schema import proactive_turns, watchdog_issues
-from yuki.runtime.protocol_store import GC_GRACE_SECONDS, stalled_unowned_object, usage_bytes
+from yuki.runtime.protocol_store import (
+    GC_GRACE_SECONDS,
+    failed_holders,
+    stalled_unowned_object,
+    usage_bytes,
+)
 from yuki.runtime.work_repository import suspended_works
 from yuki.services.proactive_turns import (
     MAX_ATTEMPTS,
@@ -57,6 +62,12 @@ SOURCE_KIND = "watchdog"
 CAPACITY_REASONS = frozenset({"work_protocol_storage_capacity", "work_journal_capacity"})
 #: How many IDs one issue lists; the count is always exact.
 _LISTED_IDS = 20
+#: How many failed protocol holders a storage issue lists; the total is always exact.
+_LISTED_HOLDERS = 5
+_RECLAIM_NOTE = (
+    "exclusive_bytes 与 failed_only_bytes 是观察时的可回收估算或上界，受共享引用、"
+    "GC 宽限期和之后的新引用影响，不保证实际回收量"
+)
 #: While turned off (interval 0), how often the hot setting is re-read.
 _OFF_RECHECK_SECONDS = 60.0
 
@@ -427,10 +438,15 @@ class Watchdog:
     async def _check_works(
         self, now: float, snapshot: RuntimeConfigSnapshot, observation: Observation
     ) -> None:
+        cap = snapshot.work_storage.total_max_bytes
         async with self.database.read_session() as reader:
             suspended = await suspended_works(reader)
             used = await usage_bytes(reader)
-        capacity = [row for row in suspended if row["reason"] in CAPACITY_REASONS]
+            capacity = [row for row in suspended if row["reason"] in CAPACITY_REASONS]
+            near = used >= cap * snapshot.watchdog.protocol_storage_warn_ratio or bool(capacity)
+            # Only a storage issue names the failed Works still holding bytes; giving
+            # one up stays the owner's decision in an ordinary turn.
+            held = await failed_holders(reader, _LISTED_HOLDERS) if near else None
         for row in suspended:
             if row["reason"] not in CAPACITY_REASONS:
                 observation.present[f"work_suspended:{row['id']}"] = {
@@ -439,20 +455,39 @@ class Watchdog:
                     "parent_work_id": row["parent_work_id"],
                     "suspended_at": _iso(row["updated"]),
                 }
-        cap = snapshot.work_storage.total_max_bytes
+        if held is None:
+            return
         storage = {
             "usage_bytes": used,
             "cap_bytes": cap,
             "suspended_count": len(capacity),
             "suspended_work_ids": [row["id"] for row in capacity[-_LISTED_IDS:]],
+            "failed_holders": [
+                {
+                    "work_id": row["work_id"],
+                    "parent_work_id": row["parent_work_id"],
+                    "revision": row["revision"],
+                    "origin": _code(row["origin"]),
+                    "owner": _code(row["owner"]),
+                    "conversation_id": row["conversation_id"],
+                    "reason": _code(row["reason"]),
+                    "failed_at": _iso(row["updated"]),
+                    "model_requests": row["model_requests"],
+                    "held_bytes": row["held_bytes"],
+                    "exclusive_bytes": row["exclusive_bytes"],
+                }
+                for row in held["holders"]
+            ],
+            "failed_holders_total": held["total"],
+            "failed_only_bytes": held["failed_only_bytes"],
+            "reclaim_note": _RECLAIM_NOTE,
         }
         # Two levels, two keys: near-cap stays open while at cap, so reaching the cap
         # is told again (an escalation) and falling back from it is not.
-        if used >= cap * snapshot.watchdog.protocol_storage_warn_ratio or capacity:
-            observation.present["protocol_storage_near_cap"] = {
-                **storage,
-                "warn_ratio": snapshot.watchdog.protocol_storage_warn_ratio,
-            }
+        observation.present["protocol_storage_near_cap"] = {
+            **storage,
+            "warn_ratio": snapshot.watchdog.protocol_storage_warn_ratio,
+        }
         if used >= cap or capacity:
             observation.present["protocol_storage_capacity"] = storage
 

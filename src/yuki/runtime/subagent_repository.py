@@ -492,6 +492,7 @@ class SubagentRepository:
         ask: bool = False,
         reply_to: str | None = None,
         to_parent: bool = False,
+        revision: int | None = None,
     ) -> dict[str, Any]:
         if text is not None and not text.strip():
             raise ValueError("invalid_subagent_message")
@@ -539,6 +540,8 @@ class SubagentRepository:
                 or target["generation"] != lease.generation
             ):
                 raise ValueError("subagent_not_owned")
+            if revision is not None and target["revision"] != revision:
+                raise ValueError("version_conflict")
             if not to_parent and target["state"] == "cancelled":
                 raise ValueError("subagent_message_target_terminal")
             waiting_parent = ask and to_parent and target["state"] not in TERMINAL
@@ -607,10 +610,14 @@ class SubagentRepository:
         *,
         key: str,
         instruction: str | None = None,
+        revision: int | None = None,
     ) -> None:
-        """Queue this retained child without changing any ancestor's lifecycle."""
+        """Queue this retained child without changing any ancestor's lifecycle.
+
+        A child moved on since the caller read it at ``revision`` is a version_conflict.
+        """
         if instruction:
-            await self.message(lease, parent_id, identity, key, instruction)
+            await self.message(lease, parent_id, identity, key, instruction, revision=revision)
             return
         async with self.database.immediate_session() as session:
             await self.repository._assert_lease(session, lease)
@@ -627,6 +634,8 @@ class SubagentRepository:
             )
             if row["archived_at"] is not None:
                 raise ValueError("subagent_archived")
+            if revision is not None and row["revision"] != revision:
+                raise ValueError("version_conflict")
             if row["state"] == "cancelled":
                 raise ValueError("subagent_not_resumable")
             if (
@@ -654,7 +663,10 @@ class SubagentRepository:
                     )
                 )
 
-    async def cancel(self, lease: WorkLease, parent_id: str, identity: str) -> None:
+    async def cancel(
+        self, lease: WorkLease, parent_id: str, identity: str, *, revision: int | None = None
+    ) -> None:
+        """Cancel at ``revision`` when the caller read one, else at the current one."""
         from yuki.runtime.work_management import manage_work
 
         await self.related(parent_id, identity)
@@ -663,7 +675,8 @@ class SubagentRepository:
             row = (
                 (await session.execute(select(work).where(work.c.id == identity))).mappings().one()
             )
-            await manage_work(session, identity, row["revision"], "cancel")
+            expected = row["revision"] if revision is None else revision
+            await manage_work(session, identity, expected, "cancel")
 
     async def finish(self, lease: WorkLease) -> None:
         """Notify the parent with the committed result of this exact revision."""

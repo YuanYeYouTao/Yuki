@@ -120,7 +120,8 @@ row_id 且已随人物归并移动时，merge 配置谱系在 reader 解码，wr
 observe 只调用运行中插件的观察合同。通知只允许原领域规则证明可重试的发送前失败；
 已发送、未知、处理中或预算耗尽均不重发，已有尝试次数保持不变。
 
-Work 取消与续跑调用 `manage_work`，沿原 revision、执行身份、来源与效果回执处理。
+Work 取消与续跑调用 `manage_work`，沿原 revision、执行身份、来源与效果回执处理。failed 的 Work 可以取消（放弃恢复），
+详情的 `actions.cancel` 为 true；completed/cancelled 仍返回 `precondition_failed`。
 模型保存调用共享 `ConfigFileService` 原子保存并热应用，返回 `applied` 或实际的待重启状态。
 安装向导与模型保存共用搜索默认配置生成：官方 DeepSeek Chat / Responses 使用同密钥的独立
 Messages 搜索连接，Gemini 使用自身独立桥，Anthropic Messages 使用原生搜索。已有的显式

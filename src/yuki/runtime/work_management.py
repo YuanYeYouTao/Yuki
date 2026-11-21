@@ -162,6 +162,8 @@ async def manage_work(
 
     Cancellation prevents new effects. Effects already admitted before this
     transaction keep their original receipts, including late and unknown results.
+    Cancelling a failed Work gives up its recovery; its terminal descendants keep
+    their own states.
     Resume queues only the same retained execution; schedulers revalidate its
     original source and authority before any model or effect.
     """
@@ -197,7 +199,8 @@ async def manage_work(
         raise WorkManagementError("not_found")
     if row["revision"] != revision:
         raise WorkManagementError("version_conflict")
-    if row["state"] in TERMINAL and not (action == "resume" and row["state"] == "failed"):
+    # A failed Work can still be resumed, or cancelled to give up its recovery.
+    if row["state"] in TERMINAL and not (action != "fail" and row["state"] == "failed"):
         raise WorkManagementError("precondition_failed")
     now = time.time()
     if action in {"cancel", "fail"}:
@@ -374,6 +377,6 @@ async def management_view(session: AsyncSession, identity: str) -> dict[str, Any
         "actions": {
             "resume": resumable and blocker is None,
             "resume_blocked_by": blocker,
-            "cancel": not terminal,
+            "cancel": resumable,
         },
     }
