@@ -1,8 +1,8 @@
 # Yuki 超管放弃跨会话代与群 SELF 的 failed Work 任务书（2026-11-21）
 
-状态：**第一阶段：调研与待决，未实施**。对应 [#673](https://github.com/YuanYeYouTao/Yuki/issues/673)，接续 [#666](https://github.com/YuanYeYouTao/Yuki/issues/666) / [#671](https://github.com/YuanYeYouTao/Yuki/pull/671)。分支 `docs/673-superadmin-abandon-failed-work-spec`，基线 origin/main `db7b5c26`（#671 已合入；迁移 head `0161`）。本书只写方案和待决问题，不改代码；§2 的问题由所有者逐项决定后才进入第二阶段。
+状态：**第二阶段：决定已定（§2，用户 2026-11-21 批准 Q1 选 A、Q2–Q11 按推荐），已在原分支实施，PR #674 保持 draft 待用户核验，未合并**。对应 [#673](https://github.com/YuanYeYouTao/Yuki/issues/673)，接续 [#666](https://github.com/YuanYeYouTao/Yuki/issues/666) / [#671](https://github.com/YuanYeYouTao/Yuki/pull/671)。分支 `docs/673-superadmin-abandon-failed-work-spec`，基线 origin/main `db7b5c26`（#671 已合入；迁移 head `0161`）。第一阶段调研见 §1，实施记录见 §8。
 
-标记约定沿用 #666 任务书：【实证】是源码或现有测试查到的事实；【issue】是 #673 给出的生产数据，本阶段**没有**到生产只读复核；【假设】是尚未查实、需在实施或 E2E 中确认的判断；【推荐】是本书对待决问题的建议，不是决定。路径省略 `src/yuki/`，行号以 `db7b5c26` 为准。
+标记约定沿用 #666 任务书：【实证】是源码或现有测试查到的事实；【issue】是 #673 给出的生产数据，本阶段**没有**到生产只读复核；【假设】是尚未查实、需在实施或 E2E 中确认的判断；【决定】是用户已批准的取舍（第一阶段的【推荐】已全部按 §2 批准）。路径省略 `src/yuki/`，行号以 `db7b5c26` 为准。
 
 ## 1. 现状与证据
 
@@ -40,11 +40,13 @@
 
 1. **缺口只在 Yuki 的 `manage_task`**。服务端已有两条超管入口（E6 聊天命令、E7 设备 token 调管理 API）能放弃任意 failed Work，包括群 SELF 与旧代 Work；它们核验的事实正是“原 Person + 当前超管资格 + 执行处核验”。所有者这次没用到它们，是因为 #666 定下的流程是“看门狗报告 → Yuki 用自己的话告诉所有者 → 所有者同意后由 Yuki 用 Work 管理工具取消”，而 `manage_task` 的 `local` 范围（E2/E3）把旧代与 SELF Work 挡在外面。
 2. 所以有两种解法：**零代码**（所有者用 `/ai admin work cancel`，或 Desktop 改用 admin API）与**放宽 `manage_task`**（给当前超管一条只做 failed → cancelled 的路径）。见 §2 Q1。
-3. 【假设】生产上 E6 聊天命令可用（`/ai` 命令前缀和私聊接入正常）。本阶段没有去生产验证，实施前若选零代码方案，需要所有者在私聊里对一个 failed Work 实测一次。
+3. 【假设，未核实】生产上 E6 聊天命令可用（`/ai` 命令前缀和私聊接入正常）。本阶段没有去生产验证，实施前若选零代码方案，需要所有者在私聊里对一个 failed Work 实测一次。
 
-## 2. 待用户决定的问题与推荐
+## 2. 决定【决定，用户 2026-11-21：Q1 选 A，Q2–Q11 按推荐】
 
-| # | 问题 | 选项 | 推荐与理由 |
+下表保留第一阶段的选项与理由；“推荐”一列现为已批准的决定。
+
+| # | 问题 | 选项 | 决定与理由 |
 |---|---|---|---|
 | Q1 | **入口放在哪里** | A. 只放宽 Yuki 的 `manage_task`；B. 零代码：所有者用现有 `/ai admin work cancel`，看门狗/Yuki 只提示命令；C. Desktop 任务页改用 admin API；D. A + C | **推荐 A**。#666 已决定“由 Yuki 在普通轮里用现有 Work 管理工具取消”，B 让这个流程在一部分 Work 上失效；A 只放宽 `manage_task` 的一个条件，不新增入口或状态。C 不需要服务端改动（E7、E9），但属于 Desktop 仓库，本书只列出（§3.5），可另开 Desktop issue。B 作为实施前的临时办法保留，不写成正式流程 |
 | Q2 | **授权按哪些事实核验**（核心） | 见 §3.1 的 A1–A7 | **推荐 §3.1 全部七条**：当前超管资格按原 actor Person 在写入的 writer 里核验；当前轮必须是这个人自己的直接输入；只在 Main 激活；目标在同一 writer 里仍是 failed；revision 走现有 CAS。不看目标的创建者、会话、generation 或 SELF/人物来源 |
@@ -58,7 +60,7 @@
 | Q10 | **生产 operator TOML 缺 `control.work.read`** | A. 由所有者按当前 `deployment_setup` 重新生成或手工补上，不进本 PR；B. 不处理 | **推荐 A**。这是部署配置，不是代码；本任务不改生产配置 |
 | Q11 | **工具声明** | A. 不改 `manage_task`/`get_tasks` 的说明与 schema；B. 在说明里加超管能力 | **推荐 A**。合同要求角色不改固定工具声明（E11）；权限在执行处核验。失败时用工具结果文案说明原因（§3.3） |
 
-## 3. 方案（按 §2 推荐写；所有者改选时据此调整）
+## 3. 方案（按 §2 决定）
 
 ### 3.1 授权核验的事实（Q2）
 
@@ -96,7 +98,7 @@ writer（一个 BEGIN IMMEDIATE）:
 - 后续效果都沿 E12：非终态后代被取消（failed 下通常没有，#671 C8）；终态后代不改写（#671 Q5）；有父 Work 时写 `worker-result`，不复活挂起或终态父 Work；触发器同事务释放 refs，GC 在 24 h 宽限期后回收。
 - 委派记录（Q6）也走这里，不经 `manage_external`，不调用原生服务。
 - 成功后清除 `observed_revisions[target]`（同 #671）；失败保留，未重新读取就重试仍会冲突。
-- 回执：超管自己的 Work 的工具效果回执记录结果 `{id, status: cancelled}`；回执来源是超管的原触发事件和原 Person。目标 Work 不记录超管 ID（Q7）。
+- 记录：结果 `{id, status: cancelled}` 作为该次工具调用的结果，留在超管本轮的请求轨迹里（与原触发事件同轮）；目标 Work 只写原因码，不记录超管 ID（Q7）。【实证，实施时更正】只由 Work 控制工具组成的批次不触发私聊 Host 接纳（`main-agent-runtime.md:555-556`），所以这类轮次没有超管自己的 Work 效果回执；本次不为此新增回执机制。
 - 不需要迁移，不需要新索引（目标按主键读取）。
 
 ### 3.3 错误与文案（工具结果，不是工具声明）
@@ -109,7 +111,7 @@ writer（一个 BEGIN IMMEDIATE）:
 | 动作不是 cancel（resume/fail/release） | 沿现有错误，不进入超管路径 |
 | revision 不符 | 沿现有 `version_conflict` 文案 |
 
-这两个新错误码是否保留，留给实施时的删除检查：如果所有者认为现有 `work_not_found_or_not_authorized` 足够，就不加。
+实施保留这两个错误码：它们只对**已核实为当前超管**的人返回，说明拒绝的真实原因（来源/会话不对，或目标状态不对）；非超管一律得到今天的原错误，不泄露这条路径。
 
 ### 3.4 文档（与代码同一 PR）
 
@@ -143,34 +145,51 @@ writer（一个 BEGIN IMMEDIATE）:
 | F14 | 现有本人/本会话路径的行为或错误码变化（回归：#671 S2/S6/S7 场景照旧通过） |
 | F15 | 工具声明或 manifest 变化 |
 | F16 | 旧激活（`/new` 或会话换代之后）仍能写入 |
-| F17 | 回执里没有超管的原触发事件与原 Person，或把超管 ID 写进目标 Work |
+| F17 | 把超管 ID 或模型的 `text` 写进目标 Work（并入 F13 验证） |
 
 ## 5. E2E 与可复现产物
 
-文件：`tests/integration/test_superuser_abandon_failed_work_e2e.py`。文件头先写 §4 的失败清单，再写场景，先在 `db7b5c26` 上确认 S1–S3 失败。产物 `test-results/superuser-abandon-failed-work-e2e.json`，只含标签和关系事实，末尾 `results_sha256`，连续两次运行逐字节相同（做法同 #671 §5）。
+文件：`tests/integration/test_superuser_abandon_failed_work_e2e.py`（文件头先写失败清单与 A1–A7，再写场景）。复用看门狗 E2E 的 Scene：真实 SQLite、真实 `ProtocolStore` 文件与 GC、真实看门狗、真实 Main 私聊与群轮次、真实定时发生（`AutomationWorker`）；只有 provider 是 fake。SELF Work 按 `accept_in_session` 写入的来源形状直接插入（没有驱动一次真实 initiative run 失败），群换代用真实 `bump_canonical_generation`。产物 `test-results/superuser-abandon-failed-work-e2e.json`，只含标签和关系事实，末尾 `results_sha256`。
 
-- **S1 生产形态**（复用看门狗 E2E 的 Scene：真实 Main、Social、主动私聊、`PresenceRouter`；fake provider；偏移时钟）：群会话里由真实 SELF 唤醒制造一个 failed Work 并挂上协议对象（其中一个对象与一个活 Work 共享）→ 对该群 `/new` 使其进入旧代 → 存储越过告警线，看门狗 facts 列出它 → 所有者在私聊普通轮：`get_tasks(id)` + `manage_task(cancel, id)` → cancelled，`reason=superuser_abandoned`，refs 释放，`failure_json` 保留，归属与来源不变，超管自己的回执带原触发事件 → 宽限期内 GC 不删，宽限期外删除，usage 下降量等于取消时的独占字节，共享对象保留。（F1、F12、F13、F17）
-- **S2 旧代本人 Work**：所有者私聊里的 failed Work，`/new` 后放弃成功。（F2）
-- **S3 授权矩阵**（同一 Scene）：非超管；资格在 reader 后撤销（在 writer 前注入撤销，确定性复现）；合并到超管 root 的原 Person；账号转移后的新持有人；停用 Person；群轮次（含另一成员插话被接纳）；定时任务轮次；插件轮次；工作者激活。期望结果按 §3.3，且无任何写入。（F3–F6）
-- **S4 状态与版本**：目标为各非 failed 状态；读到 failed 后被别处 resume；读到后被推进但仍 failed；冲突后不重读重试；`asyncio.gather` 并发 resume 与放弃；超管路径的 resume/fail/release；`/new` 后的旧激活。（F7–F10、F16）
-- **S5 工作者与委派记录**：别人会话里的 failed 工作者（父 Work 挂起）与 failed 委派记录（替身原生服务）。（F11）
-- **S6 回归**：#671 的 `test_failed_work_abandon_storage_e2e.py` 全部通过；manifest 与工具声明哈希不变。（F14、F15）
+- **S1 生产形态**：群 SELF failed Work 挂上协议对象 → 群 `/ai new` 进入旧代 → 新一代里一个活 Work 共享其中一个对象 → 存储越过告警线，看门狗 facts 列出它（`origin=self_initiative`）→ 所有者私聊：`get_tasks(id)` + `manage_task(cancel, id, text=…)` → cancelled，revision +1，`reason=superuser_abandoned`（`text` 未写入），来源、会话、generation、父、goal 不变，`failure_json` 保留，refs 释放、活 Work 保留共享 ref → 宽限期内 GC 不删，宽限期外删除，usage 下降量等于无主字节，共享对象保留。（F1、F12、F13、F17）
+- **S2 本人旧代、工作者、别人的委派记录**：本人私聊旧代 failed Work；挂起的 SELF 父 Work 下的 failed 工作者（父收到 1 条 `worker-result`，仍是 suspended）；另一人旧代群里的 failed 委派记录（替身原生服务零调用、无新操作，`actor_person_id` 不变）。三者都是 cancelled + `superuser_abandoned` + refs 清空。（F2、F11）
+- **S3 拒绝且不写入**：非超管（Work 得 `work_not_found_or_not_authorized`，记录得 `subtask_not_owned`）；超管群轮次（`superuser_abandon_private_only`）；超管路径的 resume/fail/release（原错误）；资格在 reader 核验后、writer 前被撤销（`work_not_found_or_not_authorized`）；超管本人在私聊里的定时发生（`superuser_abandon_private_only`）。每一步前后比较目标的 state/revision/reason/source/会话/generation/refs 与全部 mailbox 行数。（F3、F4、F5、F8、F16）
+- **S4 只放 failed、只认读到的 revision**：queued/running/suspended/completed/cancelled 五种目标都得 `superuser_abandon_failed_only` 且不写入；读到 failed 后被别处 resume（queued）→ `superuser_abandon_failed_only`，保持 queued；读到 failed 后被推进但仍 failed → `version_conflict`，不重读重试仍 `version_conflict`；未读过、resume 落在 reader 与 writer 之间 → `superuser_abandon_failed_only`；重新读取后放弃成功。（F7、F9）
 
-其余验证按风险挑选：`ruff`、`mypy`；`tests/unit/test_closed_work_protocol_refs.py`、`test_subagent_lifecycle.py`、`test_admin_control_review.py`、`test_client_works.py`。不跑无关全量。
+**计划中但没有做成 E2E 的项**（如实列出）：合并到超管 root 的原 Person、账号转移后的新持有人、停用 Person（由 `person_is_superuser` 的现有语义保证，本 E2E 只覆盖“撤销”）；插件轮次与工作者激活（由 A2 的 `origin` 与 A4 的 `lease.work_id` 判断，未单独驱动）；`asyncio.gather` 的真并发（改用 reader/writer 之间与两次调用之间的确定性插入）；`/new` 之后旧激活的写入（沿用现有 `_assert_lease`，未单独构造）；群里他人插话被接纳（群轮次已整体拒绝）。工具声明与 manifest 未改动（`work_control_tools()` 不在 diff 中）。
+
+可复现验收：
+
+```bash
+uv run pytest tests/integration/test_superuser_abandon_failed_work_e2e.py -q
+cp test-results/superuser-abandon-failed-work-e2e.json /tmp/run1.json
+uv run pytest tests/integration/test_superuser_abandon_failed_work_e2e.py -q
+cmp /tmp/run1.json test-results/superuser-abandon-failed-work-e2e.json
+```
 
 ## 6. 不做
 
 超管路径的 resume、fail、release 或取消运行中 Work；改目标 Work 的归属或来源；普通人物跨代放弃自己的 Work（Q9，另开）；短 ID（Q8）；工具声明变更；迁移、回填或批量清理生产数据；修改生产 operator TOML（Q10，所有者自行处理）；Desktop 实现（§3.5）；看门狗获得管理权；合并、部署、重启。
 
-## 7. 实施顺序（第二阶段，所有者决定后）
+## 7. 实施顺序
 
-1. 按决定更新本书 §2–§5；写 E2E 文件头失败清单和全部场景，确认在旧代码上 S1–S5 失败。
-2. 改 `runtime/work_control.py` 的 `_manage`：local 路径找不到目标且动作为 cancel 时进入 §3.2；不改 `manage_work`、触发器、GC、schema。
-3. 改 §3.4 文档。
-4. 跑 §5；产物跑两遍逐字节比对；普通提交（不加署名）；推送分支；开 PR 等 CI。不合并、不部署。
+1. 更新本书为决定已定；写 E2E 文件头失败清单与全部场景，在旧代码上确认失败。
+2. 改 `runtime/work_control.py`：`_manage` 在 local 路径找不到目标（普通 Work 的 `work_not_found_or_not_authorized`、委派记录的 `subtask_not_owned`）且动作为 cancel 时进入 `_superuser_abandon`；不改 `manage_work`、触发器、GC、schema、工具声明。
+3. 改现行文档与 CI 产物检查。
+4. 跑验证；产物两遍逐字节比对；普通提交（不加署名）；推送原分支，PR #674 保持 draft 等 CI 与用户核验。不合并、不部署。
 
-## 8. 本阶段记录
+## 8. 记录
+
+### 8.1 第一阶段（调研）
 
 - 只读调研：#673、#666、#671 正文；#671 任务书；`work_queries`、`work_control`、`work_management`、`work_repository`（SELF 接纳）、`external_agents/subtasks`、`client_api/works`、`admin/*`、`services/command*`、`identity/authority`、`automation/service`；现行文档 `development-contract`、`main-agent-runtime`、`admin-api`、`client-api`、`control-plane-foundation`；Yuki-Desktop `92cc412` 的 admin 客户端与任务页。
 - 未访问生产；§1.1 与 E8 的生产事实来自 #673。
-- 本 PR 只新增本任务书，不改代码、测试、配置或其他文档。
+
+### 8.2 第二阶段（实施）
+
+- **改动范围**：`runtime/work_control.py`（`_superuser_abandon` 与两处进入点、两条错误文案）；新增 E2E `tests/integration/test_superuser_abandon_failed_work_e2e.py`；CI `quality.yml` integration 套件增加产物存在检查；文档 `main-agent-runtime.md`、`development-contract.md`、`persistent-subagents.md`、`README.md`（本书索引；顺带把 #671 索引状态改为已合并）。无迁移，无工具声明变更，无配置变更，无 Desktop 改动。
+- **先红后绿**：E2E 先于实现写好。在 `db7b5c26` 的 `work_control.py` 上 4 个场景都在预期位置失败：S1 放弃群 SELF 旧代 Work 返回 `work_not_found_or_not_authorized`（F1）；S2 本人旧代 Work 同样被拒（F2）；S3 超管群轮次得到原错误而不是 `superuser_abandon_private_only`；S4 非 failed 目标得到原错误而不是 `superuser_abandon_failed_only`。S3 中非超管一段在旧代码上已通过（原错误不变，符合预期）。实现后 4 passed。中途修正过三处测试搭建（不是实现问题）：`/ai new` 会取消旧代的非终态 Work，所以共享对象的活 Work 与挂起的父 Work 改放到新一代；场景设置默认关闭自动化，定时场景用 `automation_enabled=True` 的设置副本；revision 断言改为与读到的值比较。
+- **变异核对**（每次改完都还原，`cmp` 确认）：去掉 writer 内的超管复核 → S3 撤销一段失败；去掉 failed 判断 → S4 失败；去掉私聊/直接输入判断 → S3 群轮次失败；忽略读到的 revision → S4 读后推进一段失败；不写固定原因码 → S1、S2 失败。
+- **产物**：`test-results/superuser-abandon-failed-work-e2e.json`（目录被 gitignore，与其他 E2E 一致），连续两次运行逐字节相同，`results_sha256 = ede0da9c374361563d84404c6b16d9017cacb7a299d473913ce99b5588dd5421`。
+- **其余验证**：`ruff check .`、`ruff format --check`（改动文件）、`mypy --platform linux src` 通过；#671 E2E、看门狗 E2E 与 6 个相关单测文件 188 passed；引用 `manage_task`/`WorkControl` 的其余 96 个测试文件 1199 passed、3 skipped、1 failed。失败的是 `test_work_execution_receipt_regressions.py::test_manager_restores_dispatched_run_without_replaying_request[False-terminal_exec]`，换回基线 `work_control.py` 同样失败（#671 已记录的本机 macOS 沙箱问题），以 CI（Linux）为准。
+- **合并与上线**：未合并、未部署；以 PR 与 CI 为准，本书不提前写成已合并。

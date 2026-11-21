@@ -18,7 +18,8 @@ from sqlalchemy.dialects.sqlite import insert
 from yuki.conversation.canonical_db_models import CanonicalConversationModel
 from yuki.domain.audio import transcript_context
 from yuki.domain.messages import ChatMessage, ChatTool, ToolCall
-from yuki.identity.person_identity import same_person_condition
+from yuki.identity.authority import person_is_superuser
+from yuki.identity.person_identity import same_person_condition, same_person_id
 from yuki.persistence.database import (
     write_failure_committed,
     write_failure_phase,
@@ -92,6 +93,13 @@ _ERROR_MESSAGES = {
     "invalid_work_progress_cursor": "cursor 只能使用上次返回的 next_cursor。",
     "work_activation_obsolete": "本次执行已失效，操作未执行。",
     "version_conflict": "该任务在你查看后状态已变化，操作未执行；先用 get_tasks 重新查看再决定。",
+    "superuser_abandon_private_only": (
+        "替别人或 SELF 放弃已失败的任务，只能在你本人的私聊里由你直接要求；"
+        "也可以用 /ai admin work cancel <id>。"
+    ),
+    "superuser_abandon_failed_only": (
+        "只能放弃已失败的任务；它现在不是 failed，先用 get_tasks 查看。"
+    ),
     "release_requires_agent_subtask": "release 只用于编码 Agent 子任务或观察；其他任务用 cancel。",
     "subagent_message_target_terminal_or_missing": "该子任务已结束，不能再发消息。",
 }
@@ -1020,7 +1028,12 @@ class WorkControl:
             if executor is not None:
                 from yuki.external_agents.subtasks import authorize_record
 
-                await authorize_record(self, target)
+                try:
+                    await authorize_record(self, target)
+                except ValueError as exc:
+                    if action != "cancel":
+                        raise
+                    return await self._superuser_abandon(target, exc)
                 managed = await manage_external(
                     self,
                     action,
@@ -1069,7 +1082,10 @@ class WorkControl:
                     self.lease, self.source, target, local=True
                 )
                 if candidate is None:
-                    raise ValueError("work_not_found_or_not_authorized")
+                    denied = ValueError("work_not_found_or_not_authorized")
+                    if action != "cancel":
+                        raise denied
+                    return await self._superuser_abandon(target, denied)
                 try:
                     async with self.repository.database.immediate_session() as writer:
                         await self.repository._assert_lease(writer, self.lease)
@@ -1160,6 +1176,55 @@ class WorkControl:
             "status": self.current["state"],
             "ending": self.ending,
         }
+
+    async def _superuser_abandon(self, target: str, denied: ValueError) -> dict[str, Any]:
+        """A current superuser gives up recovery of a failed Work outside this scope.
+
+        Only failed -> cancelled, only from the superuser's own direct input in their
+        private conversation on Main. The target keeps its owner, source, conversation
+        and generation; its reason is a fixed code, never the model's text.
+        """
+        actor = self.source.get("actor_person_id")
+        async with self.repository.database.read_session() as reader:
+            if not isinstance(actor, str) or not await person_is_superuser(reader, actor):
+                raise denied
+            conversation = await reader.get(CanonicalConversationModel, self.lease.conversation_id)
+            if (
+                self.lease.work_id is not None
+                or self.source.get("principal_kind") != "person"
+                or self.source.get("origin") != "user_message"
+                or self.source.get("trigger_event_id") is None
+                or conversation is None
+                or conversation.kind != "private"
+                or conversation.person_id is None
+                or not await same_person_id(reader, conversation.person_id, actor)
+            ):
+                raise ValueError("superuser_abandon_private_only")
+        async with self.repository.database.immediate_session() as writer:
+            await self.repository._assert_lease(writer, self.lease)
+            if not await person_is_superuser(writer, actor):
+                raise denied
+            row = (
+                await writer.execute(
+                    select(work.c.state, work.c.revision).where(work.c.id == target)
+                )
+            ).first()
+            if row is None:
+                raise denied
+            if row.state != "failed":
+                raise ValueError("superuser_abandon_failed_only")
+            try:
+                _revision, state = await manage_work(
+                    writer,
+                    target,
+                    self.observed_revisions.get(target, row.revision),
+                    "cancel",
+                    reason="superuser_abandoned",
+                )
+            except WorkManagementError as exc:
+                raise ValueError(exc.code) from exc
+        self.observed_revisions.pop(target, None)
+        return {"id": target, "status": state}
 
     async def _is_subtask(self, identity: str) -> bool:
         async with self.repository.database.read_session() as reader:
