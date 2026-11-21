@@ -94,8 +94,12 @@ _ERROR_MESSAGES = {
     "work_activation_obsolete": "本次执行已失效，操作未执行。",
     "version_conflict": "该任务在你查看后状态已变化，操作未执行；先用 get_tasks 重新查看再决定。",
     "superuser_abandon_private_only": (
-        "替别人或 SELF 放弃已失败的任务，只能在你本人的私聊里由你直接要求；"
+        "替别人或 SELF 放弃已失败的任务，只能在你本人的私聊（含 Desktop、ACP）里由你直接要求；"
         "也可以用 /ai admin work cancel <id>。"
+    ),
+    "superuser_abandon_direct_only": (
+        "任务执行中不能替别人或 SELF 放弃已失败的任务；请另起一句直接说"
+        "（在本人私聊、Desktop 或 ACP 里），也可以用 /ai admin work cancel <id>。"
     ),
     "superuser_abandon_failed_only": (
         "只能放弃已失败的任务；它现在不是 failed，先用 get_tasks 查看。"
@@ -1181,17 +1185,21 @@ class WorkControl:
         """A current superuser gives up recovery of a failed Work outside this scope.
 
         Only failed -> cancelled, only from the superuser's own direct input in their
-        private conversation on Main. The target keeps its owner, source, conversation
-        and generation; its reason is a fixed code, never the model's text.
+        private conversation (QQ/platform private, Desktop App or ACP, all
+        ``user_message``) on Main outside any Work. The target keeps its owner, source,
+        conversation and generation; its reason is a fixed code, never the model's text.
         """
         actor = self.source.get("actor_person_id")
         async with self.repository.database.read_session() as reader:
             if not isinstance(actor, str) or not await person_is_superuser(reader, actor):
                 raise denied
+            # Inside a Work (its own, a worker's, or a later activation) the source
+            # is no longer this person's message: ask for a new direct one.
+            if self.current is not None or self.lease.work_id is not None:
+                raise ValueError("superuser_abandon_direct_only")
             conversation = await reader.get(CanonicalConversationModel, self.lease.conversation_id)
             if (
-                self.lease.work_id is not None
-                or self.source.get("principal_kind") != "person"
+                self.source.get("principal_kind") != "person"
                 or self.source.get("origin") != "user_message"
                 or self.source.get("trigger_event_id") is None
                 or conversation is None
@@ -1211,13 +1219,17 @@ class WorkControl:
             ).first()
             if row is None:
                 raise denied
+            # What get_tasks read is what the person agreed to give up.
+            expected = self.observed_revisions.get(target, row.revision)
+            if expected != row.revision:
+                raise ValueError("version_conflict")
             if row.state != "failed":
                 raise ValueError("superuser_abandon_failed_only")
             try:
                 _revision, state = await manage_work(
                     writer,
                     target,
-                    self.observed_revisions.get(target, row.revision),
+                    expected,
                     "cancel",
                     reason="superuser_abandoned",
                 )

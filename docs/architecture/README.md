@@ -1,6 +1,6 @@
 # 架构文档入口
 
-2026-11-21 [超管放弃跨会话代与群 SELF 的 failed Work 任务书](Yuki-超管放弃跨会话代与群SELF的failed-Work任务书-2026-11-21.md)：#673，本次范围外的 failed Work（旧会话代、群 SELF、工作者、别人的委派记录）由当前超管在本人私聊的直接输入中用 `manage_task cancel` 放弃恢复；七条授权事实在执行处核验，只开放 failed → cancelled，固定原因码 `superuser_abandoned`；工具声明不变，无迁移；已实施，PR 待核验。
+2026-11-21 [超管放弃跨会话代与群 SELF 的 failed Work 任务书](Yuki-超管放弃跨会话代与群SELF的failed-Work任务书-2026-11-21.md)：#673，本次范围外的 failed Work（旧会话代、群 SELF、工作者、别人的委派记录）由当前超管在本人私聊的直接输入中用 `manage_task cancel` 放弃恢复；七条授权事实在执行处核验（含 Desktop App 与 ACP 个人输入；Work 中调用提示另起一句直接说），只开放 failed → cancelled，固定原因码 `superuser_abandoned`；工具声明不变，无迁移；已实施，PR 待核验。
 2026-11-20 [failed Work 放弃恢复与协议存储持有者报告任务书](Yuki-failed-Work放弃恢复与协议存储持有者报告任务书-2026-11-20.md)：#666，放宽 `manage_work` 让 failed Work 可 cancel（放弃恢复），沿现有 `protocol_refs_closed_work` 触发器释放 refs、现有 GC 回收；看门狗协议存储事实附持有最多的 failed Work，只报告不取消；普通轮取消绑定 `get_tasks(id)` 读到的 revision；failed 委派记录真实写入 cancelled；无迁移；已合并（#671）。
 2026-11-20 [看门狗与主动私聊任务书](Yuki-看门狗与主动私聊任务书-2026-11-20.md)：只读事实检查周期运行、不花模型费；发现新问题时经超管的主动消息路由，由 Yuki 在一次 SELF 私聊（`proactive_private`）里只汇报、不执行管理；同一问题只说一次，清除超过无进展间隔后重现才再说，每人通知有最小间隔；迁移 0160（`proactive_turns`、`watchdog_issues`）；已实施，待合并。
 2026-11-20 [委派原生完全访问任务书](Yuki-委派原生完全访问任务书-2026-11-20.md)：方案 B，委派省略 `scope` 时由 Bot 填入完全访问；连接器 0.9.2 把完全范围映射到原生完全访问模式（Claude `auto`、Codex `dangerFullAccess`＋`never`、ACP 保留自身模式），收窄范围不变；推翻第二阶段“full access 不采纳”一行。

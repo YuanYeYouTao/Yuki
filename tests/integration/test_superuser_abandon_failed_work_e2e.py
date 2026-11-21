@@ -45,11 +45,27 @@ F13 the target's source, owner, conversation, generation or ``failure_json`` cha
 F14 the turn's own scope (local paths) changes behaviour (covered by the #671 E2E,
     ``tests/integration/test_failed_work_abandon_storage_e2e.py``, run alongside);
 F16 any refused call writes: the target's state/revision/refs or the parent mailbox
-    move.
+    move;
+F18 a call made inside a Work (the turn's own registered task, a worker or a later
+    activation) abandons, or its refusal does not ask for a new direct message;
+F19 the superuser's Desktop App or ACP session (both ``user_message`` private input) is
+    refused (task book Q5);
+F20 against the real resume entry (the superuser's chat device on
+    ``POST /admin/v1/works/{id}/resume``) and the real scheduler: after ``get_tasks`` read
+    failed at r, a resume first, or a resume and a real new failure (failed again at a
+    newer revision), still lets the abandon or its retry through instead of
+    ``version_conflict``; when both act on r at once and the abandon holds the writer,
+    the resume is not refused with ``version_conflict``; a resume between the reader
+    check and the writer is overwritten. Each conflict must leave every fact of the
+    Work (row, refs, mailbox, waits, recovery, journal, effects) unchanged.
+
+The artifact lists the scenarios whose assertions all passed (each records its facts
+last) and ``all_scenarios_passed``; CI checks that flag, not only that a file exists.
 """
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import time
@@ -61,6 +77,8 @@ from typing import Any
 import pytest
 from sqlalchemy import func, select, update
 from tests.conftest import MemorySender
+from tests.integration.test_acp_runtime_integration import acp_runtime as acp_runtime
+from tests.integration.test_acp_runtime_integration import new_session, selected
 from tests.integration.test_failed_work_abandon_storage_e2e import (
     DAY,
     KB,
@@ -81,17 +99,22 @@ from tests.integration.test_watchdog_capacity_incident_e2e import (
 )
 from tests.support.automation_runtime_helpers import FakeClock
 from tests.support.canonical_identity import ensure_person
+from tests.unit.test_admin_api import command as admin_command
+from tests.unit.test_client_api import bearer
 
 import yuki.runtime.work_control as work_control_module
+from yuki.admin_api.http import attach_admin_api
 from yuki.automation.repository import AutomationRepository
 from yuki.automation.service import AutomationService
 from yuki.automation.tools import AutomationToolService
 from yuki.automation.worker import AutomationWorker
+from yuki.client_api.db_models import ClientDeviceModel
 from yuki.conversation.canonical_db_models import CanonicalConversationModel
 from yuki.conversation.hydrate import bump_canonical_generation
 from yuki.domain.conversations import ScopeType
 from yuki.domain.messages import InboundMessage, SenderIdentity
 from yuki.identity.db_models import CanonicalPersonModel
+from yuki.llm.base import LLMInvalidRequestError
 from yuki.persistence.models import AutomationRunModel, ChatEventModel
 from yuki.runtime.proactive_schema import watchdog_issues
 from yuki.runtime.protocol_schema import objects, refs
@@ -99,7 +122,8 @@ from yuki.runtime.protocol_store import ProtocolStore
 from yuki.runtime.subagent_schema import children
 from yuki.runtime.work_activation import current_work_control
 from yuki.runtime.work_recovery_schema import recovery
-from yuki.runtime.work_schema_v1 import inputs, work
+from yuki.runtime.work_schema_v1 import effects, inputs, journal, work
+from yuki.runtime.work_wait_schema import waits
 from yuki.time.service import TimeContextService
 
 ARTIFACT = (
@@ -109,6 +133,16 @@ RESULTS: dict[str, Any] = {}
 DENIED = "work_not_found_or_not_authorized"
 PRIVATE_ONLY = "superuser_abandon_private_only"
 FAILED_ONLY = "superuser_abandon_failed_only"
+DIRECT_ONLY = "superuser_abandon_direct_only"
+# Each scenario records its facts only after all its assertions passed.
+EXPECTED = (
+    "S1_old_group_self_failed_work",
+    "S2_own_old_generation_worker_and_record",
+    "S3_refusals_write_nothing",
+    "S4_only_failed_targets",
+    "S5_desktop_app_and_acp",
+    "S6_real_resume_races",
+)
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -122,6 +156,8 @@ def _write_artifact():
                 "suite": "tests/integration/test_superuser_abandon_failed_work_e2e.py",
                 "suite_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
                 "scenarios": RESULTS,
+                "scenarios_passed": sorted(RESULTS),
+                "all_scenarios_passed": sorted(RESULTS) == sorted(EXPECTED),
                 "results_sha256": hashlib.sha256(scenarios.encode()).hexdigest(),
             },
             ensure_ascii=False,
@@ -679,8 +715,8 @@ async def test_refusals_write_nothing(database, tmp_path, monkeypatch):
 # --------------------------------------------------------------------------- S4
 
 
-async def test_only_failed_and_the_read_revision(database, tmp_path, monkeypatch):
-    """Targets that are not failed; resumes in between; a stale read; its retry."""
+async def test_only_failed_targets(database, tmp_path):
+    """Targets that are not failed are refused before any write."""
     scene = await Scene(database, tmp_path).build()
     group = scene.env.context.conversation_id
     states = ("queued", "running", "suspended", "completed", "cancelled")
@@ -695,103 +731,389 @@ async def test_only_failed_and_the_read_revision(database, tmp_path, monkeypatch
     for state, result in zip(states, results, strict=True):
         assert _code(result, FAILED_ONLY), (state, result)
     assert await _facts(database, *targets.values()) == baseline
-    outcomes: dict[str, Any] = {"not_failed": {state: FAILED_ONLY for state in states}}
+    RESULTS["S4_only_failed_targets"] = {state: FAILED_ONLY for state in states}
 
-    # F7: read failed at r; the owner of the Work resumes it (r+1, queued) before the call.
-    resumed = await _self_work(scene)
-    resumed_revision = (await _row(database, resumed))["revision"]
 
-    async def resume_elsewhere(index: int) -> None:
-        if index == 1:
-            async with database.immediate_session() as writer:
-                await writer.execute(
-                    update(work)
-                    .where(work.c.id == resumed)
-                    .values(state="queued", revision=work.c.revision + 1, updated=time.time())
+# --------------------------------------------------------------- real deployment
+
+
+class Deployment:
+    """The full ApplicationContainer: Desktop App and ACP turns, admin HTTP, scheduler.
+
+    The superuser's own paired chat device is both the Desktop/ACP sender and the
+    real resume entry (``POST /admin/v1/works/{id}/resume`` with its chat token).
+    Failed Works come from real ACP turns whose model rejects the request.
+    """
+
+    def __init__(self, env, database) -> None:
+        self.env, self.database = env, database
+        self.app, self.http = env.app, env.http
+        attach_admin_api(env.http_app, lambda: env.app.admin_api)
+        self.token = env.device["token"]
+        self.answers: list[Any] = []
+        self.hook = None
+        self.failing: set[str] = set()
+        self._in_hook = False
+        self.hook_errors: list[BaseException] = []
+        original = env.provider._complete
+
+        async def complete(request):
+            if self.hook is not None and not self._in_hook:
+                self._in_hook = True
+                try:
+                    await self.hook(len(self.answers))
+                except BaseException as exc:
+                    # Raised again by turn(): a hook's own assertion must fail the test.
+                    self.hook_errors.append(exc)
+                    raise
+                finally:
+                    self._in_hook = False
+            control = current_work_control.get()
+            current = control.current["id"] if control and control.current else None
+            if current in self.failing:
+                raise LLMInvalidRequestError("SECRET-FAILURE provider rejected the request")
+            return await original(request)
+
+        env.provider._complete = complete
+
+    async def setup(self) -> Deployment:
+        async with self.database.read_session() as reader:
+            self.person = await reader.scalar(
+                select(ClientDeviceModel.person_id).where(
+                    ClientDeviceModel.label == "ACP integration device"
                 )
+            )
+        await _set_superuser(self.database, self.person, True)
+        return self
 
-    read, after_resume = await _turn(
-        scene,
-        "resumed",
+    def headers(self, session: dict[str, Any] | None) -> dict[str, str]:
+        return selected(self.env, session) if session else bearer(self.token)
+
+    async def turn(
+        self,
+        key: str,
+        calls: list[tuple[str, dict[str, Any]]],
+        *,
+        session: dict[str, Any] | None = None,
+        hook=None,
+    ) -> list[Any]:
+        """One direct input of the superuser: Desktop App, or the ACP ``session``."""
+        answered: list[Any] = []
+
+        def respond(request):
+            answered.append(request)
+            index = len(answered) - 1
+            if index < len(calls):
+                name, arguments = calls[index]
+                return _call(name, arguments, f"{key}-{index}")
+            return _call("send", {"text": "好"}, f"{key}-send") if index == len(calls) else "好"
+
+        self.answers = answered
+        self.env.provider._responder = respond
+        self.hook = hook
+        request_id = str(uuid.uuid4())
+        try:
+            submitted = await self.http.post(
+                "/client/v1/messages",
+                headers=self.headers(session),
+                json={"request_id": request_id, "text": f"{key} 处理一下"},
+            )
+            assert submitted.status_code == 200, submitted.text
+            async with asyncio.timeout(15):
+                while True:
+                    response = await self.http.get(
+                        f"/client/v1/requests/{request_id}", headers=self.headers(session)
+                    )
+                    assert response.status_code == 200, response.text
+                    if response.json()["data"].get("turn", {}).get("state") == "ended":
+                        break
+                    await asyncio.sleep(0.01)
+        finally:
+            self.hook = None
+        if self.hook_errors:
+            raise self.hook_errors.pop()
+        results: dict[str, Any] = {}
+        for request in answered:
+            results.update(_tool_results(request))
+        return [results.get(f"{key}-{index}") for index in range(len(calls))]
+
+    async def failed_in_acp(self, session: dict[str, Any], goal: str) -> str:
+        """A real ACP turn registers the task, then the model rejects the request."""
+        async with self.database.read_session() as reader:
+            before = set(await reader.scalars(select(work.c.id)))
+        holder: list[str] = []
+
+        async def fail_after_start(index: int) -> None:
+            if index == 1:
+                async with self.database.read_session() as reader:
+                    created = set(await reader.scalars(select(work.c.id))) - before
+                assert len(created) == 1, created
+                holder.extend(created)
+                self.failing |= created
+
+        await self.turn(
+            f"fail-{goal}",
+            [("manage_task", {"action": "start", "goal": f"SECRET-GOAL {goal}"})],
+            session=session,
+            hook=fail_after_start,
+        )
+        (identity,) = holder
+        self.failing.discard(identity)
+        row = await _row(self.database, identity)
+        assert row["state"] == "failed", row
+        return identity
+
+    async def resume(self, identity: str, revision: int):
+        """The real resume entry: the superuser's chat device on the admin API."""
+        return await self.http.post(
+            f"/admin/v1/works/{identity}/resume",
+            headers=bearer(self.token),
+            json=admin_command(revision),
+        )
+
+
+async def _snapshot(database, identity: str) -> dict[str, Any]:
+    """Every fact one Work owns: row, refs, mailbox, waits, recovery, journal, effects."""
+    async with database.read_session() as reader:
+
+        async def rows(table, column):
+            result = await reader.execute(select(table).where(column == identity))
+            return sorted(json.dumps(dict(row), default=str) for row in result.mappings())
+
+        return {
+            "work": await rows(work, work.c.id),
+            "refs": await rows(refs, refs.c.work_id),
+            "inputs": await rows(inputs, inputs.c.work_id),
+            "waits": await rows(waits, waits.c.work_id),
+            "recovery": await rows(recovery, recovery.c.work_id),
+            "journal": await rows(journal, journal.c.work_id),
+            "effects": await rows(effects, effects.c.work_id),
+        }
+
+
+# --------------------------------------------------------------------------- S5
+
+
+async def test_desktop_app_and_acp_direct_input_abandon(acp_runtime, database):
+    """Q5: the Desktop App and an ACP session are the superuser's direct input too."""
+    deployment = await Deployment(acp_runtime, database).setup()
+    origin_session = await new_session(acp_runtime)
+    from_desktop = await deployment.failed_in_acp(origin_session, "A")
+    from_acp = await deployment.failed_in_acp(origin_session, "B")
+    in_work = await deployment.failed_in_acp(origin_session, "C")
+    pad = await _attach(database, from_desktop, "pad-desktop", 32 * KB)
+
+    # The Desktop App conversation is a different private conversation: the
+    # origin session's Work is outside its own scope.
+    read, abandoned = await deployment.turn(
+        "desktop",
+        [
+            ("get_tasks", {"id": from_desktop}),
+            ("manage_task", {"action": "cancel", "id": from_desktop, "text": "SECRET-TEXT"}),
+        ],
+    )
+    assert read["status"] == "failed", read
+    assert abandoned == {"id": from_desktop, "status": "cancelled"}, abandoned
+    row = await _row(database, from_desktop)
+    assert row["reason"] == "superuser_abandoned" and await _refs(database, from_desktop) == set()
+    assert pad not in await _refs(database, from_desktop)
+
+    # Another ACP session of the same person.
+    other_session = await new_session(acp_runtime)
+    (from_other,) = await deployment.turn(
+        "acp", [("manage_task", {"action": "cancel", "id": from_acp})], session=other_session
+    )
+    assert from_other == {"id": from_acp, "status": "cancelled"}, from_other
+    assert (await _row(database, from_acp))["reason"] == "superuser_abandoned"
+
+    # Inside a Work (this turn first registers its own task) the call is refused and
+    # tells Yuki to have the person say it directly in a new message.
+    before = await _snapshot(database, in_work)
+    started, refused = await deployment.turn(
+        "inside-work",
+        [
+            ("manage_task", {"action": "start", "goal": "先登记一个任务"}),
+            ("manage_task", {"action": "cancel", "id": in_work}),
+        ],
+    )
+    assert "error" not in json.dumps(started), started
+    assert _code(refused, DIRECT_ONLY), refused
+    assert "另起一句直接说" in refused["message"], refused
+    assert await _snapshot(database, in_work) == before
+
+    RESULTS["S5_desktop_app_and_acp"] = {
+        "desktop_app_turn": {"read": read["status"], "result": abandoned["status"]},
+        "other_acp_session_turn": from_other["status"],
+        "reason": "superuser_abandoned",
+        "inside_a_work": {"error": DIRECT_ONLY, "says_new_direct_message": True},
+        "refused_call_wrote_nothing": True,
+    }
+
+
+# --------------------------------------------------------------------------- S6
+
+
+async def test_real_resume_entry_races_the_abandon(acp_runtime, database, monkeypatch):
+    """The real resume entry and the abandon act on the same read revision."""
+    deployment = await Deployment(acp_runtime, database).setup()
+    session = await new_session(acp_runtime)
+    outcomes: dict[str, Any] = {}
+
+    # R1: Desktop reads it failed at r; the resume entry wins first; the abandon and a
+    # retry without a new read are version_conflict and write nothing.
+    resumed = await deployment.failed_in_acp(session, "R1")
+    read_revision = (await _row(database, resumed))["revision"]
+    after_resume: dict[str, Any] = {}
+
+    async def resume_first(index: int) -> None:
+        if index == 1:
+            response = await deployment.resume(resumed, read_revision)
+            assert response.status_code == 200, response.text
+            after_resume.update(await _snapshot(database, resumed))
+
+    read, conflict, retry = await deployment.turn(
+        "r1",
         [
             ("get_tasks", {"id": resumed}),
             ("manage_task", {"action": "cancel", "id": resumed}),
+            ("manage_task", {"action": "cancel", "id": resumed}),
         ],
-        hook=resume_elsewhere,
+        hook=resume_first,
     )
-    assert read["status"] == "failed"
-    assert _code(after_resume, FAILED_ONLY), after_resume
+    assert read["status"] == "failed" and read.get("id", resumed) == resumed
+    assert _code(conflict, "version_conflict"), conflict
+    assert _code(retry, "version_conflict"), retry
+    assert await _snapshot(database, resumed) == after_resume
     row = await _row(database, resumed)
-    assert row["state"] == "queued" and row["revision"] == resumed_revision + 1
-    outcomes["resumed_after_read"] = {"result": FAILED_ONLY, "state": row["state"]}
+    assert row["state"] == "queued" and row["revision"] == read_revision + 1
+    outcomes["R1_resume_wins"] = {
+        "resume": "queued",
+        "abandon": "version_conflict",
+        "retry_without_read": "version_conflict",
+        "abandon_wrote_nothing": True,
+    }
 
-    # F9: read failed at r; another entry moves it to r+1 while it stays failed.
-    moved = await _self_work(scene)
-    moved_revision = (await _row(database, moved))["revision"]
+    # R2: resumed by the real entry and run by the real scheduler, it fails again:
+    # still failed, at a newer revision. The read revision still guards.
+    refailed = await deployment.failed_in_acp(session, "R2")
+    read_revision = (await _row(database, refailed))["revision"]
+    after_refail: dict[str, Any] = {}
+    checked: list[int] = []
 
-    async def move_elsewhere(index: int) -> None:
+    async def resume_and_fail_again(index: int) -> None:
         if index == 1:
-            async with database.immediate_session() as writer:
-                await writer.execute(
-                    update(work).where(work.c.id == moved).values(revision=work.c.revision + 1)
-                )
+            response = await deployment.resume(refailed, read_revision)
+            assert response.status_code == 200, response.text
+            # The scheduler takes one Work of a conversation at a time, R1's queued
+            # one first; both meet the failing model.
+            deployment.failing |= {refailed, resumed}
+            for _ in range(5):
+                if (await _row(database, refailed))["state"] != "queued":
+                    break
+                for owner in await deployment.app.work_scheduler.dispatch_once():
+                    await owner
+            deployment.failing -= {refailed, resumed}
+            row = await _row(database, refailed)
+            assert row["state"] == "failed" and row["revision"] > read_revision + 1, row
+            after_refail.update(await _snapshot(database, refailed))
+        if index == 3:
+            # Both conflicting calls are behind us: nothing they touched moved.
+            assert await _snapshot(database, refailed) == after_refail
+            checked.append(index)
 
-    read, conflict, retry = await _turn(
-        scene,
-        "moved",
+    read, conflict, retry, reread, abandoned = await deployment.turn(
+        "r2",
         [
-            ("get_tasks", {"id": moved}),
-            ("manage_task", {"action": "cancel", "id": moved}),
-            ("manage_task", {"action": "cancel", "id": moved}),
+            ("get_tasks", {"id": refailed}),
+            ("manage_task", {"action": "cancel", "id": refailed}),
+            ("manage_task", {"action": "cancel", "id": refailed}),
+            ("get_tasks", {"id": refailed}),
+            ("manage_task", {"action": "cancel", "id": refailed}),
         ],
-        hook=move_elsewhere,
+        hook=resume_and_fail_again,
     )
     assert read["status"] == "failed"
     assert _code(conflict, "version_conflict"), conflict
     assert _code(retry, "version_conflict"), retry
-    row = await _row(database, moved)
-    assert row["state"] == "failed" and row["revision"] == moved_revision + 1
-    outcomes["moved_after_read"] = {"call": "version_conflict", "retry": "version_conflict"}
+    assert reread["status"] == "failed"
+    assert abandoned == {"id": refailed, "status": "cancelled"}, abandoned
+    assert checked == [3]
+    outcomes["R2_resumed_and_failed_again"] = {
+        "abandon_on_old_read": "version_conflict",
+        "retry_without_read": "version_conflict",
+        "conflicts_wrote_nothing": True,
+        "after_new_read": abandoned["status"],
+    }
 
-    # F7: no prior read; a resume lands between the reader check and the writer.
-    raced = await _self_work(scene)
-    raced_revision = (await _row(database, raced))["revision"]
-    real = getattr(work_control_module, "person_is_superuser", None)
-    landed: list[int] = []
+    # R3: both act on the same read revision at once; the abandon holds the writer
+    # when the resume entry arrives, so the resume is the loser.
+    raced = await deployment.failed_in_acp(session, "R3")
+    read_revision = (await _row(database, raced))["revision"]
+    real_manage = work_control_module.manage_work
+    real_writer = database.immediate_session
+    queued = asyncio.Event()
+    loser: list[asyncio.Task] = []
 
-    async def resume_after_read(session, person_id):
-        allowed = await real(session, person_id)
-        if not landed:
-            landed.append(1)
-            async with database.immediate_session() as writer:
-                await writer.execute(
-                    update(work)
-                    .where(work.c.id == raced)
-                    .values(state="queued", revision=work.c.revision + 1, updated=time.time())
-                )
-        return allowed
+    def writer(*args, **kwargs):
+        if loser and asyncio.current_task() is loser[0]:
+            queued.set()
+        return real_writer(*args, **kwargs)
 
-    monkeypatch.setattr(
-        work_control_module, "person_is_superuser", resume_after_read, raising=False
-    )
-    (between,) = await _turn(scene, "between", [("manage_task", {"action": "cancel", "id": raced})])
-    monkeypatch.setattr(work_control_module, "person_is_superuser", real, raising=False)
-    assert landed == [1]
-    assert _code(between, FAILED_ONLY), between
-    row = await _row(database, raced)
-    assert row["state"] == "queued" and row["revision"] == raced_revision + 1
-    outcomes["resume_between_reader_and_writer"] = {"result": FAILED_ONLY, "state": row["state"]}
+    async def manage_holding_writer(session_, identity, *args, **kwargs):
+        if identity == raced and not loser:
+            loser.append(asyncio.create_task(deployment.resume(raced, read_revision)))
+            await asyncio.wait_for(queued.wait(), 10)
+        return await real_manage(session_, identity, *args, **kwargs)
 
-    # A fresh read after the conflict lets the abandon through at the new revision.
-    read, done = await _turn(
-        scene,
-        "reread",
+    monkeypatch.setattr(database, "immediate_session", writer)
+    monkeypatch.setattr(work_control_module, "manage_work", manage_holding_writer)
+    read, abandoned = await deployment.turn(
+        "r3",
         [
-            ("get_tasks", {"id": moved}),
-            ("manage_task", {"action": "cancel", "id": moved}),
+            ("get_tasks", {"id": raced}),
+            ("manage_task", {"action": "cancel", "id": raced}),
         ],
     )
-    assert read["status"] == "failed" and done == {"id": moved, "status": "cancelled"}, done
-    outcomes["after_new_read"] = done["status"]
+    monkeypatch.setattr(work_control_module, "manage_work", real_manage)
+    monkeypatch.setattr(database, "immediate_session", real_writer)
+    assert queued.is_set() and len(loser) == 1
+    resume_response = await loser[0]
+    assert abandoned == {"id": raced, "status": "cancelled"}, abandoned
+    assert resume_response.status_code == 409, resume_response.text
+    assert "version_conflict" in resume_response.text
+    row = await _row(database, raced)
+    assert row["state"] == "cancelled" and row["revision"] == read_revision + 1
+    assert row["reason"] == "superuser_abandoned"
+    outcomes["R3_same_revision_abandon_wins"] = {
+        "abandon": "cancelled",
+        "resume_entry": {"status": 409, "problem": "version_conflict"},
+        "revision_step": 1,
+    }
 
-    RESULTS["S4_only_failed_and_read_revision"] = outcomes
+    # R4: no prior read; the resume entry lands between the reader check and the
+    # writer. The abandon meets a queued Work and writes nothing.
+    between = await deployment.failed_in_acp(session, "R4")
+    read_revision = (await _row(database, between))["revision"]
+    real_check = work_control_module.person_is_superuser
+    landed: list[Any] = []
+
+    async def resume_after_read(session_, person_id):
+        allowed = await real_check(session_, person_id)
+        if not landed:
+            landed.append(await deployment.resume(between, read_revision))
+            landed.append(await _snapshot(database, between))
+        return allowed
+
+    monkeypatch.setattr(work_control_module, "person_is_superuser", resume_after_read)
+    (refused,) = await deployment.turn("r4", [("manage_task", {"action": "cancel", "id": between})])
+    monkeypatch.setattr(work_control_module, "person_is_superuser", real_check)
+    assert landed and landed[0].status_code == 200, landed
+    assert _code(refused, FAILED_ONLY), refused
+    assert await _snapshot(database, between) == landed[1]
+    outcomes["R4_resume_between_reader_and_writer"] = {
+        "resume": "queued",
+        "abandon": FAILED_ONLY,
+        "abandon_wrote_nothing": True,
+    }
+
+    RESULTS["S6_real_resume_races"] = outcomes
