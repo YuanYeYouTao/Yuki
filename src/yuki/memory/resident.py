@@ -254,9 +254,12 @@ class ResidentMemory:
         def visible(fact: _Fact) -> bool:
             evidence = origins.get(fact.id, ())
             if owner.kind == "person":
-                # Never another person's private chat; facts without evidence are allowed.
+                # Never another person's private chat. Facts without evidence rows are
+                # allowed; an evidence row whose conversation cannot be traced counts as
+                # someone else's private chat.
                 return not any(
-                    item.conversation_kind == "private" and item.person_root != owner.person_id
+                    item.conversation_kind is None
+                    or (item.conversation_kind == "private" and item.person_root != owner.person_id)
                     for item in evidence
                 )
             # Group: at least one evidence row, each a chat event in this space.
