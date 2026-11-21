@@ -51,3 +51,32 @@ CA 文件或目录须挂载到容器内可读路径，不能直接使用仅存�
 其他图片、音频、平台文件、ASR、插件通用 HTTP 和个人客户端继续沿各自现有传输设置。
 持久工作环境仍使用独立 Squid 隔离出口，配置见[持久环境](persistent-environment.zh-CN.md)，不继承 Bot 的 `NO_PROXY`。
 代理变量可能含认证信息，勿公开 `.env`、完整环境或 `docker compose config` 输出；诊断时只记录脱敏错误类别。
+
+## 插件 HTTP 与 Clash fake-ip
+
+插件通用 HTTP 会校验解析出的地址并固定连接获准的公网 IP；它不使用 `HTTP_PROXY`、`HTTPS_PROXY` 等环境代理来绕过这一检查。如果 Bot 使用的 DNS 返回 fake-ip，插件请求可能被拒绝。不要通过放行 fake-ip 或关闭地址校验来解决。
+
+在可控制 DNS 的部署中，可将插件实际访问的域名加入 Clash/Mihomo 的 `dns.fake-ip-filter`，使其返回真实地址。例如，使用 `fake-ip-filter-mode: blacklist` 时，现场 GitHub 问题可参考：
+
+```yaml
+dns:
+  fake-ip-filter-mode: blacklist
+  fake-ip-filter:
+    - '+.github.com'
+```
+
+在某些国内网络中，仅排除 fake-ip 仍可能无法解析：国内 DNS 返回海外地址后可能触发 fallback，而直连公共 DoH（如 1.1.1.1、8.8.8.8）又可能超时。若确认遇到这种情况，可在支持 `nameserver-policy` 的 Clash/Mihomo 内核中，为插件访问域名指定经代理组访问的 DoH，例如：
+
+```yaml
+dns:
+  nameserver-policy:
+    '+.github.com':
+      - 'https://1.1.1.1/dns-query#PROXY'
+      - 'https://8.8.8.8/dns-query#PROXY'
+```
+
+将 `PROXY` 替换为实际代理组名，按插件实际访问及重定向域名调整策略；该示例是 DNS 查询走代理，不代表插件 HTTP 请求本身使用环境代理。DNS 服务器和代理组需在本部署中可用；具体语法与行为以所用内核为准。
+
+请合并到现有配置，保留已有规则，不要覆盖整份 DNS 配置；其他插件域名按实际请求和重定向目标逐一检查。不同 Clash 内核、filter 模式和 DNS 路由可能不同，先核实配置实际生效；`whitelist` 模式的匹配含义不同，不能照搬此例。
+
+验证时在 **Bot 实际运行的网络与 DNS 环境**（例如 Bot 容器）解析每个相关域名，确认结果不再是 fake-ip，并检查返回地址是否均为允许访问的公网地址；同时检查所选 DoH 经配置的代理组可达、域名策略确实命中；再执行对应插件的实际请求，确认成功，必要时检查重定向目标。解析正常不保证目标网络可达；部署仍需具备到目标的路由。排查时不要公开凭据、请求正文或完整代理配置。更多插件 HTTP 限制见[插件网络访问](../plugin-development/networking.md)。
