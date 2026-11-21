@@ -52,15 +52,16 @@ renderer with one filter removed; each removal below turns the named case red:
       G core fact ``x_g`` whose only evidence is B's private chat appears in "[本群]".
   F2  weaken "every evidence row is in this space" to "at least one": the G core fact
       ``y_g`` with one G event and one B-private event appears in "[本群]".
-  F3  remove the owner-match condition on core rows: B's fact ``z`` written directly
-      into A's row appears in A's private chat; remove the CLI owner check: the
-      ``set --person A --facts z`` call succeeds.
+  F3  remove the owner-match condition on core rows: B's fact ``z_shared`` (evidence
+      in G, which A and B share) written directly into A's row appears in A's private
+      chat (``z`` itself is also caught by the private-origin filter); remove the CLI
+      owner check: the ``set --person A --facts z`` call succeeds.
   F3b remove "no evidence from someone else's private chat" on the private sections:
       A's own facts ``a_core``/``a_explicit`` evidenced only in B's private chat appear
       in A's private chat.
-  F4  remove the owner-match condition: H's group fact ``h`` written into G's row
-      appears in G; compare evidence conversations by kind instead of by space ID:
-      the G fact ``h_g`` evidenced only in H appears in G.
+  F4  remove the owner-match condition: H's group fact ``h_in_g`` (evidence in G)
+      written into G's row appears in G; compare evidence conversations by kind
+      instead of by space ID: the G fact ``h_g`` evidenced only in H appears in G.
   F19 remove the authority condition (explicit / self_report only): the third-party
       facts ``t`` / ``t_pg`` written directly into B's row appear in B's private chat;
       remove the CLI common-condition check: ``set --person B --facts t`` succeeds.
@@ -81,6 +82,7 @@ from tests.support.memory_resident_scene import (
     capture,
     fact_marks,
     request_text,
+    resident_segment,
     run_cli,
     sections,
     tool_call,
@@ -136,7 +138,9 @@ async def test_f01_private_origin_never_reaches_group_core(scene):
     b_private = await scene.event("private:B", "B", "我其实很怕狗，别在群里说", key="b1")
     g_event = await scene.event("space:G", "A", "我们群每周五一起看电影", key="g1")
     x_b = await scene.fact("x_b", "B", "很怕狗", evidence=(b_private,))
-    x_g = await scene.fact("x_g", "G", "群里有人怕狗，组织活动避开宠物", evidence=(b_private,))
+    x_g = await scene.fact(
+        "x_g", "G", "群里有人怕狗，组织活动避开宠物", foreign_evidence=(b_private,)
+    )
     g_ok = await scene.fact("g_ok", "G", "每周五一起看电影", evidence=(g_event,))
     await scene.write_set("B", [x_b])
     await scene.raw_set("G", [x_g, g_ok])
@@ -165,7 +169,9 @@ async def test_f02_group_core_needs_every_evidence_in_this_group(scene):
     """Case 2: one G event plus one B-private event is not enough for "[本群]"."""
     g_event = await scene.event("space:G", "B", "周末一起爬山吧", key="g1")
     b_private = await scene.event("private:B", "B", "群里爬山其实是我张罗的", key="b1")
-    y_g = await scene.fact("y_g", "G", "周末爬山由群友张罗", evidence=(g_event, b_private))
+    y_g = await scene.fact(
+        "y_g", "G", "周末爬山由群友张罗", evidence=(g_event,), foreign_evidence=(b_private,)
+    )
     y_b = await scene.fact("y_b", "B", "张罗周末爬山", evidence=(g_event, b_private))
     g_ok = await scene.fact("g_ok", "G", "周末常组织爬山", evidence=(g_event,))
     await scene.raw_set("G", [y_g, g_ok])
@@ -187,7 +193,10 @@ async def test_f03_another_persons_fact_never_enters_owner_core(scene):
     """Case 3: CLI refuses B's fact in A's set; a direct row still does not render it."""
     b_private = await scene.event("private:B", "B", "我在准备考研", key="b1")
     a_private = await scene.event("private:A", "A", "我喜欢喝乌龙茶", key="a1")
+    g_event = await scene.event("space:G", "B", "我在 G 群说过我会弹琴", key="g1")
     z = await scene.fact("z", "B", "在准备考研", evidence=(b_private,))
+    # Evidence in a group A and B share: only the owner-match condition excludes it.
+    z_shared = await scene.fact("z_shared", "B", "会弹琴", evidence=(g_event,))
     a_ok = await scene.fact("a_ok", "A", "喜欢喝乌龙茶", evidence=(a_private,))
     await scene.write_set("A", [a_ok])
     before = await scene.table()
@@ -207,10 +216,10 @@ async def test_f03_another_persons_fact_never_enters_owner_core(scene):
     assert cli.returncode != 0, cli
     assert await scene.table() == before
 
-    await scene.raw_set("A", [z, a_ok], source="owner")
+    await scene.raw_set("A", [z, z_shared, a_ok], source="owner")
     turn = await scene.turn("A", "早")
 
-    assert z not in turn.fact_ids
+    assert z not in turn.fact_ids and z_shared not in turn.fact_ids
     assert sections(turn.segment)[PRIVATE_CORE] == [a_ok]
     await _assert_matches_render(scene, "A", turn)
     scene.write(
@@ -228,9 +237,9 @@ async def test_f03b_counterparts_fact_from_someone_elses_private_chat(scene):
     """§15 #18: A's own facts evidenced only in B's private chat stay out of A's chat."""
     b_private = await scene.event("private:B", "B", "A 说过他最近在换工作", key="b1")
     a_private = await scene.event("private:A", "A", "请记住我周末不处理工作", key="a1")
-    a_core = await scene.fact("a_core", "A", "最近在换工作", evidence=(b_private,))
+    a_core = await scene.fact("a_core", "A", "最近在换工作", foreign_evidence=(b_private,))
     a_explicit = await scene.fact(
-        "a_explicit", "A", "周末不想被提醒工作", evidence=(b_private,), **EXPLICIT
+        "a_explicit", "A", "周末不想被提醒工作", foreign_evidence=(b_private,), **EXPLICIT
     )
     a_ok_explicit = await scene.fact(
         "a_ok_explicit", "A", "周末不处理工作", evidence=(a_private,), **EXPLICIT
@@ -258,16 +267,18 @@ async def test_f04_other_group_facts_never_reach_this_group(scene):
     h_event = await scene.event("space:H", "C", "我们 H 群下周线下聚餐", key="h1")
     g_event = await scene.event("space:G", "A", "G 群的规矩是先发预告", key="g1")
     h = await scene.fact("h", "H", "下周线下聚餐", evidence=(h_event,))
-    h_g = await scene.fact("h_g", "G", "据说下周线下聚餐", evidence=(h_event,))
+    # H's fact evidenced in G (refused by the write path): only owner match excludes it.
+    h_in_g = await scene.fact("h_in_g", "H", "H 群的人来 G 群打过招呼", foreign_evidence=(g_event,))
+    h_g = await scene.fact("h_g", "G", "据说下周线下聚餐", foreign_evidence=(h_event,))
     w = await scene.fact("w", "B", "负责聚餐订位", evidence=(h_event,))
     g_ok = await scene.fact("g_ok", "G", "发活动前先发预告", evidence=(g_event,))
-    await scene.raw_set("G", [h, h_g, g_ok])
+    await scene.raw_set("G", [h, h_in_g, h_g, g_ok])
     await scene.raw_set("B", [w])
 
     group = await scene.turn("B", "最近有活动吗", group="G")
 
     assert sections(group.segment) == {GROUP_CORE: [g_ok]}
-    assert not {h, h_g, w} & set(group.fact_ids)
+    assert not {h, h_in_g, h_g, w} & set(group.fact_ids)
     await _assert_matches_render(scene, "G", group)
     scene.write(
         "F04",
@@ -693,7 +704,7 @@ async def test_f28_caps_and_overflow_line(scene):
 async def test_f09_forgetting_a_fact_and_a_person(scene):
     """Case 9 (no @-part, Q16 b): privacy delete one fact, then forget B entirely."""
     b1 = await scene.event("private:B", "B", "记住我对花生过敏，我也喜欢下棋", key="b1")
-    g1 = await scene.event("space:G", "B", "本群周末下棋", key="g1")
+    g1 = await scene.event("space:G", "A", "本群周末下棋", key="g1")
     allergy = await scene.fact("allergy", "B", "对花生过敏", evidence=(b1,), **EXPLICIT)
     chess = await scene.fact("chess", "B", "喜欢下棋", evidence=(b1,))
     go = await scene.fact("go", "B", "也会下围棋", evidence=(b1,))
@@ -780,41 +791,54 @@ async def test_f10_merge_renders_once_by_root(scene):
 
 # --------------------------------------------------------------------------- F17
 async def test_f17_work_keeps_its_first_current_message(database, tmp_path):
-    """Case 17: a multi-request Work and its continuation never re-render or re-pay."""
+    """Case 17: inside one Work activation the first current message never changes.
+
+    The first activation is interrupted by a retryable provider outage before its
+    third dispatch (no request bought); WorkScheduler continues the same Work.
+
+    Observed and asserted (task book §6.3 left this as an assumption for case 17):
+    a continuation is a new activation whose ``work_resume`` wakeup is composed like
+    every other wakeup (§6.5 "Work 续接唤醒: 按该轮所在会话"), so it carries the resident
+    segment rendered at that moment, once, and keeps it verbatim for the rest of that
+    activation. The original first request is never re-sent or re-paid.
+    """
     import asyncio
-    import time
 
-    from tests.support.runtime_execution import make_work_resumer
+    from tests.unit.test_history_dispatch_ownership import retry_due_now
+    from tests.unit.test_work_owner_recovery import original_scheduler
 
+    from yuki.llm.base import LLMUnavailableError
     from yuki.runtime.work_repository import WorkRepository
-    from yuki.runtime.work_scheduler import WorkScheduler
     from yuki.runtime.work_schema_v1 import work
 
     scene = await ResidentScene(database, tmp_path).build(work_enabled=True)
     ids = await _owner_private_scene(scene)
-    phase: dict = {"name": "work", "work": [], "resumed": 0}
+    phase: dict = {"name": "work", "work": []}
 
     def respond(request):
         if phase["name"] == "work":
             phase["work"].append(request)
             number = len(phase["work"])
-            if number < 3:
+            if number <= 3:
                 return tool_call(
                     "set_short_note", {"slot": 1, "text": f"步骤 {number}"}, f"s{number}"
                 )
-            return tool_call("manage_task", {"action": "fail", "text": "中断"}, "stop")
-        if phase["name"] == "resume":
-            return tool_call("manage_task", {"action": "resume", "id": phase["work_id"]}, "resume")
-        if phase["name"] == "resumed":
-            phase["work"].append(request)
-            phase["resumed"] += 1
-            if phase["resumed"] == 1:
-                return tool_call("set_short_note", {"slot": 1, "text": "续接"}, "s-resumed")
             return "完成原工作"
         return "NO_REPLY"
 
+    start = len(scene.provider.requests)
+    complete = scene.provider.complete
+    armed = {"on": True}
+
+    async def interrupt_before_third(request):
+        if armed["on"] and len(scene.provider.requests) - start >= 2:
+            armed["on"] = False
+            raise LLMUnavailableError("synthetic outage before the third dispatch")
+        return await complete(request)
+
+    scene.provider.complete = interrupt_before_third
     scene.responder = respond
-    pause = len(scene.provider.requests) + 2
+    pause = start + 2
     scene.provider.arrived[pause] = asyncio.Event()
     scene.provider.release[pause] = asyncio.Event()
     running = asyncio.create_task(scene.turn("A", "把周报整理好"))
@@ -825,40 +849,36 @@ async def test_f17_work_keeps_its_first_current_message(database, tmp_path):
     scene.provider.release[pause].set()
     first = await asyncio.wait_for(running, 30)
     original = first.current
-
     async with database.read_session() as reader:
-        failed = dict((await reader.execute(select(work))).mappings().one())
-    assert failed["state"] == "failed"
-    phase.update(name="resume", work_id=failed["id"])
-    await scene.turn("A", "继续刚才那个")
-    phase["name"] = "resumed"
+        interrupted = dict((await reader.execute(select(work))).mappings().one())
+    assert interrupted["state"] == "queued", interrupted["state"]
+    paid_before_resume = len(scene.provider.requests)
+
+    await retry_due_now(database)
     repository = WorkRepository(database)
-    resumer = make_work_resumer(
-        repository,
-        ledger=scene.harness.ledger,
-        scopes=scene.chat._conversation_scopes,
-        turns=scene.chat._turn_coordinator,
-        router=scene.env.router,
-        config=scene.chat._runtime_config,
-        generate_self=scene.chat.generate_self_initiative,
-        generate_wakeup=scene.chat.generate_main_agent_wakeup,
-        bindings=scene.chat.runtime.bindings,
-        concurrency=scene.chat._concurrency,
-    )
-    scheduler = WorkScheduler(repository, resumer.resume, chat_admission_enabled=True)
-    scheduler._last_reclaim = time.monotonic()
-    await scheduler.drain_once()
-    final = await repository.get(failed["id"])
+    await original_scheduler(repository, scene.env, scene.harness, scene.chat).drain_once()
+    final = await repository.get(interrupted["id"])
     phase["name"] = "after"
     later = await scene.turn("A", "新的一轮")
 
     assert final["state"] == "completed"
-    assert first.segment and table_rule not in first.fact_ids
-    assert phase["resumed"] >= 1
-    for request in phase["work"]:
-        assert any(message.content == original for message in request.messages)
-        assert request_text(request).count(HEADER) == 1
-    # No request after the first one was composed fresh around the original message.
+    assert first.segment, first.current
+    assert f"fact:{table_rule}" not in first.segment
+    assert len(phase["work"]) > 2 and len(scene.provider.requests) > paid_before_resume
+
+    def resident_messages(request):
+        return [m.content for m in request.messages if (m.content or "").startswith(HEADER)]
+
+    for request in phase["work"][:2]:
+        assert resident_messages(request) == [original]
+    resumed = phase["work"][2:]
+    wakeup = resident_messages(resumed[0])
+    assert len(wakeup) == 1 and "work_resume" in wakeup[0]
+    assert wakeup[0].startswith((await _render(scene, "A")).text + "\n")
+    assert f"fact:{table_rule}" in wakeup[0]
+    for request in resumed:
+        assert resident_messages(request) == wakeup
+    # No request was composed fresh around the original message after the first one.
     assert (
         sum(1 for request in scene.provider.requests if request.messages[-1].content == original)
         == 1
@@ -871,6 +891,7 @@ async def test_f17_work_keeps_its_first_current_message(database, tmp_path):
         {
             "facts": scene.facts,
             "work_first_current_segment": first.segment,
+            "resumed_wakeup_segment": resident_segment(wakeup[0]),
             "work_requests": len(phase["work"]),
             "work_state": final["state"],
             "later": turn_record(later, contract),

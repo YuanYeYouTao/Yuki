@@ -237,7 +237,7 @@ async def test_f14_selection_keeps_the_long_term_rule_only(scene):
     scene.selection_responder = lambda request: selection_reply(
         [alias for alias, fid in _offered(scene, request).items() if fid == rule]
     )
-    await scene.dream().selection.select_owner(scene.owner("A"), dry_run=True)
+    await scene.dream().selection.select(scene.owner("A"), dry_run=True)
     dry_table = await scene.table()
     await scene.dream_run()
     selected = await scene.turn("A", "挑选后")
@@ -435,7 +435,15 @@ async def test_f21_per_run_cap_processes_owners_in_queue_order(database, tmp_pat
         assert _row(await scene.table(), f"person:{key}")["fact_ids"] == [candidates[key]]
     health = await scene.dream().worker.health()
     assert health.resident_pending_owners == 0
-    scene.write("F21-cap", {"processed": processed, "table": await scene.table()})
+    # Person IDs are random per run: record the order check, not the labels.
+    scene.write(
+        "F21-cap",
+        {
+            "processed_one_per_run_in_owner_id_order": processed
+            == [[f"person:{key}"] for key in expected],
+            "table": await scene.table(),
+        },
+    )
 
 
 # --------------------------------------------------------------------------- F28

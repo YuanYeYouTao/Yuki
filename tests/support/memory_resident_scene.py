@@ -42,7 +42,7 @@ from yuki.memory.enums import (
     SelfMemoryVisibility,
 )
 from yuki.memory.models import MemoryEvidenceCreate, MemoryFactCreate
-from yuki.persistence.models import MemoryFactModel
+from yuki.persistence.models import MemoryEvidenceModel, MemoryFactModel
 from yuki.services.main_agent_contract import MainAgentContract
 from yuki.services.rate_limit import SlidingWindowRateLimiter
 from yuki.workspace.short_state import ShortState
@@ -276,6 +276,7 @@ class ResidentScene:
         content: str,
         *,
         evidence: tuple[int, ...] = (),
+        foreign_evidence: tuple[int, ...] = (),
         authority: MemoryAuthority = MemoryAuthority.SELF_REPORT,
         source_type: MemorySourceType = MemorySourceType.AUTOMATIC,
         kind: MemoryKind = MemoryKind.FACT,
@@ -286,6 +287,13 @@ class ResidentScene:
 
         ``owner``: ``"A"`` (person), ``"B@G"`` (person_group), ``"G"`` (group) or
         ``"self"``; SELF ``visibility`` is ``global``, ``private:X`` or ``space:X``.
+
+        ``evidence`` goes through the real write path and must all be accepted.
+        ``foreign_evidence`` are events the real path refuses for this owner
+        (``readable_evidence_predicate``: e.g. another person's private chat or another
+        group); they are inserted directly, like the direct table writes of cases 3, 19
+        and 28, to prove the render-time filters do not rely on write-time checks
+        (legacy and imported rows exist in production).
         """
         target = self._target(owner, visibility)
         if owner in GROUPS and authority is MemoryAuthority.SELF_REPORT:
@@ -305,21 +313,42 @@ class ResidentScene:
         )
         memories = self.chat._memories
         speaker = QQ.get(owner.split("@")[0], QQ["A"])
-        items = [
-            MemoryEvidenceCreate(
-                event_id=event_id,
-                source_speaker_user_id=speaker,
-                relation=_RELATION[authority],
-                authority=authority,
-                excerpt=content[:40],
-            )
-            for event_id in evidence
-        ]
+
+        def items_for(event_ids: tuple[int, ...]) -> list[MemoryEvidenceCreate]:
+            return [
+                MemoryEvidenceCreate(
+                    event_id=event_id,
+                    source_speaker_user_id=speaker,
+                    relation=_RELATION[authority],
+                    authority=authority,
+                    excerpt=content[:40],
+                )
+                for event_id in event_ids
+            ]
+
+        items = items_for(evidence)
         created = await memories.remember(create, evidence=items[0] if items else None)
         if len(items) > 1:
             async with memories.write_session((created.id,)) as writer:
                 await memories.append_evidence_bundle(
                     created.id, tuple(items[1:]), confirmed_at=datetime.now(UTC), session=writer
+                )
+        async with self.database.immediate_session() as writer:
+            stored = set(
+                await writer.scalars(
+                    select(MemoryEvidenceModel.event_id).where(
+                        MemoryEvidenceModel.fact_id == created.id
+                    )
+                )
+            )
+            assert stored == set(evidence), (name, sorted(stored), evidence)
+            for item in items_for(foreign_evidence):
+                writer.add(
+                    MemoryEvidenceModel(
+                        fact_id=created.id,
+                        created_at=datetime.now(UTC),
+                        **item.model_dump(mode="json"),
+                    )
                 )
         self.facts[name] = created.id
         self.contents[created.id] = created.content
@@ -792,22 +821,17 @@ def install_resident(chat, database) -> None:
 
 
 def build_selection(scene: ResidentScene, models: Any):
-    """The resident selection step as the container wires it.
-
-    Interface under implementation: ``ResidentSelection`` with ``run(run)`` (called by
-    the Dream worker after clusters) and ``select_owner(owner, *, dry_run=False)``.
-    The model task is ``MEMORY_DREAM`` through the injected executor of the scene's
-    scripted provider.
-    """
-    from yuki.memory.resident_selection import ResidentSelection
-
+    """The resident selection step as ``ConversationModule`` wires it (MEMORY_DREAM route)."""
     from yuki.memory.resident import ResidentMemory
+    from yuki.memory.resident_selection import ResidentSelection
+    from yuki.services.concurrency import ConcurrencyManager
 
     return ResidentSelection(
-        database=scene.database,
         settings=scene.settings,
+        database=scene.database,
         resident=ResidentMemory(scene.database),
         models=models,
+        concurrency=ConcurrencyManager(),
     )
 
 
@@ -819,26 +843,34 @@ def build_dream_worker(scene: ResidentScene, repository: Any, service: Any, sele
         settings=scene.settings,
         repository=repository,
         service=service,
-        resident_selection=selection,
         runtime_config=scene.chat._runtime_config,
+        resident=selection,
     )
 
 
-def selection_aliases(request, contents: dict[int, str]) -> dict[str, int]:
-    """Map each alias the selection request offers to the fact whose text sits nearest.
+def _refs(value: Any) -> list[dict[str, Any]]:
+    if isinstance(value, dict):
+        found = [value] if "ref" in value and "content" in value else []
+        return found + [item for child in value.values() for item in _refs(child)]
+    if isinstance(value, list):
+        return [item for child in value for item in _refs(child)]
+    return []
 
-    The request format is the implementer's; aliases are ``kept_N``/``new_N``/
-    ``pinned_N`` and every offered item carries its fact text.
-    """
-    text = request_text(request)
-    aliases = [(match.start(), match.group(0)) for match in _SELECTION_ALIAS.finditer(text)]
+
+def selection_aliases(request, contents: dict[int, str]) -> dict[str, int]:
+    """Map each alias (``kept_N``/``new_N``/``pinned_N``) offered in a selection request
+    to the fixture fact with the same (whitespace-folded) text."""
+    by_text = {" ".join(content.split()): fact_id for fact_id, content in contents.items()}
     result: dict[str, int] = {}
-    for fact_id, content in contents.items():
-        position = text.find(content)
-        if position < 0 or not aliases:
+    for message in request.messages:
+        try:
+            payload = json.loads(message.content or "")
+        except ValueError:
             continue
-        _, alias = min(aliases, key=lambda item: abs(item[0] - position))
-        result.setdefault(alias, fact_id)
+        for row in _refs(payload):
+            fact_id = by_text.get(" ".join(str(row["content"]).split()))
+            if fact_id is not None and _SELECTION_ALIAS.fullmatch(str(row["ref"])):
+                result[str(row["ref"])] = fact_id
     return result
 
 
