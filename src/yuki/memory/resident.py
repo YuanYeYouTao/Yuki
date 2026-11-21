@@ -208,6 +208,9 @@ class ResidentMemory:
                     created_at=now,
                 )
                 session.add(row)
+            elif source == "dream" and row.source == "owner":
+                # The owner locked this set while the selection's model call ran.
+                raise ResidentValidationError("resident_set_locked_by_owner")
             if tuple(json.loads(row.fact_ids_json)) != wanted:
                 row.fact_ids_json = json.dumps(list(wanted))
                 row.revision += 1
