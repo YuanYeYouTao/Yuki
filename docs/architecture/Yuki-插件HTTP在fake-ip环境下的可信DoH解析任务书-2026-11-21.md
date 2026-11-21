@@ -1,326 +1,461 @@
 # Yuki 插件 HTTP 在 fake-ip DNS 环境下的可信 DoH 解析任务书（2026-11-21）
 
-状态：**第一阶段第二版：方向已由用户决定（§0），仍未实现任何代码**。剩余待决见 §6。确认后在同一分支先写 E2E（§7），在基线上跑红，然后再实施。对应 [#678](https://github.com/YuanYeYouTao/Yuki/issues/678)，draft PR [#679](https://github.com/YuanYeYouTao/Yuki/pull/679)。分支 `docs/issue-678-plugin-http-proxy-taskbook`，基线 origin/main `2aeeac84`。
+状态：**第一阶段第三版。方向已由用户决定（§0），仍未实现任何代码。** 剩余待决见 §6。待决确认后，在同一分支按顺序：先写 E2E（§7），在基线上跑红，再实施。
+
+- 对应 issue：[#678](https://github.com/YuanYeYouTao/Yuki/issues/678)
+- draft PR：[#679](https://github.com/YuanYeYouTao/Yuki/pull/679)
+- 分支：`docs/issue-678-plugin-http-proxy-taskbook`
+- 基线：origin/main `2aeeac84`
 
 标记约定沿用前几份任务书：
-- 【实证】：源码、现有文档或本机命令查到的事实；
-- 【issue】：#678 给出的生产现象，本阶段**没有**到生产只读复核；
-- 【假设】：还没查实，需要在实施或 E2E 中确认；
-- 【决定】：用户已定；
-- 【推荐】：尚待用户确认的建议。
 
-路径省略 `src/yuki/`，行号以 `2aeeac84` 为准。
-
-## 0. 用户决定（2026-11-21）与版本变更
-
-| # | 决定 |
+| 标记 | 含义 |
 |---|---|
-| D1 | 推荐方案改为：**显式配置的可信 DoH 解析**；每一跳检查全部地址；连接固定到已检查的 IP；任何失败即拒绝 |
-| D2 | “按域名经代理”降为备选，不采用。**不接受**白名单域名经代理后可能连到内网 |
-| D3 | `network.http.unrestricted` 保持现状 |
-| D4 | 不放行 fake-ip 段 |
-| D5 | SOCKS 不纳入 |
+| 【实证】 | 源码、依赖源码、现有文档或本机命令查到的事实 |
+| 【issue】 | #678 给出的生产现象，本阶段**没有**到生产只读复核 |
+| 【假设】 | 还没查实，需要在实施或 E2E 中确认 |
+| 【决定】 | 用户已定 |
+| 【推荐】 | 尚待用户确认的建议 |
 
-相对第一版（`61a93673`，原文件名 `Yuki-插件HTTP在fake-ip环境下经代理访问任务书-2026-11-21.md`）的变更：
-- 推荐方案由“代理”改为 DoH，代理方案的不选理由见 §4；
-- 更正 `subscription-monitor` 威胁模型的描述（§1.3）；
-- 新增 DoH 安全审查（§3），覆盖 bootstrap 与认证、A/AAAA/CNAME、重定向、部署限制和不静默回退；
-- 新增 NAT64 地址分类缺口（§3.4）；
-- E2E 按新方案重写（§7）。
+路径省略 `src/yuki/`，行号以 `2aeeac84` 为准。依赖源码指本机 `.venv` 中的 httpx 0.28.1 和 httpcore 1.0.9。
+
+## 0. 用户决定与版本
+
+| # | 决定 | 轮次 |
+|---|---|---|
+| D1 | 显式配置的可信 DoH 解析；**每一跳**检查**全部**地址；连接固定到已检查的 IP；**任何失败都拒绝** | 第二版 |
+| D2 | 按域名经代理降为备选、不采用；不接受白名单域名经代理后可能连到内网 | 第二版 |
+| D3 | `network.http.unrestricted` **完全保持现状**，包括地址检查、NAT64 缺口、超时和 CA，见 §3.4、§3.6、§3.7 | 第二、三版 |
+| D4 | 不放行 fake-ip 段 | 第二版 |
+| D5 | SOCKS 不纳入 | 第二版 |
+
+版本记录：
+
+- **第一版** `61a93673`：推荐代理方案。
+- **第二版** `5ed210bc`：
+  - 改为推荐 DoH；
+  - 更正 `subscription-monitor` 的威胁模型；
+  - 新增安全审查。
+- **第三版**（本版）：
+  - 按 D3 把 NAT64 修正限定在 DoH 路径，并明确透明代理和 NAT64 的限制（§3.4、§3.9）；
+  - 写全 A/AAAA、CNAME、NXDOMAIN/NODATA 的判定表与失败行为（§3.3）；
+  - 新增整次请求统一截止时间（§3.6）；
+  - 写明 `trust_env=False` 下的 CA 事实和 IP 形式 DoH URL 的证书（§3.2）；
+  - E2E 增加拨号 IP、Host、SNI、请求次数和敏感头的逐项记录（§7）；
+  - 新增权限和 DoH 可达性（§2.3、§3.8）。
 
 ## 1. 现象与原因
 
 ### 1.1 现象【issue】
 
-`github-monitor` 从 2026-10-22 04:05 起没有成功轮询过 GitHub，状态一直显示“运行中”。手动 `sync ... baseline` 清掉 `github_cursor_missing_from_overlap` 后，每次请求都报 `PluginPermissionError`。
+`github-monitor` 从 2026-10-22 04:05 起没有成功轮询过 GitHub，状态却一直显示“运行中”。手动执行 `sync ... baseline` 清掉 `github_cursor_missing_from_overlap` 后，每次请求都报 `PluginPermissionError`。
 
-部署是 Mac 上的 Clash Verge，开了 TUN 和 `enhanced-mode: fake-ip`（`198.18.0.1/16`）。容器内 `api.github.com` 解析为 `198.18.0.83`，`github.com` 解析为 `198.18.0.91`。
+部署环境：
 
-环境侧已把 `+.github.com` 加入 `fake-ip-filter`，之后 GitHub 恢复。这说明在该部署里，**直连 GitHub 真实公网 IP 是通的**【issue】。
+- Mac 上的 Clash Verge，开了 TUN 和 `enhanced-mode: fake-ip`（`198.18.0.1/16`）；
+- 容器内 `api.github.com` 解析为 `198.18.0.83`，`github.com` 解析为 `198.18.0.91`。
+
+环境侧已把 `+.github.com` 加入 `fake-ip-filter`，之后 GitHub 恢复。这说明在该部署里，**直连 GitHub 的真实公网 IP 是通的**。
 
 ### 1.2 拒绝发生在哪里【实证】
 
 | # | 事实 | 依据 |
 |---|---|---|
-| F1 | 插件 HTTP `trust_env=False`，不读 `HTTP(S)_PROXY`/`ALL_PROXY` | `plugin_host/http_client.py:64-68` |
-| F2 | 每一跳（含重定向）先查白名单，再用系统 `getaddrinfo` 解析；结果中只要有一个地址 `not is_global`，就抛 `PluginPermissionError("plugin HTTP target resolved to a non-public address")` | `http_client.py:212-228,298-301` |
-| F3 | 通过后把 URL 主机换成第一个已校验的 IP 直连，Host 头和 SNI 保留原域名，避免二次解析 | `http_client.py:229-240,115-119` |
-| F4 | Python 把 `198.18.0.0/15` 判为 `is_global=False`（本机 3.12.16 实测） | 标准库 `ipaddress` |
+| F1 | 插件 HTTP 设 `trust_env=False`，不读 `HTTP(S)_PROXY`、`ALL_PROXY` | `plugin_host/http_client.py:64-68` |
+| F2 | 每一跳（含重定向）先查白名单，再用系统 `getaddrinfo` 解析；只要有一个地址 `not is_global`，就抛 `PluginPermissionError`。解析结果为空也走同一个错误 | `http_client.py:212-228,298-301` |
+| F3 | 校验通过后，把 URL 主机换成第一个已校验的 IP 直连，Host 头和 SNI 保留原域名 | `http_client.py:229-240,115-119` |
+| F4 | 本机 Python 3.12.16 把 `198.18.0.0/15` 判为 `is_global=False` | 标准库 `ipaddress` |
 | F5 | `unrestricted` 只是把白名单置为 `None`，地址检查完全相同 | `http_client.py:262-265` |
-| F6 | 现行文档承诺 unrestricted “不代表可以访问 Host 内网……Host 安全底线仍然适用” | `docs/plugin-development/networking.md`；`docs/plugin-development/security.md:31` |
+| F6 | 现行文档承诺 unrestricted 不代表可以访问 Host 内网 | `docs/plugin-development/networking.md`、`security.md:31` |
 | F7 | 插件与 Bot 同进程；Plugin API 是“访问治理，不是 Python/OS 沙盒” | `docs/plugin-development/security.md:5` |
-| F8 | 仓库没有 DNS 报文库：`uv.lock` 中无 `dnspython`；现有依赖为 `httpx[socks]` | `uv.lock`、`pyproject.toml:14` |
+| F8 | 仓库里没有 DNS 报文库（`uv.lock` 中无 `dnspython`） | `uv.lock`、`pyproject.toml:14` |
+| F9 | 现有超时是**按单次操作**计算的，见 §3.6 | 同左 |
+| F10 | `trust_env=False` 时，httpx 只用 certifi 的 CA，不读 `SSL_CERT_FILE`/`SSL_CERT_DIR`，见 §3.2 | 同左 |
 
-结论：F2 的检查本身没错，错在**解析来源**。fake-ip 环境下系统 DNS 不给真实地址，所以凡是不在 filter 里的域名都会被拒。
+F9 的具体事实：
 
-### 1.3 威胁模型（更正第一版）【实证】
+- 解析阶段被 `asyncio.timeout(timeout_seconds)` 包住；
+- 连接、读、写、连接池等待各自使用 `httpx.Timeout(timeout_seconds)`；
+- 读响应体的循环没有总时限，重定向也会逐跳重置计时；
+- 依据：`http_client.py:71-73,117,151,219`。
 
-由 F7 可知，这道地址检查防不了恶意插件，因为恶意插件可以直接 `import socket`。它防的是**可信插件替人取了不该取的地址**。
+F10 的具体事实：
 
-第一版写的是：“聊天里有人订阅 `http://192.168.5.1/` …… 就是本 issue 要守住的 SSRF”。这一句**有误**。核对 `subscription-monitor` 源码后：
+- httpx 在 `trust_env=False` 时，只用 `certifi.where()`；
+- `trust_env` 会一路传到 transport 的 `create_ssl_context`；
+- 依据：httpx `_config.py:34-40`、`_transports/default.py:153`、`_client.py:685-705`。
 
-| 事实 | 依据 |
-|---|---|
-| 权限列表确有 `network.http.unrestricted`、`plugin.config.write`、`command.register` | `plugins/subscription-monitor/plugin.toml` |
-| 唯一的命令 `monitor`（add/remove 订阅等）注册为 `PermissionLevel.SUPERUSER` | `plugins/subscription-monitor/subscription_monitor/plugin.py:45-56` |
-| Host 只在 `superuser` 为真时放行 SUPERUSER 命令 | `plugin_host/command_adapter.py:202` |
-| 订阅 URL 校验只查 scheme、凭据和 fragment，明写“DNS and redirect checks remain owned by the Host HTTP facade” | `subscription_monitor/config.py:40-51` |
-| 插件唯一的出站请求是 `GET subscription.url`；条目里的链接只出现在摘要文本中，不会被请求 | `subscription_monitor/polling.py:236`、`:66-70` |
-| `capabilities/`、`executor/` 中没有调用插件命令的入口，主 Agent 工具不能代替用户执行 `monitor add` | 对 `plugin_command`/`command_adapter` 的 grep，范围仅限这两个目录 |
+结论：F2 的检查本身没错，错在**解析来源**。
 
-因此 unrestricted 插件的 SSRF 输入来自三处，**都不是普通聊天用户**：
-- 超管配置的 URL（可能写错，或被诱导填入内网地址）；
-- feed 服务器返回的**重定向**（第三方控制）；
-- feed 域名自身的 **DNS**（第三方控制，可能指向内网或做 rebinding）。
+### 1.3 威胁模型【实证】
 
-allowlisted 插件的主机由 Manifest 固定并经所有者批准。插件代码和输入只能影响路径和查询串；主机能否跨出白名单，取决于重定向（每跳查白名单）和被批准域名自己的 DNS。
+由 F7，这道地址检查防不了恶意插件。它防的是**可信插件替人取了不该取的地址**（SSRF）。
 
-### 1.4 同类路径：网页读取与媒体下载【实证 + 假设】
+`subscription-monitor` 的实际情况：
 
-`services/media_resolver.py:439-461` 也是“本地解析 → 全部 `is_global` → 改成 IP”，网页读取固定 `allow_private_urls=False`（`web/page_extractor.py:54`）。由此推断，fake-ip 环境下本机网页读取和媒体 URL 下载也会以 `private_url` 被拒。这一点**未经生产复核**【假设】。不在本 PR 范围内，见 Q7。
+- `monitor` 命令仅限超管（`plugins/subscription-monitor/subscription_monitor/plugin.py:45-56`、`plugin_host/command_adapter.py:202`）；
+- 唯一的出站请求是 `GET subscription.url`（`polling.py:236`）；
+- feed 条目里的链接只出现在摘要里，不会被请求（`polling.py:66-70`）。
 
-## 2. 推荐方案：显式配置的可信 DoH 解析【决定 D1】
+因此 SSRF 的输入来源是：
 
-### 2.1 行为
+- 超管配置的 URL；
+- feed 服务器返回的重定向；
+- feed 域名的 DNS。
 
-只作用于 allowlisted。unrestricted 按 D3 不变，见 §2.3。
+allowlisted 插件只能影响路径和查询串。主机能否越出白名单，取决于两件事：
 
-**每一跳（首个 URL 和每次重定向）依次执行：**
-1. URL 解析、scheme、凭据、IDNA、白名单（现有逻辑不变）。
-2. 主机是 IP 字面量时，不做 DNS，地址必须通过 §3.4 的检查。
-3. 主机是域名时，向**配置的 DoH 服务**查询 A 和 AAAA，按 §3.3 校验报文和 CNAME 链，得到这一跳的完整地址集合。
-4. 集合为空，或其中**任一**地址不通过 §3.4，拒绝。拒绝时不连接目标，也不尝试其他解析来源。
-5. 连接固定到集合中**已检查**的地址；Host 头、SNI 和证书校验都使用原域名（沿用 F3）。
+- 重定向：每跳都查白名单；
+- 被批准域名自身的 DNS。
 
-**配置与回退：**
-- 未配置 DoH：行为与现在逐字节相同，仍用系统解析器。fake-ip 环境下继续被拒，见 E14。
-- 配置了 DoH：系统解析器在插件 HTTP 路径上**完全不被调用**（E1 断言调用次数为 0）。
+D1 防的正是后一种情况。
 
-### 2.2 配置形态【推荐，Q1】
+### 1.4 同类路径【实证 + 假设】
 
-建议用一个 URL 加一组 bootstrap IP，例如：
+`services/media_resolver.py:439-461` 和网页读取（`web/page_extractor.py:54`）也是“本地解析 → 校验全部地址”。由此推断，它们在 fake-ip 环境下同样会被拒，但**未经生产复核**。本 PR 不处理，见 Q7。
+
+## 2. 方案：显式配置的可信 DoH【决定 D1】
+
+### 2.1 每一跳的行为
+
+对第一个 URL 和每次重定向的目标，依次执行：
+
+1. **URL 检查**：URL 解析、scheme、凭据、IDNA、白名单，沿用现有逻辑。
+2. **IP 字面量**：不做 DNS，地址必须通过 §3.4 的检查。
+3. **域名**：
+   - 向配置的 DoH **并发**查询 A 和 AAAA；
+   - 按 §3.3 判定这一跳的地址集合；
+   - 集合中**每个**地址都必须通过 §3.4；
+   - 任一步失败都拒绝。拒绝时目标零连接，也不尝试其他解析来源。
+4. **连接**：
+   - 只连已检查集合内的地址（§3.5）；
+   - Host 头、SNI 和证书主机名都用原域名；
+   - 整次请求受同一个截止时间约束（§3.6）。
+
+配置了 DoH 时，系统解析器在这条路径上**一次都不调用**。
+
+### 2.2 配置【推荐，Q1】
 
 ```dotenv
 PLUGIN_HTTP_DOH_URL=https://dns.example/dns-query
 PLUGIN_HTTP_DOH_BOOTSTRAP=203.0.113.53,2001:db8::53
 ```
 
-- URL 必须是 `https://`，带主机名和路径；启动时校验，非法则启动失败，而不是静默禁用。
-- bootstrap 是该主机名对应的 IP，Host **不会**用系统 DNS 去解析 DoH 主机名（§3.1）。
-- bootstrap 是所有者显式提供的出口配置，不是插件输入，因此**不要求**它是公网地址。这样允许所有者使用局域网内自建的 DoH（例如 AdGuard Home）。
-- 不提供“自动探测 fake-ip”或“自动选 DoH 服务商”，也不内置默认服务商。
+URL 支持两种形式：
 
-与 AGENTS.md“不新增替代机制”的关系：这是一个新配置项，但它只替换**解析来源**，不新增第二条连接路径，现有检查和固定 IP 逻辑原样复用。是否接受这一新增，已由 D1 决定。
+| URL 形式 | bootstrap | TLS 身份 |
+|---|---|---|
+| 主机名，如 `https://dns.example/dns-query` | **必填**，连接这些 IP | 证书须匹配该主机名；SNI 为该主机名 |
+| IP，如 `https://1.1.1.1/dns-query` | 省略（填写即启动失败，避免两处来源冲突） | 证书须含该 IP 的 IP SAN；按 RFC 6066 不发送 SNI【假设：实施时以 E2E 记录的 SNI 为准】 |
 
-### 2.3 unrestricted 保持现状的后果【决定 D3，记录后果】
+配置规则：
 
-unrestricted 继续用系统解析器。fake-ip 环境下 `subscription-monitor` 对不在 `fake-ip-filter` 中的 feed 域名仍会失败，所有者需要在环境侧逐个加 filter。
+- 只接受 `https://`；
+- 配置非法时**启动失败**，不静默禁用；
+- bootstrap 是所有者显式提供的出口配置，不是插件输入，因此**不要求**它是公网地址，允许自建的局域网 DoH；
+- 不内置默认服务商，不自动探测 fake-ip；
+- 修改配置后需要重建 Bot 容器（与代理变量相同）。
 
-如果以后要让 unrestricted 也走 DoH，只需把 §2.1 应用到 `allowed_hosts is None` 的分支，安全性质相同。这是另一个决定，不在本 PR 内。
+本机证书实测【实证，2026-11-21，在开发机上执行，不是生产容器】：`1.1.1.1`、`8.8.8.8`、`9.9.9.9`、`223.5.5.5`、`1.12.12.12` 的 443 端口证书都含对应的 IP SAN，证书链校验通过。这只说明 IP 形式在证书层面可行。**生产容器能否到达这些地址未核**（§3.8）。
+
+### 2.3 权限与作用范围
+
+| 插件批准的权限 | 行为 |
+|---|---|
+| 仅 `network.http.allowlisted` | 配置了 DoH：走 §2.1。未配置：与现在**逐字节相同** |
+| 含 `network.http.unrestricted`（不论是否同时有 allowlisted） | **完全不变**（D3）：`allowed_hosts is None`（`http_client.py:262-265`），使用系统解析器，以及现有的地址检查、超时和 CA |
+| 无 HTTP 权限 | 不变，仍抛 `PluginPermissionError`（`http_client.py:279-280`） |
+
+其他约束：
+
+- DoH 是部署级配置。插件看不到它，不能选择、覆盖或关闭它；
+- 不改 Manifest、SDK 或 Plugin API 版本；
+- `.env` 与 CA 文件需要在 Bot 容器内可读。不可读时按“配置非法”处理，启动失败。
 
 ## 3. 安全审查
 
-### 3.1 Bootstrap：DoH 主机名怎么解析
+### 3.1 Bootstrap
 
-| 做法 | 结论 |
-|---|---|
-| 用系统 DNS 解析 DoH 主机名 | **不采用**。fake-ip 下会得到 `198.18.x`，形成自依赖；同时让 DoH 连接的目的地由本地 DNS 决定 |
-| URL 直接写 IP（如 `https://1.1.1.1/dns-query`） | 可用，但证书必须含 IP SAN。各服务商是否提供【假设，未核】。§2.2 的“主机名 + bootstrap IP”覆盖这种情况：主机名留空即可，是否允许见 Q1 |
-| 主机名 + bootstrap IP【推荐】 | 连 bootstrap IP，SNI 和证书校验用 URL 主机名。IP 只决定 TCP 目的地，身份由 TLS 证明 |
+不用系统 DNS 解析 DoH 主机名，原因有二：
 
-**多个 bootstrap IP：** 只在 TCP 连接失败时按配置顺序试下一个。TLS 失败、HTTP 错误或报文错误**不换下一个 IP**，直接拒绝，避免把认证失败当成可用性问题处理。
+- fake-ip 环境下会自我依赖；
+- 那样 DoH 连接的目的地就由本地 DNS 决定了。
 
-### 3.2 认证
+多个 bootstrap IP 的处理：
+
+- **仅在 TCP 连接失败时**，按配置顺序换下一个 IP；
+- TLS、HTTP 或报文错误**不换 IP**，直接拒绝，不把认证失败当作可用性问题处理；
+- 所有尝试共用 §3.6 的截止时间。
+
+### 3.2 认证与 CA
 
 **服务端认证（必须）：**
-- 严格 TLS 证书校验，证书链加主机名，CA 来源与现有 httpx 一致（`trust_env` 只用于 `SSL_CERT_FILE/DIR`；实现时核对 httpx 在 `trust_env=False` 时是否仍读这两个变量【假设】）。
-- 不提供 `verify=False`、明文 `http://`、DoT 或 53 端口回退。
+
+- 证书链和主机名（或 IP SAN）都要严格校验；
+- 不提供 `verify=False`，不回退明文 `http://`、DoT 或 53 端口。
+
+**CA 来源。** 依据 F10，现有插件客户端只信任 certifi，忽略 `SSL_CERT_FILE` 和 `SSL_CERT_DIR`。可选做法：
+
+| 选项 | DoH 连接 | 目标连接 | 说明 |
+|---|---|---|---|
+| C1【推荐】 | 用 `httpx.create_ssl_context(trust_env=True)` 构造独立 SSL 上下文：读 `SSL_CERT_FILE/DIR`，没有则用 certifi。客户端仍保持 `trust_env=False`，所以不会读代理变量 | 保持现状，只用 certifi | 网页读取已有同样做法（`web/http_transport.py:196-197,302`）。DoH 是所有者的基础设施，可能使用自签或私有 CA；目标是公网站点 |
+| C2 | 同 C1 | 也改为读 `SSL_CERT_FILE/DIR` | 改变 allowlisted 目标的信任集合。若该 CA 是透明 TLS 解密代理的 CA，信任会扩展到它（§3.9 T2） |
+| C3 | 只用 certifi | 只用 certifi | 自建 DoH 必须使用公共 CA 签发的证书 |
 
 **信任边界（写入文档）：**
-- Host **信任 DoH 运营者**给出的答案。
-- Host 不做 DNSSEC 验证，也不以 AD 位作为条件。
-- DoH 运营者能看到所有插件查询的主机名，这是隐私代价。
 
-**客户端认证：** 第一阶段**不支持**向 DoH 发送凭据（Bearer、mTLS）【推荐，Q2】。如果所有者的自建 DoH 需要认证，再单独设计凭据存储与脱敏。
+- Host 信任 DoH 运营者和所选 CA 集合；
+- 不做 DNSSEC 验证，也不以 AD 位作为条件；
+- DoH 运营者能看到所有插件查询的主机名。
+
+**客户端凭据：** 第一阶段不支持（Q2）。
 
 **DoH 请求本身：**
+
+- 只发协议必需的头（`Accept`/`Content-Type: application/dns-message`，加 `Host`）；
+- 不带插件传入的任何 Header、Authorization、Cookie 或 Proxy-Authorization；
 - 不跟随重定向；
-- 不读代理环境（与 D2 一致）；
-- 不带 Cookie；
-- 响应体按 DNS 报文协议上限 65535 字节截断即拒绝；
-- 解析加连接共用现有每跳 `timeout_seconds`（`http_client.py:219`），不新增经验阈值。
+- 响应体超过 65535 字节（DNS 报文的协议上限）即拒绝。
 
-### 3.3 报文：A / AAAA / CNAME
+### 3.3 A/AAAA、CNAME、NXDOMAIN、NODATA
 
-- **协议：** RFC 8484 `application/dns-message`，POST 或 GET 二选一，在实施时定。`application/dns-json` 不是标准，不采用。
-- **报文库：** 需要新增 `dnspython` 依赖（F8）。自写解析器要处理压缩指针、截断和越界，风险更高。是否接受新依赖见 Q3。
-- **每个域名查两次：** qtype A 和 AAAA 都要查。两次之间的组合规则：
-  - 任一查询 SERVFAIL、REFUSED、超时、HTTP 非 200、Content-Type 不符、报文无法解析、TC 位置位，或 question 与请求不一致：**整跳拒绝**。理由是 D1 要求检查**全部**地址，拿不到其中一族的答案时不能宣称已检查全部。
-  - 两族都 NXDOMAIN：拒绝。
-  - 一族 NOERROR/NODATA、另一族有地址：可以，地址集合只来自有答案的一族。
-  - 两族都 NODATA：集合为空，拒绝。
-- **CNAME 链：**
-  - 从 qname 起，在 answer 节逐个跟随 CNAME，直到找到 owner 等于链尾的 A/AAAA。
-  - answer 中 owner 不在链上的记录**忽略**，防止服务器夹带无关地址；这些记录也不会被连接。
-  - 链有环，或链尾没有地址记录：拒绝。
-  - 是否另发查询去追链尾，由实施时对递归 DoH 的行为确认【假设：主流递归 DoH 会在一次应答中给出完整链】；无论如何，链尾地址同样必须过 §3.4。
-  - CNAME 目标名**不**按白名单检查。白名单约束的是逻辑主机，CDN 的 CNAME 属正常情况；安全性由最终地址检查保证。
-  - DNAME 按 dnspython 的合成 CNAME 处理【假设】。
-- **缓存：** 第一阶段不缓存，每跳都查。按 TTL 缓存是事实驱动的优化，可以以后加，但会让 E11 的 rebinding 断言更复杂。见 Q4。
+协议采用 RFC 8484 `application/dns-message`，报文用 `dnspython` 解析（Q3）。**每个查询**先按下表归类：
 
-### 3.4 地址检查
+| 归类 | 条件 |
+|---|---|
+| **错误** | 以下任一：HTTP 非 200；Content-Type 不符；报文无法解析；QR 未置位；opcode 不是 QUERY；question 与请求不一致；TC=1；RCODE 不是 NOERROR 或 NXDOMAIN；CNAME 链断开、有环、或同一 owner 同时有 CNAME 和地址记录；超时或连接失败 |
+| **地址** | NOERROR，且从 qname 沿 answer 中的 CNAME 走到链尾，链尾 owner 有本 qtype 的记录 |
+| **NODATA** | NOERROR，链（可以为空）合法，但链尾没有本 qtype 的记录 |
+| **NXDOMAIN** | RCODE 为 NXDOMAIN（按 RFC 6604，指的是链尾不存在，前面可以有 CNAME） |
 
-沿用“任一非 `is_global` 即拒绝”。另有一处现状缺口【实证】：Python 3.12.16 把 `64:ff9b::7f00:1`（NAT64 知名前缀内嵌 `127.0.0.1`）判为 `is_global=True`。在有 NAT64 网关的网络里，这个地址会被翻译到内嵌的 IPv4。
+CNAME 规则：
 
-本机实测的其他分类：
-- `::ffff:10.0.0.1`、`2002:7f00:1::1`、`64:ff9b:1::a00:1`、`fc00::1`、`fe80::1`、`::1`、`100.100.100.100`、`198.18.0.1`：均为 False；
-- `2606:4700:4700::1111`、`192.0.0.9`：为 True。
+- answer 中 owner 不在链上的记录**一律忽略**，既不检查也不连接；
+- 链长不设经验上限，由报文 65535 字节上限和环检测兜底；
+- CNAME 目标名不按白名单检查。白名单约束的是逻辑主机，最终地址另经 §3.4 检查；
+- A 和 AAAA 的链各自独立验证，允许不同（例如 CDN 轮换）。
 
-推荐：对 `64:ff9b::/96` 取出内嵌 IPv4 再检查，非 global 则拒绝【推荐，Q5】。这也影响现有系统解析路径和 unrestricted；如果改，两条路径共用同一个检查函数，而不是只修 DoH 路径。
+两族结果的合并：
 
-### 3.5 固定 IP 与多地址
+| A ＼ AAAA | 地址 | NODATA | NXDOMAIN | 错误 |
+|---|---|---|---|---|
+| **地址** | 两族全部地址都检查；任一不通过则拒绝 | 只用 A 的地址 | **拒绝**（两族自相矛盾） | **拒绝** |
+| **NODATA** | 只用 AAAA 的地址 | **拒绝**（无地址） | 拒绝 | 拒绝 |
+| **NXDOMAIN** | 拒绝 | 拒绝 | 拒绝 | 拒绝 |
+| **错误** | 拒绝 | 拒绝 | 拒绝 | 拒绝 |
 
-- 只连接 §3.4 检查过的地址。SNI、Host 头和证书主机名都是原域名，证书不匹配就拒绝（E12）。
-- 多地址时的连接顺序见 Q6。【推荐】A 记录在前、AAAA 在后，各按应答顺序。
-- TCP 连接失败时，可以在**同一已检查集合**内试下一个地址；不重新解析，不换解析来源。
-- 只要 TCP 已建立，后续任何失败都直接返回错误，不再换地址。原因有两点：防止重放非幂等请求；保持“失败即拒绝”。
+失败时返回的结果【推荐，Q6】：
 
-### 3.6 重定向
+| 情况 | 插件看到的结果 |
+|---|---|
+| 有地址，但未通过 §3.4 | `PluginPermissionError`（与现有类别一致） |
+| 表中其余“拒绝” | `PluginResult(ok=False, error_code="http.dns_failed")` |
+| 截止时间已到 | `http.request_failed`（现有码） |
 
-- 每跳重新执行 §2.1 全流程：白名单 → 字面量或 DoH → 全地址检查 → 固定 IP。
-- 跳到非白名单主机：在**发出 DoH 查询之前**拒绝，DoH 服务看不到这个名字（E10 断言）。
-- 跳到 IP 字面量：不查 DoH，直接按 §3.4 检查。
-- 现有规则不变：
-  - 跨源（scheme、host、port 三元组）剥离 Authorization、调用方 Header 和 Body；
-  - 303 改 GET；
-  - 最多 5 次重定向。
-- 现状允许 `https → http` 降级重定向，此时因跨源会剥离凭据。本 PR 不改这一点，仅记录。
+注意：现有系统解析路径在“结果为空”时返回 `PluginPermissionError`（F2），而 DoH 路径的“无地址”归为 DNS 失败。两条路径的这一差异写入文档；按 D3，系统解析路径不改。
 
-### 3.7 不静默回退
+TTL 缓存：第一阶段不缓存，每一跳都重新查询（Q4）。
 
-配置了 DoH 后，以下任何失败都**直接拒绝**。不回退系统 DNS，不走代理，不换明文 DNS，不跳过检查：
-- DoH 连接、TLS、HTTP、报文、超时；
-- 地址检查；
-- 目标连接。
+### 3.4 地址检查与 NAT64
 
-错误映射沿用现有两类：
-- 地址不通过：`PluginPermissionError`；
-- 解析或连接失败：`PluginResult(ok=False, error_code="http.request_failed")`。是否为 DoH 失败单独给 `error_code`（如 `http.dns_failed`）见 Q6。
+DoH 路径的规则：沿用“任一地址非 `is_global` 即拒绝”，**另加一条**：地址落在 NAT64 知名前缀 `64:ff9b::/96` 内时，取出内嵌的 IPv4；该 IPv4 非 global 则拒绝。
 
-日志只记录类别，不写 URL、查询名或 DoH 响应原文。这与现有 `redact_httpx_url` 一致（`http_client.py:129`）。
+依据【实证】：本机 Python 3.12.16 对下列地址的 `is_global` 判定为：
 
-### 3.8 部署限制（写入运维文档）
+- `64:ff9b::7f00:1`（内嵌 `127.0.0.1`）：**True**，这是需要补的缺口；
+- `64:ff9b:1::a00:1`、`::ffff:10.0.0.1`、`2002:7f00:1::1`：False，已被现有判定拦住。
+
+**限制（写入文档）：**
+
+- **N1**：只识别知名前缀。运营商自选的 NAT64 前缀（RFC 6052 NSP）无法从地址本身识别，内嵌私网 IPv4 的 NSP 地址会通过。本 PR 不为此新增配置。
+- **N2**：DNS64 解析器会合成 AAAA。由于同时查询 A，只要 A 中有私网地址，整跳就会拒绝。
+- **N3**：按 D3，**系统解析路径不加这条检查**。它涵盖 unrestricted，以及未配置 DoH 的 allowlisted，`64:ff9b::7f00:1` 在那里仍被视为公网。这是已记录的现状缺口，不在本 PR 修复。
+
+### 3.5 固定 IP、多地址与请求次数
+
+连接顺序与续试【推荐，Q6】：
+
+- A 记录在前、AAAA 在后，各自按应答顺序；
+- **只有 TCP 连接失败**才续试同一已检查集合中的下一个地址；
+- 续试不重新解析，不换解析来源；
+- 一旦 TCP 建立，后续任何失败（TLS、证书、读写、超时）都直接返回，不换地址、不重发，避免重放非幂等请求。
+
+由此可以导出 E2E 要断言的请求次数：
+
+| 对象 | 每跳次数 |
+|---|---|
+| DoH | 恰好 A、AAAA 各一次；仅 bootstrap 的 TCP 失败会增加连接次数，不增加成功的 HTTP 请求 |
+| 目标服务器 | 至多一次 HTTP 请求 |
+
+### 3.6 统一截止时间【推荐，Q5】
+
+**现状（F9）：** 每个操作各自计时，重定向会重置计时，读响应体没有总时限。对方每隔不到 `timeout_seconds` 发一个字节，就能让一次插件请求持续很久。
+
+**DoH 路径的规则：**
+
+- 在 `SafeHttpClient.request()` 开始时确定**一个**截止时间：`deadline = 开始时刻 + timeout_seconds`。是否在拿到并发信号量之后才开始计时，见 Q5。
+- 以下各步都只用剩余时间，剩余 ≤ 0 即失败：
+  - 所有跳的 DoH 查询，包括 bootstrap 续试；
+  - 目标的 TCP 连接、TLS、请求发送、响应头；
+  - **读完整个响应体**；
+  - 所有重定向。
+- 不新增配置项。现有设置 `plugin_http_timeout_seconds`（默认 15.0，`config.py:304`；装配见 `application/modules/plugins.py:108`）在 DoH 路径上的含义改为“每次插件请求的总时限”。
+
+按 D3，unrestricted 保持按操作计时。未配置 DoH 的 allowlisted 也不变，以满足 §2.3 的“逐字节相同”。
+
+### 3.7 重定向
+
+- 每一跳重新执行 §2.1 全流程，并扣减同一个截止时间。
+- 下一跳的主机不在白名单时，在**发出 DoH 查询之前**就拒绝，DoH 服务看不到这个名字。
+- 下一跳是 IP 字面量时，不查 DoH，直接按 §3.4 检查。
+- 跨源（scheme、host、port 三元组任一不同）时，剥离 Authorization、调用方 Header 和 Body。
+- 其余沿用现状：303 改为 GET；最多 5 次重定向；允许 `https → http` 降级（跨源会剥离凭据）。
+
+### 3.8 DoH 可达性
+
+- DoH 连接不读代理变量，直接连 bootstrap IP 或 URL 中的 IP。在 TUN 环境下这些连接由 TUN 接管，按代理规则转发；TLS 端到端校验保证应答的完整性和服务器身份。
+- **只能经显式代理出网**的部署里，DoH 不可达，所有 allowlisted 请求都会以 `http.dns_failed` 或 `http.request_failed` 失败。这是失败关闭，不回退（L1）。
+- 不加启动探测，也不把探测结果作为健康门槛；启动只校验配置格式（§2.2）。
+- 不可达时，每次请求失败并记录类别。看门狗目前看不到这类失败，与 Q8 同源。
+- 运维文档给出一次性的人工核对方法：在 Bot 容器内用 bootstrap IP 发一个 DoH 查询。只是文档说明，不是程序门槛。
+- 生产能否到达所选 DoH 尚未核实。§2.2 的证书实测是在开发机上做的【假设：生产可达性】。
+
+### 3.9 透明代理与部署限制
 
 | # | 限制 | 状态 |
 |---|---|---|
-| L1 | 需要直连公网 IP 的出口。TUN 环境下成立：加入 filter 后直连 GitHub 真实 IP 已工作。**只能经显式代理出网**的部署不受支持，此时如实失败，不会改走代理 | 【issue】 |
-| L2 | 透明代理改写目的地会破坏 IP 固定：例如 Clash/Mihomo `sniffer` 开启 `override-destination` 时，会用嗅探到的 SNI 域名替换目的 IP，并用**代理自己的 DNS** 再解析。固定 IP 的保证只到 Bot 进程的 socket 为止，生产 sniffer 配置未核 | 【假设】 |
-| L3 | DoH 服务本身必须在该网络可达。例如大陆网络直连 `1.1.1.1`/`8.8.8.8` 的 DoH 可能不可用；经 TUN 时由 Clash 按 IP 规则转发。可达性未核 | 【假设】 |
-| L4 | 若配置的 DoH 实际是 fake-ip DNS（例如误填 Clash 自己的 DNS），答案落在 `198.18.x`，所有请求被拒，属于失败关闭而非绕过 | 【推论】 |
-| L5 | DoH 服务看到的是自身位置，不是 Bot 出口位置。CDN 可能返回非最优节点，影响延迟，不影响正确性 | 【推论】 |
-| L6 | 配置修改需重建 Bot 容器，同代理变量的现有规则（`docs/operations/http-proxy.zh-CN.md`） | 【实证】 |
+| L1 | 需要直连公网 IP 的出口（TUN 或真实路由）。只能经显式代理出网的部署不受支持，如实失败（§3.8） | 【issue】：TUN 下直连 GitHub 真实 IP 可用 |
+| T1 | 透明代理如果改写目的地，会破坏 IP 固定。例如 Clash/Mihomo 的 `sniffer` 开启 `override-destination` 时，会用嗅探到的 SNI/Host 替换我们拨号的 IP，再用代理自己的 DNS 重新解析，可能连到别处。Host 的保证只到 Bot 进程的 socket，无法检测这种改写 | 【假设】：生产 sniffer 配置未核，见 §8 |
+| T2 | 透明 TLS 解密代理：如果它的 CA 在 Host 的信任集合里，DoH 应答和目标身份的保证都会扩展到该代理。C1 下目标只信任 certifi，DoH 信任所有者配置的 CA | 【推论】 |
+| T3 | 我们拨的是真实 IP，fake-ip 的反向映射不会介入。代理按 IP 规则把连接转发给代理节点时，节点连的仍是该 IP | 【推论】 |
+| T4 | DoH 连接本身经过 TUN，内容受 TLS 保护；`dns-hijack` 只作用于 53 端口 | 【推论】 |
+| L4 | 误把 fake-ip DNS（例如 Clash 自己的 DoH）配置为可信 DoH 时，答案落在 `198.18.x`，全部请求被拒。这是失败关闭，不是绕过 | 【推论】 |
+| L5 | DoH 服务看到的是它自己的位置，不是 Bot 出口的位置。CDN 可能返回非最优节点，只影响延迟 | 【推论】 |
 
 ## 4. 备选方案与不选理由
 
-### P. 配置了代理时按域名经代理（第一版推荐）【不选，D2】
+- **P. 按域名经代理**（第一版的推荐）【不选，D2】：
+  - 由代理解析域名，Host 看不到最终地址；
+  - 被批准域名指向内网，或代理规则 `DIRECT` 到局域网时，会连进内网，代理 `192.168.5.2` 本身就在局域网里；
+  - 防护效果取决于部署者的代理规则，无法由代码或 E2E 证明；
+  - `0177.0.0.1`、`2130706433` 这类写法会被 `ipaddress` 当作主机名（实测），交给代理后怎么解释无法控制。
+- **B. 放行 `198.18.0.0/15`**【不选，D4】：
+  - fake-ip 环境下所有主机名都拿到这一段的地址，检查对**所有**名字失效；
+  - 等于把代理软件的可配约定写死在代码里；
+  - 会误放真实网络中的 `198.18.x`；
+  - 与 `sandbox/network_guard.py:24` 把该段列为私网相矛盾。
+- **C'. DoH 加经 HTTP 代理 CONNECT 已校验的 IP**【本阶段不做】：
+  - 能覆盖 L1“只能经代理出网”的部署；
+  - 本部署用 TUN 直连即可；
+  - 会引入代理选择和隧道清理，且代理侧仍有 T1 风险。
+- **S. SOCKS**【不纳入，D5】。
+- **D. 逐个域名加 `fake-ip-filter`**【现状临时处理】：保留为未配置 DoH 时的做法，也是 unrestricted 在 fake-ip 环境下唯一的办法。
 
-- 由代理解析域名，Host 只看到名字，看不到最终地址。被批准域名的 DNS 指向内网，或代理规则 `DIRECT` 到局域网时，请求会连进内网（代理 `192.168.5.2` 本身就在局域网）。所有者明确不接受这一点。
-- 防护效果取决于部署者的代理规则，代码和 E2E 都无法证明生产配置。
-- 非规范 IPv4 写法（`0177.0.0.1`、`2130706433`，`ipaddress` 当作主机名，本机实测）交给代理后怎么解释无法控制。
+## 5. 看门狗与 README
 
-### B. 放行 fake-ip 段 `198.18.0.0/15`【不选，D4】
-
-- fake-ip 下 Clash 对所有不在 filter 中的名字都返回 fake IP，`127.0.0.1.nip.io`、`router.lan` 都能通过检查，再由 TUN 映射回域名去连。地址检查在该环境对**所有**主机名失效。
-- fake-ip 段在 Clash 中可配（本部署是 `/16`），写死就是把代理软件的约定硬编码进 Host。
-- 会误放真实网络中的 `198.18.x`。
-- 与 `sandbox/network_guard.py:24` 把该段列为 PRIVATE 相矛盾。
-
-### C'. DoH + 经 HTTP 代理 CONNECT 已校验 IP【本阶段不做】
-
-做法是先 DoH 检查，再让代理 CONNECT 到**已固定的 IP**（网页读取现有的做法，`web/http_transport.py:199-236`），这样能覆盖 L1“只能经代理出网”的部署。不做的原因：
-- 本部署 TUN 直连可用，不需要；
-- 代理侧仍可能有 L2 式的目的地改写；
-- 会把代理选择、`NO_PROXY` 和隧道清理一起引入插件路径，扩大本 PR 范围。
-
-需要时另开 issue。
-
-### S. SOCKS【不纳入，D5】
-
-### D. 只在环境侧逐域名加 `fake-ip-filter`【现状临时处理】
-
-保留为文档中的可选做法：未配置 DoH 时的手段，也是 unrestricted 在 fake-ip 下唯一的办法（§2.3）。
-
-## 5. 看门狗与 README（与第一版相同）
-
-- **插件卡在 gap 上一个月无人知道：** 建议另开 issue。看门狗 `components()` 只汇总网关、Dream、Embedding（`container.py:996-1024`），`loops()` 中只有 `plugin_background_turns`（`container.py:986`），没有插件自报的“需要人工处理”事实。可先评估让插件用已有的 `notification.publish`（`yuki_plugin_sdk/permissions.py:50`）自行通知；这需要 github-monitor 源码确认【待核查】。
-- **github-monitor 源码与 README：** 不在本仓库（`plugins/` 只有 `subscription-monitor`），本 PR 无法修改。
+- **插件卡在 gap 上无人知道**：建议另开 issue。依据：看门狗的 `components()`（`container.py:996-1024`）和 `loops()`（`container.py:986`）都没有插件自报的状态。
+- **github-monitor**：源码不在本仓库，本 PR 无法修改它的 README。
 
 ## 6. 剩余待决
 
-| # | 问题 | 推荐 | 理由 |
+| # | 问题 | 推荐 |
+|---|---|---|
+| Q1 | 配置形态 | 主机名 URL 必须填 bootstrap；IP URL 不得填 bootstrap，且证书须含 IP SAN（§2.2） |
+| Q2 | DoH 客户端凭据 | 第一阶段不支持 |
+| Q3 | 新增 `dnspython` 依赖 | 接受。自写 DNS 报文解析风险更高 |
+| Q4 | DoH 结果的 TTL 缓存 | 第一阶段不做，每跳都查 |
+| Q5 | 统一截止时间（§3.6） | 只用于 DoH 路径；从拿到并发信号量后开始计时，排队等待不计入网络时限 |
+| Q6 | 错误码、连接顺序与续试（§3.3、§3.5） | 新增 `http.dns_failed`；A 在前；仅 TCP 失败时续试 |
+| Q7 | 网页读取和媒体下载的同类问题 | 另开 issue |
+| Q8 | 看门狗报告插件需要人工处理 | 另开 issue |
+| Q9 | CA 来源（§3.2） | C1：DoH 读 `SSL_CERT_FILE/DIR`，目标保持只用 certifi |
+
+## 7. E2E：先写的失败情况与记录项（实施阶段第一步，现在未写）
+
+### 7.1 测试环境
+
+不访问外网，不连生产。
+
+- **DoH 服务**：进程内 loopback TLS DoH，由临时 CA 签发证书。分两种证书：
+  - 主机名证书，用于主机名 URL；
+  - 含 `127.0.0.1` IP SAN 的证书，用于 IP URL。
+- **目标服务**：loopback TLS 目标服务，同一临时 CA 签发。
+- **拨号记录**：测试用的 httpcore 网络后端，记录每次 `connect_tcp(ip, port)`，并把预设的“公网”测试 IP 转发到对应的 loopback 服务。这是唯一的注入点，解析、检查和 TLS 都走真实代码。
+- **系统解析器**：注入一个对所有名字都返回 `198.18.0.x` 的实现，并计数。
+- **代理**：设置 `HTTPS_PROXY`，指向一个记录型代理。
+- **入口**：全部经真实 `BoundHttpFacade` 发起。
+- **CA 注入**：按 Q9 的决定。C1 下 DoH 的 CA 经 `SSL_CERT_FILE` 注入；目标的 CA 经现有 `SafeHttpClient(client=...)` 构造参数注入。另加一条装配断言，检查生产装配（`application/modules/plugins.py:107`）的 CA 来源。
+
+### 7.2 每个情况都要记录的项
+
+| 记录项 | 来源 |
+|---|---|
+| 结果：`ok`/`error_code`/异常类型 | 插件看到的结果 |
+| 每次拨号的 `(ip, port)`，按发生顺序 | 网络后端 |
+| DoH 收到的每个 `(qname, qtype)`、HTTP 请求数、收到的 SNI（IP URL 时应为“无”）、请求头**名称**集合 | DoH 服务 |
+| 每个目标收到的 HTTP 请求数、SNI、`Host` 头，以及 `Authorization`、`Cookie`、`Proxy-Authorization`、调用方自定义头**是否出现**（只记布尔值，不记值）、Body 长度 | 目标服务 |
+| 系统解析器调用次数 | 注入的解析器 |
+| 代理收到的连接数 | 记录型代理 |
+
+### 7.3 情况列表
+
+| # | 情况 | 期望 | 基线 `2aeeac84` |
 |---|---|---|---|
-| Q1 | 配置形态：URL + bootstrap IP；是否也允许纯 IP 的 DoH URL | URL（主机名）+ 必填 bootstrap；也允许纯 IP URL，此时 bootstrap 可省略，证书须含该 IP | §3.1；两种都不碰系统 DNS |
-| Q2 | 是否支持 DoH 客户端凭据 | 第一阶段不支持 | §3.2；无已知需求，凭据存储需另行设计 |
-| Q3 | 是否新增 `dnspython` 依赖 | 是 | §3.3；自写 DNS 报文解析风险更高 |
-| Q4 | DoH 答案是否按 TTL 缓存 | 第一阶段不缓存 | §3.3；先保证每跳检查可证，性能需要时再加 |
-| Q5 | NAT64 `64:ff9b::/96` 内嵌地址检查，是否同时修现有系统解析路径和 unrestricted | 是，两条路径共用一个检查 | §3.4；这是“全部地址必须公网”规则的正确性问题，不是新限制 |
-| Q6 | 多地址连接顺序与 TCP 失败后是否试下一个已检查地址；DoH 失败是否单独给 `http.dns_failed` | A 在前；仅 TCP 失败时在已检查集合内续试；给单独错误码 | §3.5、§3.7 |
-| Q7 | 网页读取和媒体下载（§1.4）是否另开 issue | 另开 | 不同模块、不同承诺 |
-| Q8 | 看门狗报插件“需人工处理”是否另开 issue | 另开 | §5 |
+| E1 | 配置主机名 DoH；allowlisted 域名；A 和 AAAA 都是公网 | 成功；拨号 IP ∈ 应答集合；目标 SNI 和 Host 为原域名；DoH 恰好 A、AAAA 各 1 次；目标 1 次；系统解析器 0 次；代理 0 次；DoH 请求头里没有插件头 | **红**（`PluginPermissionError`） |
+| E2 | 同 E1，但 DoH 配置为 IP URL | 成功；DoH 的 SNI 为“无”，证书按 IP SAN 校验 | 不适用 |
+| E3 | IP URL，证书不含该 IP；主机名 URL，证书主机名不符；证书由不受信 CA 签发 | 拒绝；不换 bootstrap；目标 0 次 | 不适用 |
+| E4 | 两族合并表（§3.3）的 16 格逐格覆盖，包括“地址 + NXDOMAIN”的矛盾组合 | 与表一致；拒绝时目标 0 次 | 不适用 |
+| E5 | 归类为“错误”的每种条件，分别出现在 A 侧和 AAAA 侧 | `http.dns_failed`；系统解析器 0 次；代理 0 次 | 不适用 |
+| E6 | CNAME 链尾为私网；链有环；同一 owner 既有 CNAME 又有 A；answer 中夹带不在链上的私网 A；NXDOMAIN 前带 CNAME | 前三种拒绝；夹带的记录被忽略，拨号中不出现；最后一种按 NXDOMAIN 归类 | 不适用 |
+| E7 | AAAA 为 `::1`、`fc00::1`、`::ffff:10.0.0.1`、`64:ff9b::7f00:1` | 拒绝；目标 0 次 | 不适用 |
+| E8 | DoH 返回 3xx；DoH 响应体超过 65535 字节 | 拒绝，不跟随 | 不适用 |
+| E9 | 重定向到：非白名单域名 / 私网 IP 字面量 / 应答为私网的白名单域名 | 前两种：DoH 记录中没有该名字；第三种在第二跳拒绝；首跳目标都恰好 1 次 | 起点即红 |
+| E10 | 同一域名两跳之间 DoH 答案由公网变为私网（rebinding） | 第二跳拒绝；第一跳拨号 IP 为当时应答中的地址 | 起点即红 |
+| E11 | 跨源重定向（两个主机都在白名单） | 第二跳目标上 Authorization、Cookie、调用方头均不出现，Body 长度 0；同源跳仍保留 | 起点即红 |
+| E12 | 调用方传入 `Cookie`、`Proxy-Authorization`、`Host` | 目标和 DoH 都没有收到；`Host` 为原域名 | 绿（现有剥离） |
+| E13 | 目标证书与原域名不符 | 拒绝；该地址的拨号恰好 1 次，不续试 | 起点即红 |
+| E14 | 第一个已检查地址的 TCP 被拒 | 按 Q6 续试下一个已检查地址；DoH 不重查；代理 0 次 | 不适用 |
+| E15 | 目标以低于单次超时的间隔逐字节发送响应体，总时长超过 `timeout_seconds` | DoH 路径返回 `http.request_failed`；只记录结果码，不记录耗时 | **基线返回成功**（证明 F9） |
+| E16 | DoH 逐字节慢发应答；bootstrap 首个 IP 的 TCP 挂起直到超时 | 共用截止时间，失败；不续试到超出截止 | 不适用 |
+| E17 | **未配置** DoH，系统 DNS 为 fake-ip | 仍然拒绝；系统解析器被调用 | 绿 |
+| E18 | 同时批准 unrestricted 和 allowlisted，且配置了 DoH | 完全走现状路径：系统解析器被调用，DoH 0 次；E15 的场景下行为与基线相同 | 绿 |
+| E19 | allowlisted 的公网 IP 字面量 | DoH 0 次；直接拨该 IP | 绿 |
+| E20 | 启动配置非法：`http://` URL、主机名 URL 缺 bootstrap、IP URL 填了 bootstrap、bootstrap 不是 IP、CA 文件不可读 | 启动失败，不静默禁用 | 不适用 |
 
-## 7. 先写的失败情况与 E2E 设计（实施阶段第一步，现在未写）
+### 7.4 产物
 
-**测试环境（不访问外网、不连生产）：**
-- **DoH 服务：** 进程内 loopback TLS DoH 服务，由临时 CA 签发证书，按情况返回预设报文，并记录收到的每个查询（名字、qtype）。
-- **网络后端：** 测试用 httpcore 网络后端记录每次 `connect_tcp(ip, port)`，并把预设的“公网”测试 IP 转发到 loopback 目标 TLS 服务。这样 E2E 能断言**实际连接的 IP**，同时目标地址仍能通过 global 检查。这是唯一的注入点；解析和检查走真实代码。
-- **系统解析器：** 注入一个对所有名字返回 `198.18.0.x` 的实现，模拟 fake-ip，并记录调用次数。
-- **代理环境：** 设置 `HTTPS_PROXY` 指向一个记录型 loopback 代理，用来证明插件 HTTP 从不碰代理。
-- **入口：** 全部经真实 `BoundHttpFacade`（插件看到的入口）发起。
-
-| # | 情况 | 期望 | 基线 `2aeeac84` 预期 |
-|---|---|---|---|
-| E1 | 配置 DoH；allowlisted 域名；DoH 返回公网 A+AAAA | 成功；实际连接 IP ∈ 应答集合；SNI/Host 为域名；系统解析器 0 次；代理 0 次 | **红**：`PluginPermissionError` non-public |
-| E2 | A 中一个公网、一个私网 | 拒绝；目标 0 连接 | 不适用（基线无 DoH），实施后断言 |
-| E3 | A 公网，AAAA 为 `::1` / `fc00::1` / `::ffff:10.0.0.1` / `64:ff9b::7f00:1`（后者按 Q5） | 拒绝 | 同上 |
-| E4 | CNAME 链尾为私网；链断；链有环；answer 夹带不在链上的私网 A | 前三种拒绝；夹带的记录被忽略且不被连接 | 同上 |
-| E5 | DoH 返回 SERVFAIL / 超时 / 非 200 / 错误 Content-Type / 无法解析 / TC=1 / question 不符；以上各在 A 或 AAAA 一侧 | 拒绝（`http.request_failed` 或 Q6 定的码）；系统解析器 0 次；代理 0 次 | 同上 |
-| E6 | DoH 证书不受信 / 主机名不符 | 拒绝；不换 bootstrap IP | 同上 |
-| E7 | DoH 返回 3xx | 不跟随，拒绝 | 同上 |
-| E8 | 两族 NXDOMAIN；两族 NODATA | 拒绝 | 同上 |
-| E9 | A 有地址，AAAA NODATA | 成功 | 同上 |
-| E10 | 重定向到：非白名单域名 / 私网字面量 / 应答为私网的白名单域名 | 前两种在发出 DoH 查询前拒绝（DoH 记录中无该名字）；第三种在第二跳拒绝 | 起点即红 |
-| E11 | 同一域名两跳间 DoH 答案从公网变私网（rebinding） | 第二跳拒绝；第一跳连接 IP 为当时应答 | 同上 |
-| E12 | 固定 IP 上的目标证书不匹配逻辑域名 | 拒绝 | 同上 |
-| E13 | 第一个已检查地址 TCP 拒绝连接 | 按 Q6：续试下一个已检查地址或直接失败；不重新解析，代理 0 次 | 同上 |
-| E14 | **未配置** DoH，系统 DNS 为 fake-ip | 仍拒绝（证明未放行 fake-ip，D4） | 绿 |
-| E15 | 配置 DoH 的 unrestricted 插件 | 仍走系统解析器（D3）；fake-ip 下拒绝；DoH 0 次 | 绿 |
-| E16 | 跨源重定向（两个都在白名单） | 第二跳不带 Authorization、调用方 Header 和 Body | 起点即红 |
-| E17 | allowlisted 公网 IP 字面量 | 不查 DoH，直接连接该 IP | 绿 |
-| E18 | 启动配置：`http://` DoH URL、主机名 URL 缺 bootstrap、bootstrap 非 IP | 启动失败，不静默禁用 | 不适用 |
-
-**产物：**
-- 位置：`docs/architecture/evidence/issue-678-plugin-http-doh/`；
-- 内容：每个情况一行 JSON，字段为情况号、结果码、DoH 收到的（名字、qtype）列表、实际 `connect_tcp` 的 IP 列表、系统解析器次数、代理记录数；
-- 排序写出，不含时间戳和随机端口，重复运行字节一致；
-- 同目录保存基线红跑输出。
+- 目录：`docs/architecture/evidence/issue-678-plugin-http-doh/`。
+- 每个情况一行 JSON，字段即 §7.2 的记录项。
+- 端口在记录前替换为角色名（如 `doh`、`target-a`），不含时间戳；排序后写出，重复运行**字节一致**。
+- 同目录保存基线红跑的输出，其中 E1 和 E15 必须为红。
 
 ## 8. 生产只读复核（本阶段未执行）
 
-- Bot 日志中 2026-10-22 之后 `github_poll_failed error_category=PluginPermissionError` 的出现情况（只读 grep）；
-- §1.4 假设：同期网页读取和媒体下载的 `private_url` 次数；为零时还需确认同期是否有请求，不能直接推断不受影响；
-- L2：Clash 配置中 `sniffer` 及 `override-destination` 是否开启（只读查看，不修改）。
+- Bot 日志中，2026-10-22 之后 `github_poll_failed error_category=PluginPermissionError` 的出现情况；
+- 同期网页读取和媒体下载的 `private_url` 次数（§1.4）；
+- Clash 配置中 `sniffer` 与 `override-destination` 是否开启（T1）；
+- 在 Bot 容器内，所选 DoH 的 bootstrap IP 能否建立 TLS（§3.8）。只读，不改配置。
 
 ## 9. 实施时需同步删改的文档
 
-- `docs/plugin-development/networking.md`、`security.md:31`：
-  - 写明 allowlisted 在配置 DoH 时的解析来源和信任边界（§3.2）；
-  - unrestricted 仍用系统解析器（D3）。
-- `docs/operations/http-proxy.zh-CN.md`：
-  - 插件 HTTP 仍不走代理（D2）；
-  - 新增 DoH 配置与 L1–L6。
-- `.env.example`：新增两项配置的注释示例。
-- `tests/` 中目前没有引用 `SafeHttpClient`、`BoundHttpFacade` 或其拒绝文案的测试（于 `2aeeac84` grep），没有需要删改的冻结测试；§7 将是这条路径的第一组测试。
+- **`docs/plugin-development/networking.md`、`security.md:31`**：写明以下内容：
+  - DoH 路径的解析来源和信任边界；
+  - 截止时间；
+  - NAT64 的 N1–N3；
+  - unrestricted 不变。
+- **`docs/operations/http-proxy.zh-CN.md`**：写明以下内容：
+  - 插件 HTTP 仍然不走代理；
+  - DoH 配置项；
+  - CA 来源；
+  - 可达性的人工核对方法；
+  - L1、T1–T4、L4、L5。
+- **`.env.example`**：两项配置的注释示例。
+- **测试**：`tests/` 中目前没有覆盖插件 HTTP 的测试，没有冻结测试需要删改。
 
 ## 10. 本阶段边界
 
-只修改本任务书（含改名）。未写测试，未改代码，未加依赖，未连生产，未改部署配置。分支只追加提交到同名远端分支，原 draft PR #679 不合并。
+本阶段只修改本任务书：
+
+- 未写测试，未改代码，未加依赖；
+- 未连生产，未改部署配置；
+- 分支只追加提交，原 draft PR #679 不合并。
