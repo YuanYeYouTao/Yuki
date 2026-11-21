@@ -1,0 +1,29 @@
+{
+  "nodeid": "tests/integration/test_external_agent_bridge.py::test_detach_receipt_commits_with_the_works_control_input[offline]",
+  "source_revision": "9d5242ea7fd4cb9956c331ada2bd50c0753e1fd0",
+  "uncommitted_src": "",
+  "boundary": "real TLS device WebSocket and SQLite; paused between writer commits, nothing is slept",
+  "between_writes": {
+    "receipt": {
+      "admitted": false,
+      "detached": true,
+      "executed": false,
+      "pending": false,
+      "released_without_device": true,
+      "status": "released"
+    },
+    "control_inputs": [],
+    "scalar_one": "NoResultFound('No row was found when one was required')"
+  },
+  "after_settled": {
+    "receipt": {
+      "admitted": false,
+      "detached": true,
+      "executed": false,
+      "pending": false,
+      "released_without_device": true,
+      "status": "released"
+    },
+    "control_inputs": []
+  }
+}

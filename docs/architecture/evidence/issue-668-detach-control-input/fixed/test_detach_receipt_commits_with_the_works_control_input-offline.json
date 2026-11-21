@@ -1,0 +1,43 @@
+{
+  "nodeid": "tests/integration/test_external_agent_bridge.py::test_detach_receipt_commits_with_the_works_control_input[offline]",
+  "source_revision": "39659cd979067411b91816aa7ba77bc9a61d4457",
+  "uncommitted_src": "",
+  "boundary": "real TLS device WebSocket and SQLite; paused between writer commits, nothing is slept",
+  "between_writes": {
+    "receipt": {
+      "admitted": false,
+      "detached": true,
+      "executed": false,
+      "pending": false,
+      "released_without_device": true,
+      "status": "released"
+    },
+    "control_inputs": [
+      {
+        "external_run_id": null,
+        "signal": true,
+        "text": "{\"action\": \"detach\", \"kind\": \"external_agent_control\", \"operation_id\": \"5bdb47ee-553e-43f5-8792-a1e592074c43\", \"pending\": false, \"released_without_device\": true, \"status\": \"released\", \"target_operation_id\": \"3eaaaf96-e9b1-466a-968b-f14a83ab98b3\"}",
+        "wake": true
+      }
+    ],
+    "scalar_one": "one row"
+  },
+  "after_settled": {
+    "receipt": {
+      "admitted": false,
+      "detached": true,
+      "executed": false,
+      "pending": false,
+      "released_without_device": true,
+      "status": "released"
+    },
+    "control_inputs": [
+      {
+        "external_run_id": null,
+        "signal": true,
+        "text": "{\"action\": \"detach\", \"kind\": \"external_agent_control\", \"operation_id\": \"5bdb47ee-553e-43f5-8792-a1e592074c43\", \"pending\": false, \"released_without_device\": true, \"status\": \"released\", \"target_operation_id\": \"3eaaaf96-e9b1-466a-968b-f14a83ab98b3\"}",
+        "wake": true
+      }
+    ]
+  }
+}

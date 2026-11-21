@@ -42,6 +42,10 @@ from yuki.runtime.work_schema_v1 import inputs, work
 from yuki.runtime.work_wait import PreparedWaitAction, WorkWaitRepository
 from yuki.sandbox.db_models import SandboxTaskContinuationModel, SandboxTaskRunModel
 
+# Controls of an original operation (or of a session wait). The Work that issued one is
+# told what it settled through a private input, committed with the control's receipt.
+CONTROLS = frozenset({"steer", "respond", "cancel", "detach"})
+
 
 def encode(value: Any) -> str:
     return json.dumps(value, sort_keys=True, ensure_ascii=False, allow_nan=False)
@@ -647,6 +651,9 @@ class AgentRepository:
                     ),
                     request_key=None,
                 )
+            if row.action in CONTROLS and row.work_id is not None and row.result_json:
+                # One transaction: no reader or restart sees the receipt without it (#668).
+                await self._control_settled(session, row)
             return row
 
     async def _bind_native(
@@ -1184,95 +1191,81 @@ class AgentRepository:
             )
             return owner is not None
 
-    async def control_settled(self, identity: str) -> None:
+    async def _control_settled(self, session: AsyncSession, row: AgentOperationModel) -> None:
         """Tell the Work that issued a control what it settled (private input)."""
+        assert row.work_id is not None and row.result_json is not None
         waits = WorkWaitRepository(WorkRepository(self.database))
-        while True:
-            async with self.database.read_session() as reader:
-                await reader.execute(text("BEGIN"))
-                row = await reader.get(AgentOperationModel, identity)
-                if row is None or row.work_id is None or row.result_json is None:
-                    return
-                target_id = json.loads(row.command_json).get("arguments", {}).get("operation_id")
-                target = await reader.get(AgentOperationModel, target_id) if target_id else None
-                # A run the control already ended is matched by the normal completion
-                # path (with its real terminal fact); only a still-waiting run is signalled.
-                waiting_run = (
-                    target.run_id
-                    if target is not None
-                    and target.run_id
-                    and target.work_id == row.work_id
-                    and await reader.scalar(
-                        select(SandboxTaskRunModel.status).where(
-                            SandboxTaskRunModel.request_id == target.id
-                        )
-                    )
-                    == "waiting"
-                    else None
+        target_id = json.loads(row.command_json).get("arguments", {}).get("operation_id")
+        target = await session.get(AgentOperationModel, target_id) if target_id else None
+        # A run the control already ended is matched by the normal completion
+        # path (with its real terminal fact); only a still-waiting run is signalled.
+        waiting_run = (
+            target.run_id
+            if target is not None
+            and target.run_id
+            and target.work_id == row.work_id
+            and await session.scalar(
+                select(SandboxTaskRunModel.status).where(
+                    SandboxTaskRunModel.request_id == target.id
                 )
-                prepared = {row.work_id: await waits.prepare_external_action(reader, row.work_id)}
-                # A release's own answer is the record's fact: the settlement retries a
-                # failure at the next fact; it is never handed to the parent.
-                settling = await release_reference(reader, row)
-            result = json.loads(row.result_json)
-            input_json = encode_card(
-                {
-                    "kind": "external_agent_control",
-                    "action": row.action,
-                    "operation_id": row.id,
-                    "run_id": row.run_id,
-                    "target_operation_id": target_id,
-                    **{
-                        key: result[key]
-                        for key in (
-                            "status",
-                            "pending",
-                            "error",
-                            "cancel_requested",
-                            "response_submitted",
-                            "released_without_device",
-                        )
-                        if key in result
-                    },
-                }
             )
-            async with self.database.immediate_session() as writer:
-                if not await waits.external_action_current(
-                    writer, row.work_id, prepared[row.work_id]
-                ):
-                    continue
-                current = await writer.get(AgentOperationModel, identity)
-                assert current is not None
-                if await executor_of(writer, current.work_id) is not None:
-                    # A control on a delegation (an answer, a cancel) changes the record,
-                    # not a model's context; only a failed control is told to the parent.
-                    if result.get("error") is None and current.action == "respond":
-                        await self.delegations.resolved(writer, current)
-                    elif result.get("error") is not None and not settling:
-                        record = (
-                            (await writer.execute(select(work).where(work.c.id == current.work_id)))
-                            .mappings()
-                            .first()
-                        )
-                        if record is not None:
-                            await self.delegations._tell_parent(
-                                writer, record, f"control:{identity}", input_json
-                            )
-                    return
-                await self._input(
-                    writer,
-                    current,
-                    f"control:{identity}",
-                    input_json,
-                    prepared_waits=prepared,
-                    request=False,
+            == "waiting"
+            else None
+        )
+        prepared = {row.work_id: await waits.prepare_external_action(session, row.work_id)}
+        result = json.loads(row.result_json)
+        input_json = encode_card(
+            {
+                "kind": "external_agent_control",
+                "action": row.action,
+                "operation_id": row.id,
+                "run_id": row.run_id,
+                "target_operation_id": target_id,
+                **{
+                    key: result[key]
+                    for key in (
+                        "status",
+                        "pending",
+                        "error",
+                        "cancel_requested",
+                        "response_submitted",
+                        "released_without_device",
+                    )
+                    if key in result
+                },
+            }
+        )
+        if await executor_of(session, row.work_id) is not None:
+            # A control on a delegation (an answer, a cancel) changes the record,
+            # not a model's context; only a failed control is told to the parent.
+            if result.get("error") is None and row.action == "respond":
+                await self.delegations.resolved(session, row)
+            # A release's own answer is the record's fact: the settlement retries a
+            # failure at the next fact; it is never handed to the parent.
+            elif result.get("error") is not None and not await release_reference(session, row):
+                record = (
+                    (await session.execute(select(work).where(work.c.id == row.work_id)))
+                    .mappings()
+                    .first()
                 )
-                if waiting_run is not None:
-                    # A Work waiting on that very run hears about the control at once.
-                    await waits.signal_external_action(
-                        writer, row.work_id, waiting_run, prepared=prepared[row.work_id]
+                if record is not None:
+                    await self.delegations._tell_parent(
+                        session, record, f"control:{row.id}", input_json
                     )
             return
+        await self._input(
+            session,
+            row,
+            f"control:{row.id}",
+            input_json,
+            prepared_waits=prepared,
+            request=False,
+        )
+        if waiting_run is not None:
+            # A Work waiting on that very run hears about the control at once.
+            await waits.signal_external_action(
+                session, row.work_id, waiting_run, prepared=prepared[row.work_id]
+            )
 
     async def connection_event(self, device_id: str, connection_id: str, online: bool) -> None:
         """Record transport facts in original Work inputs, never in native receipts."""

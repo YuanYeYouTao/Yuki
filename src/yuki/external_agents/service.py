@@ -24,6 +24,7 @@ from yuki.external_agents.delegation import answer_taken, release_in_effect
 from yuki.external_agents.errors import ExternalAgentArgumentError
 from yuki.external_agents.identity import ConnectorIdentityService
 from yuki.external_agents.repository import (
+    CONTROLS,
     AgentRepository,
     CatalogSuperseded,
     encode,
@@ -43,9 +44,6 @@ CONNECTOR_PROTOCOL = 5
 _SUBMITTED = frozenset({"prompt", "queue", "watch"})
 # New native input checked against the instance's own declared capabilities.
 _DECLARED = frozenset({"prompt", "queue", "watch", "steer"})
-# Controls of an original operation (or of a session wait). Their device RPC also
-# belongs to this service; the initiating Work is told through a private input.
-_CONTROLS = frozenset({"steer", "respond", "cancel", "detach"})
 # Receipt of an explicit relationship end the device never confirmed.
 _RELEASED = {
     "status": "released",
@@ -299,7 +297,7 @@ class ExternalAgentService:
                 # it again now proves nothing about that (#645).
                 return
             # Nothing was written: the source, connection or grant ended first.
-            operation = await self.repository.response(
+            await self.repository.response(
                 identity,
                 {
                     "error": "source_or_connection_changed_before_dispatch",
@@ -308,8 +306,6 @@ class ExternalAgentService:
                     "pending": False,
                 },
             )
-            if operation.action in _CONTROLS and operation.work_id is not None:
-                await self.repository.control_settled(identity)
             return
         try:
             # Protocol 5: the device's answer is a retransmitted receipt event settled
@@ -332,6 +328,7 @@ class ExternalAgentService:
         in between, the control still has no receipt, so a reconnect reads it back by
         its original ID and settles again while its target is unsettled or its Work
         is live (every settlement step is idempotent); otherwise it stays unknown.
+        The receipt and the issuing Work's input commit together (#668).
         """
         async with self.database.read_session() as reader:
             operation = await reader.get(AgentOperationModel, identity)
@@ -339,7 +336,7 @@ class ExternalAgentService:
             target_id = json.loads(operation.command_json).get("arguments", {}).get("operation_id")
             target = (
                 await reader.get(AgentOperationModel, target_id)
-                if operation.action in _CONTROLS and isinstance(target_id, str)
+                if operation.action in CONTROLS and isinstance(target_id, str)
                 else None
             )
         if target is not None:
@@ -355,9 +352,7 @@ class ExternalAgentService:
                 result = {**_RELEASED, "device_answer": result}
             else:
                 await self._control_result(target, operation.action, result)
-        operation = await self.repository.response(identity, result)
-        if operation.action in _CONTROLS and operation.work_id is not None:
-            await self.repository.control_settled(identity)
+        await self.repository.response(identity, result)
 
     def _query_original(self, identity: str, connection: DeviceConnection, local_id: str) -> None:
         if identity in self._dispatches or identity in self._queries:
@@ -392,7 +387,7 @@ class ExternalAgentService:
             async with self.database.read_session() as reader:
                 operation = await reader.get(AgentOperationModel, identity)
             assert operation is not None
-            if operation.action in _CONTROLS:
+            if operation.action in CONTROLS:
                 # The device journal began this control and has no answer yet. A control
                 # has no later events, so this placeholder is not its receipt: it stays
                 # unanswered and is read back again (reconnect or an explicit query).
@@ -1167,8 +1162,6 @@ class ExternalAgentService:
         # Target first, then this receipt: see `_settle` for the restart argument.
         await self._detached(target)
         operation = await self.repository.response(operation.id, dict(_RELEASED))
-        if operation.work_id is not None:
-            await self.repository.control_settled(operation.id)
         return await self._view(operation)
 
     async def _control_result(

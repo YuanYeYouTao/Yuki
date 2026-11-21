@@ -1,10 +1,14 @@
 """Real TLS HTTP/device WebSocket, original SQLite Work inputs and receipts."""
 
 import asyncio
+import contextlib
 import json
+import os
 import socket
 import ssl
+import subprocess
 from contextlib import asynccontextmanager
+from pathlib import Path
 from types import SimpleNamespace
 from uuid import UUID, uuid4
 
@@ -1830,6 +1834,159 @@ async def test_explicit_detach_ends_the_work_relationship_without_the_device(bri
             assert json.loads(task.completion_json)["admitted"] is False
         assert [item["action"] for item in computer.commands].count("prompt") == 1
     finally:
+        await computer.close()
+
+
+@pytest.fixture
+def detach_evidence(tmp_path, request):
+    """#668: keep what a reader saw between the writes even when the assertions fail."""
+    root = request.config.rootpath
+    directory = Path(os.environ.get("YUKI_DETACH_ARTIFACT_DIR", str(tmp_path)))
+    directory.mkdir(parents=True, exist_ok=True)
+    evidence = {
+        "nodeid": request.node.nodeid,
+        "source_revision": subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=root, text=True
+        ).strip(),
+        # Uncommitted source changes the run included (empty: exactly that revision).
+        "uncommitted_src": subprocess.check_output(
+            ["git", "diff", "--stat", "HEAD", "--", "src"], cwd=root, text=True
+        ).strip(),
+        "boundary": "real TLS device WebSocket and SQLite; paused between writer commits, "
+        "nothing is slept",
+    }
+    try:
+        yield evidence
+    finally:
+        name = request.node.name.replace("[", "-").replace("]", "")
+        (directory / f"{name}.json").write_text(
+            json.dumps(evidence, ensure_ascii=False, indent=2, default=str) + "\n",
+            encoding="utf-8",
+        )
+
+
+@pytest.mark.parametrize("device_state", ["offline", "no_record"])
+async def test_detach_receipt_commits_with_the_works_control_input(
+    bridge, device_state, monkeypatch, detach_evidence
+):
+    """#668: no commit leaves a control's receipt without the Work's control input.
+
+    The caller that first commits the detach receipt is paused right after that
+    commit, before it runs another line: what a reader sees then is what every reader
+    (and a process that ends there) gets. `offline` then cancels it, as if the process
+    ended between the writes; nothing may be needed afterwards.
+    """
+    computer = await NativeComputer(bridge).start()
+    detach_id = str(uuid4())
+    between = asyncio.Event()
+    resume = asyncio.Event()
+    paused = {}
+    original_writer = bridge.database.immediate_session
+
+    @asynccontextmanager
+    async def writer():
+        async with original_writer() as session:
+            yield session
+        if "task" not in paused and await receipt(bridge, detach_id) is not None:
+            paused["task"] = asyncio.current_task()
+            between.set()
+            await resume.wait()
+
+    async def told():
+        async with bridge.database.read_session() as reader:
+            return list(
+                await reader.scalars(
+                    select(inputs.c.payload_json).where(
+                        inputs.c.work_id == control.current["id"],
+                        inputs.c.source_key.like(f"external-agent:control:{detach_id}%"),
+                    )
+                )
+            )
+
+    try:
+        instance, session_id = await directory(bridge)
+        async with accepted_work(bridge) as control:
+            computer.hold = {"prompt"}
+            operation_id = str(uuid4())
+            await bridge.service.execute(
+                {
+                    "action": "prompt",
+                    "instance_id": instance,
+                    "session_id": session_id,
+                    "prompt": "Delivery stays unknown",
+                },
+                operation_id,
+                bridge.source,
+            )
+
+            async def held():
+                return operation_id in computer.held
+
+            await until(held)
+            if device_state == "offline":
+                await computer.close()
+                await settled(bridge)
+            else:
+                computer.fail = {
+                    "detach": {
+                        "code": "original_operation_not_found",
+                        "message": "Original operation is unavailable",
+                        "admitted": False,
+                        "executed": False,
+                    }
+                }
+            monkeypatch.setattr(bridge.database, "immediate_session", writer)
+            detach = asyncio.create_task(
+                bridge.service.execute(
+                    {"action": "detach", "operation_id": operation_id}, detach_id, bridge.source
+                )
+            )
+            async with asyncio.timeout(5):
+                await between.wait()
+            between_writes = await told()
+            detach_evidence["between_writes"] = {
+                "receipt": await receipt(bridge, detach_id),
+                "control_inputs": [json.loads(item) for item in between_writes],
+            }
+            # The original test's own read at this point.
+            async with bridge.database.read_session() as reader:
+                result = await reader.execute(
+                    select(inputs.c.payload_json).where(
+                        inputs.c.work_id == control.current["id"],
+                        inputs.c.source_key.like(f"external-agent:control:{detach_id}%"),
+                    )
+                )
+                try:
+                    result.scalar_one()
+                except Exception as error:
+                    detach_evidence["between_writes"]["scalar_one"] = repr(error)
+                else:
+                    detach_evidence["between_writes"]["scalar_one"] = "one row"
+            if device_state == "offline":
+                # The process ends here: the paused caller never runs another line.
+                assert paused["task"] is detach
+                detach.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await detach
+            resume.set()
+            if not detach.cancelled():
+                await detach
+            await settled(bridge)
+            # Reading the control back afterwards is the only later step anyone takes.
+            await bridge.service.execute(
+                {"action": "get", "operation_id": detach_id}, str(uuid4()), bridge.source
+            )
+            await settled(bridge)
+            after = await told()
+            detach_evidence["after_settled"] = {
+                "receipt": await receipt(bridge, detach_id),
+                "control_inputs": [json.loads(item) for item in after],
+            }
+            assert len(between_writes) == 1
+            assert json.loads(json.loads(between_writes[0])["text"])["status"] == "released"
+            assert after == between_writes
+    finally:
+        resume.set()
         await computer.close()
 
 

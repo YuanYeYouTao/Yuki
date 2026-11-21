@@ -1,0 +1,56 @@
+{
+  "nodeid": "tests/integration/test_external_agent_bridge.py::test_detach_receipt_commits_with_the_works_control_input[no_record]",
+  "source_revision": "9d5242ea7fd4cb9956c331ada2bd50c0753e1fd0",
+  "uncommitted_src": "",
+  "boundary": "real TLS device WebSocket and SQLite; paused between writer commits, nothing is slept",
+  "between_writes": {
+    "receipt": {
+      "admitted": false,
+      "detached": true,
+      "device_answer": {
+        "error": {
+          "admitted": false,
+          "code": "original_operation_not_found",
+          "executed": false,
+          "message": "Original operation is unavailable"
+        },
+        "executed": false,
+        "pending": false
+      },
+      "executed": false,
+      "pending": false,
+      "released_without_device": true,
+      "status": "released"
+    },
+    "control_inputs": [],
+    "scalar_one": "NoResultFound('No row was found when one was required')"
+  },
+  "after_settled": {
+    "receipt": {
+      "admitted": false,
+      "detached": true,
+      "device_answer": {
+        "error": {
+          "admitted": false,
+          "code": "original_operation_not_found",
+          "executed": false,
+          "message": "Original operation is unavailable"
+        },
+        "executed": false,
+        "pending": false
+      },
+      "executed": false,
+      "pending": false,
+      "released_without_device": true,
+      "status": "released"
+    },
+    "control_inputs": [
+      {
+        "external_run_id": null,
+        "signal": true,
+        "text": "{\"action\": \"detach\", \"kind\": \"external_agent_control\", \"operation_id\": \"405d7603-92ea-479c-88d9-32e344013cdb\", \"pending\": false, \"released_without_device\": true, \"status\": \"released\", \"target_operation_id\": \"6a23a346-af75-44e5-8abd-8798f3476817\"}",
+        "wake": true
+      }
+    ]
+  }
+}

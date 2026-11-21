@@ -1,0 +1,52 @@
+{
+  "baseline": {
+    "runs_per_param": 20,
+    "source_revisions": [
+      "9d5242ea7fd4cb9956c331ada2bd50c0753e1fd0"
+    ],
+    "uncommitted_src": [
+      ""
+    ],
+    "outcomes": [
+      {
+        "count": 20,
+        "control_inputs_after_settled_and_get": 0,
+        "control_inputs_between_writes": 0,
+        "param": "offline",
+        "scalar_one_between_writes": "NoResultFound('No row was found when one was required')"
+      },
+      {
+        "count": 20,
+        "control_inputs_after_settled_and_get": 1,
+        "control_inputs_between_writes": 0,
+        "param": "no_record",
+        "scalar_one_between_writes": "NoResultFound('No row was found when one was required')"
+      }
+    ]
+  },
+  "fixed": {
+    "runs_per_param": 20,
+    "source_revisions": [
+      "39659cd979067411b91816aa7ba77bc9a61d4457"
+    ],
+    "uncommitted_src": [
+      ""
+    ],
+    "outcomes": [
+      {
+        "count": 20,
+        "control_inputs_after_settled_and_get": 1,
+        "control_inputs_between_writes": 1,
+        "param": "no_record",
+        "scalar_one_between_writes": "one row"
+      },
+      {
+        "count": 20,
+        "control_inputs_after_settled_and_get": 1,
+        "control_inputs_between_writes": 1,
+        "param": "offline",
+        "scalar_one_between_writes": "one row"
+      }
+    ]
+  }
+}

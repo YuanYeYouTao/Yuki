@@ -1,0 +1,63 @@
+{
+  "nodeid": "tests/integration/test_external_agent_bridge.py::test_detach_receipt_commits_with_the_works_control_input[no_record]",
+  "source_revision": "39659cd979067411b91816aa7ba77bc9a61d4457",
+  "uncommitted_src": "",
+  "boundary": "real TLS device WebSocket and SQLite; paused between writer commits, nothing is slept",
+  "between_writes": {
+    "receipt": {
+      "admitted": false,
+      "detached": true,
+      "device_answer": {
+        "error": {
+          "admitted": false,
+          "code": "original_operation_not_found",
+          "executed": false,
+          "message": "Original operation is unavailable"
+        },
+        "executed": false,
+        "pending": false
+      },
+      "executed": false,
+      "pending": false,
+      "released_without_device": true,
+      "status": "released"
+    },
+    "control_inputs": [
+      {
+        "external_run_id": null,
+        "signal": true,
+        "text": "{\"action\": \"detach\", \"kind\": \"external_agent_control\", \"operation_id\": \"f145cef1-f12b-46c4-9979-c643cf72902c\", \"pending\": false, \"released_without_device\": true, \"status\": \"released\", \"target_operation_id\": \"17ed1722-f946-43ca-955d-229c61ff644b\"}",
+        "wake": true
+      }
+    ],
+    "scalar_one": "one row"
+  },
+  "after_settled": {
+    "receipt": {
+      "admitted": false,
+      "detached": true,
+      "device_answer": {
+        "error": {
+          "admitted": false,
+          "code": "original_operation_not_found",
+          "executed": false,
+          "message": "Original operation is unavailable"
+        },
+        "executed": false,
+        "pending": false
+      },
+      "executed": false,
+      "pending": false,
+      "released_without_device": true,
+      "status": "released"
+    },
+    "control_inputs": [
+      {
+        "external_run_id": null,
+        "signal": true,
+        "text": "{\"action\": \"detach\", \"kind\": \"external_agent_control\", \"operation_id\": \"f145cef1-f12b-46c4-9979-c643cf72902c\", \"pending\": false, \"released_without_device\": true, \"status\": \"released\", \"target_operation_id\": \"17ed1722-f946-43ca-955d-229c61ff644b\"}",
+        "wake": true
+      }
+    ]
+  }
+}
