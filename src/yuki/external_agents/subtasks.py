@@ -42,6 +42,9 @@ def _service(control: Any) -> Any:
     return service
 
 
+_FAILED_RELEASE = "已失败的委派先用 cancel 放弃恢复；需要交还会话的话，之后再 release"
+
+
 def _request_id(work_id: str, key: str, purpose: str) -> str:
     digest = hashlib.sha256(key.encode()).hexdigest()[:32]
     return f"delegation:{work_id}:{purpose}:{digest}"
@@ -372,20 +375,16 @@ async def manage_external(
 ) -> dict[str, Any]:
     """cancel / resume / release a delegation; cancel or release stops an observation.
 
-    ``revision`` is the one the caller read the record at, if any: a record moved on
-    since then is a version_conflict, checked before any native side effect and again
-    in the writer that settles it.
+    ``revision`` is the one the caller read the record at, if any. cancel checks it in
+    the writer that ends the record, and resume in the writer that reopens it before
+    anything is dispatched; a record moved on since then is a version_conflict.
+    A failed record only opens cancel (give up recovery); release it afterwards.
     """
     from yuki.runtime.work_management import WorkManagementError, manage_work
 
     database = control.repository.database
     service = _service(control)
     observe = executor["relationship"] == "observe"
-    if revision is not None:
-        async with database.read_session() as reader:
-            current = await reader.scalar(select(work.c.revision).where(work.c.id == identity))
-        if current != revision:
-            raise ValueError("version_conflict")
     if action == "resume":
         if observe:
             raise ExternalAgentArgumentError("observe_only", "观察不能恢复；需要时重新开始观察。")
@@ -438,6 +437,12 @@ async def manage_external(
                 )
             _dispatched(result)
         return {"id": identity, "status": "running", "dispatch": result.get("status")}
+    if action == "release" and not observe:
+        async with database.read_session() as reader:
+            state = await reader.scalar(select(work.c.state).where(work.c.id == identity))
+        if state == "failed":
+            # Refused before any native operation: cancel first, then release.
+            raise ExternalAgentArgumentError("failed_record_release", _FAILED_RELEASE)
     if action == "release" or observe:
         # Release (or stopping an observation) detaches Yuki's operations first; a
         # releasing connector closes Yuki's own native process at the turn boundary.
@@ -450,11 +455,13 @@ async def manage_external(
     async with database.immediate_session() as writer:
         await control.repository._assert_lease(writer, control.lease)
         row = (await writer.execute(select(work).where(work.c.id == identity))).mappings().one()
-        if revision is not None and row["revision"] != revision:
+        abandon = action == "cancel" and not observe
+        if abandon and revision is not None and row["revision"] != revision:
             raise ValueError("version_conflict")
-        # A failed record is ended here as well, so the reply matches its stored state.
-        # Its native run already ended: only the retire sweep cancels waiting runs.
-        if row["state"] not in {"completed", "cancelled"}:
+        # Cancel also ends a failed record (gives up its recovery), so the reply matches
+        # its stored state. Its native run already ended: only the retire sweep cancels
+        # waiting runs.
+        if row["state"] not in TERMINAL or (abandon and row["state"] == "failed"):
             if action == "release" or observe:
                 # Ending Yuki's relationship only: the operations are already detached,
                 # so no native cancel follows (taskbook §4.11).

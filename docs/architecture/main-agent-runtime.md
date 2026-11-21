@@ -656,8 +656,9 @@ cancelled 工作者不能恢复或接收消息，同样释放。failed 的 Work 
 failed/completed 后代保持原状态，它们的 refs 随根 Work 的工作者归档释放；原失败码保留在
 `runtime_work_recovery.failure_json`。`manage_task` 对非当前目标做 cancel/fail/resume 时，如果本次激活已经用
 `get_tasks(id)` 读到它是 failed，普通 Work、子任务、委派记录和中性前台 resume 都以读到的 revision 核对，期间被其他入口改动则返回
-`version_conflict`，不写入任何内容（委派记录在任何原生调用之前核对）；记录只在调用成功或重新读取时结束，冲突后不重新读取的重试仍会冲突；
-没有读过则以调用时的当前 revision 执行。failed 委派记录取消后真实写入 cancelled，已结束的原生回合不再收到取消。
+`version_conflict`，不写入任何内容（委派记录的 cancel 在结束记录的写事务里核对，resume 在派发前的重开写事务里核对）；记录只在调用成功或重新读取时结束，冲突后不重新读取的重试仍会冲突；
+没有读过则以调用时的当前 revision 执行。failed 委派记录只开放 cancel：取消后真实写入 cancelled，已结束的原生回合不再收到取消；对当前 failed 的委派记录 release 会在任何原生操作之前被拒绝，
+提示先用 cancel 放弃恢复、需要交还会话再 release；cancelled 记录的 release 与停止观察照旧。
 看门狗只在协议存储达到告警线或出现容量挂起时，在存储事实里列出持有字节最多的 5 个 failed Work（只含内部 ID、
 revision、分类码、原因码、时间和字节），`exclusive_bytes`/`failed_only_bytes` 只是观察时的可回收估算或上界；
 看门狗不取消，放弃由主人在普通轮里决定。工作者显式归档与 canonical 隐私清退沿各自合同处理。

@@ -1099,8 +1099,8 @@ class WorkControl:
             )
             if candidate is None or candidate["state"] in {"completed", "cancelled"}:
                 raise ValueError("resume_work_not_authorized")
-            read = self.observed_revisions.get(candidate["work_id"], candidate["revision"])
-            if read != candidate["revision"]:
+            read = self.observed_revisions.get(candidate["work_id"])
+            if read is not None and read != candidate["revision"]:
                 raise ValueError("version_conflict")
             await self.repository.enqueue(
                 self.lease.conversation_id,
@@ -1118,6 +1118,8 @@ class WorkControl:
                         else "继续原目标"
                     },
                 ),
+                # Checked again in the writer that queues it.
+                resume_revision=read,
             )
             self.handoff_work_id = target
             self.observed_revisions.pop(candidate["work_id"], None)

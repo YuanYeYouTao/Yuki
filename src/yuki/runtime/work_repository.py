@@ -1029,10 +1029,12 @@ class WorkRepository:
         work_id: str | None = None,
         ready: bool = True,
         resume: tuple[WorkLease, dict[str, Any]] | None = None,
+        resume_revision: int | None = None,
         payload: dict[str, Any] | None = None,
         prepared_payload: str | None = None,
         session: AsyncSession | None = None,
     ) -> int:
+        """``resume_revision``: the revision the resumer read; moved since, nothing is written."""
         from yuki.runtime.execution_receipts import PROCESS_ID
 
         if not source_key or kind not in {"message", "completion", "control"}:
@@ -1084,6 +1086,10 @@ class WorkRepository:
                     or owned.generation != generation
                 ):
                     raise WorkConflict("work_resume_scope_mismatch")
+                if resume_revision is not None and resume_revision != await session.scalar(
+                    select(work.c.revision).where(work.c.id == work_id)
+                ):
+                    raise ValueError("version_conflict")
             await session.execute(
                 insert(inputs)
                 .values(

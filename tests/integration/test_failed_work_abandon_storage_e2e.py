@@ -41,6 +41,17 @@ F18 the revision check over-reaches: Yuki's own successful write makes its next 
     revision) is bound, so cancelling it later fails;
 F19 cancelling a failed record sends a native cancel/release or registers an operation.
 
+F20 a read is bypassed: a delegation record ignores it, a subtask drops it before
+    the call so a retry acts at the newest revision, a subtask or neutral resume never
+    compares it, or a subtask conflict ends the whole turn;
+F21 a failed delegation record opens more than cancel: releasing a currently failed
+    record reaches the native service (or ends the record) instead of being refused
+    first with the cancel-first hint; releasing a cancelled record or stopping an
+    observation no longer behaves as on main; a cancel after another entry already
+    ended the read record answers "cancelled" instead of ``version_conflict``;
+F22 a neutral resume passes the read check, another entry resumes the Work before
+    the enqueue writer, and the Work is queued again with Yuki's input.
+
 Watchdog
 W1  near the cap the facts lack failed holders; below the threshold they are computed;
 W2  holders not ordered by ``held_bytes``; wrong bytes (a shared object counted as
@@ -284,7 +295,9 @@ class Recorder:
         return call
 
 
-async def _failed_record(database, conversation: str, person: str) -> dict[str, str]:
+async def _failed_record(
+    database, conversation: str, person: str, relationship: str = "delegate"
+) -> dict[str, str]:
     """A delegation record whose native run already ended with a final failed receipt."""
     now = time.time()
     created = datetime.fromtimestamp(now, UTC)
@@ -327,7 +340,7 @@ async def _failed_record(database, conversation: str, person: str) -> dict[str, 
                 source_key=f"delegate:{record}",
                 brief_json=json.dumps({"goal": "SECRET-BRIEF"}),
                 executor_json=json.dumps(
-                    {"relationship": "delegate", "device_id": device, "instance_id": instance}
+                    {"relationship": relationship, "device_id": device, "instance_id": instance}
                 ),
             )
         )
@@ -1239,26 +1252,33 @@ async def test_a_failed_read_guards_every_manage_path(database, tmp_path):
         assert mailbox == 0
         outcome[f"subtask_{action}{'_with_text' if extra else ''}"] = codes([first, retry])
 
-    # Delegation record: cancel, release and resume never act on the moved record,
-    # and nothing native is sent.
+    # Delegation record: cancel and resume never act on the moved record, and nothing
+    # native is sent (release of a failed record is refused outright, see S7).
     conversation = await scene.conversation()
-    for action, extra in (("cancel", {}), ("release", {}), ("resume", {"text": "继续"})):
+    # The record either runs again or failed again since the read (same state, newer
+    # revision): only the read revision tells the second case apart.
+    for action, extra, state in (
+        ("cancel", {}, "waiting_external"),
+        ("cancel", {}, "failed"),
+        ("resume", {"text": "继续"}, "waiting_external"),
+        ("resume", {"text": "继续"}, "failed"),
+    ):
         record = (await _failed_record(database, conversation, scene.env.person))["record"]
         call = {"action": action, "id": record, **extra}
         operations = await _operations(database)
         read, first, retry = await _owner_turn(
             scene,
-            f"record-{action}",
+            f"record-{action}-{state}",
             [("get_tasks", {"id": record}), ("manage_task", call), ("manage_task", call)],
-            hook=moved(record, "waiting_external"),
+            hook=moved(record, state),
         )
         assert read["status"] == "failed", read
         assert codes([first, retry]) == ["version_conflict"] * 2, (action, first, retry)
         row = await _row(database, record)
-        assert (row["state"], row["revision"]) == ("waiting_external", 2), row
+        assert (row["state"], row["revision"]) == (state, 2), row
         assert recorder.calls == [], recorder.calls
         assert await _operations(database) == operations
-        outcome[f"record_{action}"] = codes([first, retry])
+        outcome[f"record_{action}_after_{state}"] = codes([first, retry])
 
     # Neutral resume (no current Work): it is not queued again.
     neutral = await _fail_by_turn(scene, "fn", "SECRET-GOAL-N 订票")
@@ -1274,3 +1294,152 @@ async def test_a_failed_read_guards_every_manage_path(database, tmp_path):
     assert (row["state"], row["revision"]) == ("failed", 3), row
     outcome["neutral_resume"] = codes([first])
     RESULTS["S6_every_path_guarded"] = outcome
+
+
+# --------------------------------------------------------------------------- S7
+
+
+class ReleaseRecorder:
+    """The native service: release calls are recorded; anything else is refused."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, bool]] = []
+
+    async def release(self, work_id, source, *, request_id, close_owner):
+        self.calls.append((work_id, close_owner))
+        return []
+
+    def __getattr__(self, name: str):
+        async def call(*args, **kwargs):
+            raise AssertionError(f"native service used: {name}")
+
+        return call
+
+
+FAILED_RELEASE_HINT = "已失败的委派先用 cancel 放弃恢复；需要交还会话的话，之后再 release"
+
+
+async def test_failed_record_opens_only_cancel_and_resume_window_is_closed(
+    database, tmp_path, monkeypatch
+):
+    """F21/F22: a failed record only opens cancel; neutral resume re-checks in its writer."""
+    from yuki.runtime.work_repository import WorkRepository
+
+    scene = await Scene(database, tmp_path).build()
+    conversation = await scene.conversation()
+    service = ReleaseRecorder()
+    database.external_agents = service
+    outcome: dict[str, Any] = {}
+
+    # F21: releasing a currently failed record is refused before any native call,
+    # and so is a retry; then cancel gives up its recovery.
+    record = (await _failed_record(database, conversation, scene.env.person))["record"]
+    operations = await _operations(database)
+    read, refused, again, cancelled = await _owner_turn(
+        scene,
+        "failed-release",
+        [
+            ("get_tasks", {"id": record}),
+            ("manage_task", {"action": "release", "id": record}),
+            ("manage_task", {"action": "release", "id": record}),
+            ("manage_task", {"action": "cancel", "id": record, "text": "放弃恢复"}),
+        ],
+    )
+    assert read["status"] == "failed", read
+    for reply in (refused, again):
+        assert reply["error"] == "failed_record_release", reply
+        assert reply["message"] == FAILED_RELEASE_HINT, reply
+    assert service.calls == []
+    assert await _operations(database) == operations
+    assert cancelled["status"] == "cancelled", cancelled
+    row = await _row(database, record)
+    assert (row["state"], row["revision"]) == ("cancelled", 2), row
+    # Releasing the cancelled record afterwards keeps main's behaviour: Yuki's
+    # operations are released (the session can be handed back), the record stays.
+    (released,) = await _owner_turn(
+        scene, "cancelled-release", [("manage_task", {"action": "release", "id": record})]
+    )
+    assert service.calls == [(record, True)]
+    assert released["status"] == "cancelled", released
+    assert (await _row(database, record))["revision"] == 2
+    outcome["failed_record"] = {
+        "release_refused": refused["error"],
+        "retry_refused": again["error"],
+        "native_calls_before_cancel": 0,
+        "cancel": cancelled["status"],
+        "release_after_cancel": {"native_release": True, "record_unchanged": True},
+    }
+
+    # F21: stopping an observation of a failed record is unchanged from main: the
+    # observation's operations are released without closing anything, and the
+    # record keeps its state.
+    service.calls.clear()
+    observed = (await _failed_record(database, conversation, scene.env.person, "observe"))["record"]
+    await _owner_turn(
+        scene, "stop-observing", [("manage_task", {"action": "cancel", "id": observed})]
+    )
+    assert service.calls == [(observed, False)]
+    row = await _row(database, observed)
+    assert (row["state"], row["revision"]) == ("failed", 1), row
+    outcome["stop_observing_failed_record"] = {"native_release_close": False, "state": "failed"}
+
+    # F21: another entry ended the record Yuki read as failed; Yuki's cancel is a
+    # version_conflict, never a "cancelled" for a record it did not end.
+    ended = (await _failed_record(database, conversation, scene.env.person))["record"]
+    read, reply = await _owner_turn(
+        scene,
+        "ended-elsewhere",
+        [
+            ("get_tasks", {"id": ended}),
+            ("manage_task", {"action": "cancel", "id": ended, "text": "放弃"}),
+        ],
+        hook=lambda index: (
+            _resumed_elsewhere(database, ended, "cancelled") if index == 1 else asyncio.sleep(0)
+        ),
+    )
+    assert read["status"] == "failed"
+    assert "version_conflict" in _error_text(reply), reply
+    row = await _row(database, ended)
+    assert (row["state"], row["revision"], row["reason"]) == ("cancelled", 2, "native_failed")
+    outcome["cancel_after_other_entry_ended_it"] = "version_conflict"
+
+    # F22: neutral resume. Another entry resumes the Work after the read check and
+    # before the enqueue writer: nothing of Yuki's call is written.
+    neutral = await _fail_by_turn(scene, "fn", "SECRET-GOAL-N 订票")
+    original_enqueue = WorkRepository.enqueue
+
+    async def enqueue(self, *args, **kwargs):
+        if kwargs.get("work_id") == neutral and kwargs.get("resume") is not None:
+            await _resumed_elsewhere(database, neutral)
+        return await original_enqueue(self, *args, **kwargs)
+
+    monkeypatch.setattr(WorkRepository, "enqueue", enqueue)
+    async with database.read_session() as reader:
+        inputs_before = int(
+            await reader.scalar(
+                select(func.count()).select_from(inputs).where(inputs.c.work_id == neutral)
+            )
+        )
+    read, reply = await _owner_turn(
+        scene,
+        "window-neutral",
+        [("get_tasks", {"id": neutral}), ("manage_task", {"action": "resume", "id": neutral})],
+    )
+    monkeypatch.setattr(WorkRepository, "enqueue", original_enqueue)
+    assert read["status"] == "failed"
+    assert "version_conflict" in _error_text(reply), reply
+    row = await _row(database, neutral)
+    assert (row["state"], row["revision"]) == ("queued", 3), row
+    async with database.read_session() as reader:
+        inputs_after = int(
+            await reader.scalar(
+                select(func.count()).select_from(inputs).where(inputs.c.work_id == neutral)
+            )
+        )
+    assert inputs_after == inputs_before
+    outcome["neutral_resume_enqueue_window"] = {
+        "error": "version_conflict",
+        "revision_moved_only_by_other_entry": True,
+        "input_written": False,
+    }
+    RESULTS["S7_failed_record_and_resume_window"] = outcome
