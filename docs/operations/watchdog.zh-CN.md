@@ -20,6 +20,19 @@
 
 以上只是汇报节奏，不改变任何执行、准入或容量。
 
+## 运行时异常停住的 Work
+
+根 Work 因不可重试的运行时异常进入 failed（例如回复传到一半断开的 `RemoteProtocolError`、重启打断在途请求的 `work_response_not_persisted`）时，那一轮没有任何交付，看门狗开 `work_failed:{work_id}:{revision}` 告诉超管停在哪一步（`stage`、`code`）、能否沿原执行链恢复（`resume_blocker` 为空表示可以）。模型自己用 `manage_task(fail)` 结束的、子任务和委派记录都不报；管理端 fail 的通常不报，但若原因文本恰好等于该 Work 之前的失败码（例如 resume 后、尚未有新响应时被结束），会被误报为运行时失败。处理方式：本人的任务可以让 Yuki 继续；也可以放弃恢复（#666/#673）。上线后第一次检查会把当时所有这样的 failed Work 合并成每人一次通知；之后只报新出现的失败，同一 Work 恢复后再失败会再说一次。
+
+只读核对哪些 failed Work 会被报告：
+
+```sql
+SELECT w.id, w.revision, r.stage, w.reason, datetime(w.updated, 'unixepoch')
+  FROM runtime_work w JOIN runtime_work_recovery r ON r.work_id = w.id
+ WHERE w.state = 'failed' AND w.parent_work_id IS NULL AND r.exit_reason = 'failed'
+   AND w.reason = json_extract(r.failure_json, '$.code');
+```
+
 ## 看状态
 
 - `yuki admin health` 或 `GET /admin/v1/health` 的 `watchdog` 行：`running`、`last_check_at`、`error_category`、`check_errors`（哪项检查读取失败）、`open_issues`、`open_turns`（pending／running／可重试 failed 的数量与原因）、`last_turn`。

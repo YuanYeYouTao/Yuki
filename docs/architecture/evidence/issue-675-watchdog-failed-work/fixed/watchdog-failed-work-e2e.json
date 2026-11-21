@@ -1,0 +1,147 @@
+{
+  "all_scenarios_passed": true,
+  "results_sha256": "6bd0ad0df6af2f11d56ce0b152fb03168f8b25dc8819735a41a861c8ecb9b652",
+  "scenarios": {
+    "S1_runtime_failure_told_once": {
+      "failed_at_is_iso": true,
+      "open_keys": [
+        "work_failed:<S1.private>:2"
+      ],
+      "recovery_failure": {
+        "certainty": "unknown",
+        "code": "RemoteProtocolError",
+        "diagnostics": {},
+        "retryable": false,
+        "stage": "activation"
+      },
+      "send_names_the_key": true,
+      "sends": 1,
+      "told_facts": {
+        "code": "RemoteProtocolError",
+        "conversation_id": "<owner_private>",
+        "model_requests": 2,
+        "origin": "user_message",
+        "owner": null,
+        "resume_blocker": null,
+        "revision": 2,
+        "stage": "activation",
+        "work_id": "<S1.private>"
+      },
+      "work": {
+        "model_requests": 2,
+        "reason": "RemoteProtocolError",
+        "revision": 2,
+        "state": "failed"
+      },
+      "writes_after_restart_ticks": 0
+    },
+    "S2_model_endings_not_told": {
+      "issue_direction_would_report": [
+        "P3_decided_then_auxiliary_shape",
+        "P4_management_fail"
+      ],
+      "open_failed_keys": [
+        "work_failed:<S2.control>:2"
+      ],
+      "shapes": {
+        "Fa1_runtime_resume_model_fail": {
+          "exit_reason": "failed",
+          "failure_code": null,
+          "reason": "failed"
+        },
+        "Fa2_retry_then_model_fail": {
+          "exit_reason": "failed",
+          "failure_code": null,
+          "reason": "failed"
+        },
+        "P2_model_fail": {
+          "exit_reason": "failed",
+          "failure_code": null,
+          "reason": "failed"
+        },
+        "P3_decided_then_auxiliary_shape": {
+          "exit_reason": "failed",
+          "failure_code": "RuntimeError",
+          "reason": null
+        },
+        "P4_management_fail": {
+          "exit_reason": "failed",
+          "failure_code": "RemoteProtocolError",
+          "reason": "agent_failed"
+        }
+      }
+    },
+    "S3_exclusions": {
+      "open_failed_keys": [
+        "work_failed:<S3.parent>:2"
+      ],
+      "states": {
+        "child": "failed",
+        "parent": "failed",
+        "record": "failed",
+        "retry": "queued",
+        "suspended": "suspended"
+      }
+    },
+    "S4_resume_refail_abandon": {
+      "after_abandon": {
+        "open_failed_keys": [],
+        "state": "cancelled"
+      },
+      "first_key": "work_failed:<S4.private>:2",
+      "second_key": "work_failed:<S4.private>:5",
+      "second_send_names_second_key": true,
+      "sends": 2
+    },
+    "S5_stock_and_recipients": {
+      "after_revoke_persons": [
+        "<owner>"
+      ],
+      "new_superuser_rows": [
+        "work_failed:<S5.stock0>:2",
+        "work_failed:<S5.stock1>:2",
+        "work_failed:<S5.stock2>:2"
+      ],
+      "new_superuser_turn": [
+        "pending"
+      ],
+      "owner_sends": 1,
+      "owner_turns": 1,
+      "self_origin_told_as": "self_initiative",
+      "stock_keys": [
+        "work_failed:<S5.stock0>:2",
+        "work_failed:<S5.stock1>:2",
+        "work_failed:<S5.stock2>:2"
+      ]
+    },
+    "S6_failing_check": {
+      "open_failed_keys": [
+        "work_failed:<S6.private>:2"
+      ],
+      "sends": 1
+    },
+    "S7_storage_holders_separate": {
+      "after_abandon": [
+        "protocol_storage_near_cap"
+      ],
+      "holders": [
+        "<S7.private>"
+      ],
+      "opened": [
+        "protocol_storage_near_cap",
+        "work_failed:<S7.private>:2"
+      ]
+    }
+  },
+  "scenarios_passed": [
+    "S1_runtime_failure_told_once",
+    "S2_model_endings_not_told",
+    "S3_exclusions",
+    "S4_resume_refail_abandon",
+    "S5_stock_and_recipients",
+    "S6_failing_check",
+    "S7_storage_holders_separate"
+  ],
+  "suite": "tests/integration/test_watchdog_failed_work_e2e.py",
+  "suite_sha256": "3f22853e993d80de63815948e268b9dc98a57b56fb5ebcfb21feb73a48b79b9a"
+}

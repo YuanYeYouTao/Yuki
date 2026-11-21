@@ -163,6 +163,8 @@ async def recover_failure(control: WorkControl, exc: BaseException) -> Activatio
                 identity,
                 state,
                 revision=None,
+                # The watchdog tells a runtime-failed Work by this reason equalling the
+                # recorded failure code (``work_repository.runtime_failed_works``).
                 reason=failure.code if proposed is None else None,
                 recovery_detail=values,
                 exit_reason=reason.value,

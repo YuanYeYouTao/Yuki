@@ -1,0 +1,229 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="7" skipped="0" tests="7" time="4.137" timestamp="2026-11-21T07:07:49.652280-08:00" hostname="Yuanyeyoutaos-Mac-Mini.local"><testcase classname="tests.integration.test_watchdog_failed_work_e2e" name="test_runtime_failure_is_told_once" time="0.976"><failure message="AssertionError: assert [] == ['finished']&#10;  &#10;  Right contains one more item: 'finished'&#10;  Use -v to get more diff">database = &lt;yuki.persistence.database.Database object at 0x10c025340&gt;
+tmp_path = PosixPath('/private/var/folders/q_/1c1h01l12dz816vt7yh20pm80000gn/T/pytest-of-yuanyeyoutao/pytest-490/test_runtime_failure_is_told_o0')
+
+    async def test_runtime_failure_is_told_once(database, tmp_path):
+        scene = await _scene(database, tmp_path)
+        identity = await _runtime_failed(scene, "S1.private")
+        row = await scene.work(identity)
+        key = _key(identity, row["revision"])
+    
+        # F1: the first tick opens the issue and the owner is told in one private turn.
+&gt;       assert await scene.tick() == ["finished"]
+E       AssertionError: assert [] == ['finished']
+E         
+E         Right contains one more item: 'finished'
+E         Use -v to get more diff
+
+tests/integration/test_watchdog_failed_work_e2e.py:295: AssertionError</failure></testcase><testcase classname="tests.integration.test_watchdog_failed_work_e2e" name="test_model_decided_endings_are_not_told" time="0.936"><failure message="AssertionError: assert [] == ['finished']&#10;  &#10;  Right contains one more item: 'finished'&#10;  Use -v to get more diff">database = &lt;yuki.persistence.database.Database object at 0x10c7301d0&gt;
+tmp_path = PosixPath('/private/var/folders/q_/1c1h01l12dz816vt7yh20pm80000gn/T/pytest-of-yuanyeyoutao/pytest-490/test_model_decided_endings_are0')
+
+    async def test_model_decided_endings_are_not_told(database, tmp_path):
+        scene = await _scene(database, tmp_path)
+        shapes: dict[str, str] = {}
+    
+        # F2: P2, the model's own fail.
+        shapes["P2_model_fail"] = await _model_failed(scene, "S2.p2")
+    
+        # F4 (F-a1): a real runtime failure, the owner resumes it, then the model fails it.
+        a1 = await _runtime_failed(scene, "S2.a1")
+        await _resume(scene, a1, "S2.a1.resume")
+        await scene.drain([_call("manage_task", {"action": "fail", "text": "做不了"}, "a1")])
+        shapes["Fa1_runtime_resume_model_fail"] = a1
+    
+        # F3 (F-a2): a retryable failure (queued, retried), then the model fails it.
+        a2 = scene.label(
+            await scene.new_work(
+                "帮我做 S2.a2",
+                "S2.a2",
+                [_note("S2.a2"), LLMUnavailableError("upstream unavailable")],
+            ),
+            "S2.a2",
+        )
+        assert (await scene.work(a2))["state"] == "queued"
+        async with database.immediate_session() as writer:  # only time is moved
+            await writer.execute(update(recovery).where(recovery.c.work_id == a2).values(not_before=0))
+        await scene.drain([_call("manage_task", {"action": "fail", "text": "做不了"}, "a2")])
+        shapes["Fa2_retry_then_model_fail"] = a2
+    
+        # F6 (P4): a runtime failure, resumed, then ended by the shared management fail.
+        p4 = await _runtime_failed(scene, "S2.p4")
+        await _resume(scene, p4, "S2.p4.resume")
+        async with database.immediate_session() as writer:
+            await manage_work(writer, p4, (await scene.work(p4))["revision"], "fail")
+        shapes["P4_management_fail"] = p4
+    
+        # F5 (P3, data shape): a decided fail whose settlement met an auxiliary exception.
+        # The current tool loop ends at ``fail`` and runs nothing after it, so the shape
+        # ``recover_failure`` writes (reason NULL, failure_json present) is written here.
+        p3 = await _model_failed(scene, "S2.p3")
+        async with database.immediate_session() as writer:
+            await writer.execute(update(work).where(work.c.id == p3).values(reason=None))
+            await writer.execute(
+                update(recovery)
+                .where(recovery.c.work_id == p3)
+                .values(
+                    failure_json=json.dumps(
+                        {"code": "RuntimeError", "stage": "activation", "retryable": False}
+                    )
+                )
+            )
+        shapes["P3_decided_then_auxiliary_shape"] = p3
+    
+        facts: dict[str, Any] = {}
+        issue_direction = set()
+        for name, identity in shapes.items():
+            row = await scene.work(identity)
+            found = await scene.recovery(identity)
+            failure = json.loads(found["failure_json"])
+            assert row["state"] == "failed", name
+            facts[name] = {
+                "reason": row["reason"],
+                "exit_reason": found["exit_reason"],
+                "failure_code": failure.get("code"),
+            }
+            if found["exit_reason"] == "failed" and failure:
+                issue_direction.add(name)
+        # The issue's first direction (exit_reason + failure_json) would report these two.
+        # F-a1/F-a2 are not among them: every persisted model response clears the earlier
+        # failure (work_journal.py), so the fail decision's own response already did.
+        assert issue_direction == {"P4_management_fail", "P3_decided_then_auxiliary_shape"}
+        assert facts["Fa1_runtime_resume_model_fail"]["failure_code"] is None
+        assert facts["P4_management_fail"]["failure_code"] == "RemoteProtocolError"
+    
+        # Two runtime failures are still told, so the check is really running; none of
+        # the model-decided or management endings is.
+        told = await _runtime_failed(scene, "S2.control")
+&gt;       assert await scene.tick() == ["finished"]
+E       AssertionError: assert [] == ['finished']
+E         
+E         Right contains one more item: 'finished'
+E         Use -v to get more diff
+
+tests/integration/test_watchdog_failed_work_e2e.py:420: AssertionError</failure></testcase><testcase classname="tests.integration.test_watchdog_failed_work_e2e" name="test_workers_records_retries_and_suspensions_are_excluded" time="0.503"><failure message="AssertionError: assert set() == {'work_failed...f708a6617c:2'}&#10;  &#10;  Extra items in the right set:&#10;  'work_failed:865f1e41-d6ef-4e11-8011-4af708a6617c:2'&#10;  Use -v to get more diff">database = &lt;yuki.persistence.database.Database object at 0x10d5393a0&gt;
+tmp_path = PosixPath('/private/var/folders/q_/1c1h01l12dz816vt7yh20pm80000gn/T/pytest-of-yuanyeyoutao/pytest-490/test_workers_records_retries_a0')
+
+    async def test_workers_records_retries_and_suspensions_are_excluded(database, tmp_path):
+        scene = await _scene(database, tmp_path)
+        # F8: a retryable failure is queued for retry, not failed.
+        retried = scene.label(
+            await scene.new_work(
+                "帮我做 S3.retry",
+                "S3.retry",
+                [_note("S3.retry"), LLMUnavailableError("upstream unavailable")],
+            ),
+            "S3.retry",
+        )
+        assert (await scene.work(retried))["state"] == "queued"
+        # F7 (worker, data shape): a real runtime-failed Work placed under another root.
+        parent = await _runtime_failed(scene, "S3.parent")
+        child = await _runtime_failed(scene, "S3.child")
+        async with database.immediate_session() as writer:
+            await writer.execute(update(work).where(work.c.id == child).values(parent_work_id=parent))
+        # F7: a failed delegation record (root, no Yuki loop, no recovery row).
+        record = await _delegation(
+            scene,
+            state="failed",
+            reason="native_error",
+            receipt={"status": "failed", "pending": False, "error": "native_error"},
+        )
+        scene.label(record["record"], "S3.record")
+    
+        # F8: a real capacity suspension (the 2 GiB budget fills mid-work) stays with C5.
+        def fill(request):
+            scene.cap[0] = 1
+            return _note("S3.full")
+    
+        suspended = scene.label(
+            await scene.new_work("帮我做 S3.suspended", "S3.suspended", [_note("S3.s"), fill]),
+            "S3.suspended",
+        )
+        assert (await scene.work(suspended))["reason"] == "work_protocol_storage_capacity"
+    
+        await scene.tick()
+        keys = await scene.failed_keys()
+&gt;       assert keys == {_key(parent, (await scene.work(parent))["revision"])}
+E       AssertionError: assert set() == {'work_failed...f708a6617c:2'}
+E         
+E         Extra items in the right set:
+E         'work_failed:865f1e41-d6ef-4e11-8011-4af708a6617c:2'
+E         Use -v to get more diff
+
+tests/integration/test_watchdog_failed_work_e2e.py:474: AssertionError</failure></testcase><testcase classname="tests.integration.test_watchdog_failed_work_e2e" name="test_resume_closes_refailure_is_told_again_and_abandon_closes" time="0.332"><failure message="AssertionError: assert [] == ['finished']&#10;  &#10;  Right contains one more item: 'finished'&#10;  Use -v to get more diff">database = &lt;yuki.persistence.database.Database object at 0x10c877fe0&gt;
+tmp_path = PosixPath('/private/var/folders/q_/1c1h01l12dz816vt7yh20pm80000gn/T/pytest-of-yuanyeyoutao/pytest-490/test_resume_closes_refailure_i0')
+
+    async def test_resume_closes_refailure_is_told_again_and_abandon_closes(database, tmp_path):
+        scene = await _scene(database, tmp_path)
+        identity = await _runtime_failed(scene, "S4.private")
+        first = _key(identity, (await scene.work(identity))["revision"])
+&gt;       assert await scene.tick() == ["finished"]
+E       AssertionError: assert [] == ['finished']
+E         
+E         Right contains one more item: 'finished'
+E         Use -v to get more diff
+
+tests/integration/test_watchdog_failed_work_e2e.py:500: AssertionError</failure></testcase><testcase classname="tests.integration.test_watchdog_failed_work_e2e" name="test_stock_is_told_once_per_person_and_only_to_superusers" time="0.436"><failure message="AssertionError: assert [] == ['finished']&#10;  &#10;  Right contains one more item: 'finished'&#10;  Use -v to get more diff">database = &lt;yuki.persistence.database.Database object at 0x10caab590&gt;
+tmp_path = PosixPath('/private/var/folders/q_/1c1h01l12dz816vt7yh20pm80000gn/T/pytest-of-yuanyeyoutao/pytest-490/test_stock_is_told_once_per_pe0')
+
+    async def test_stock_is_told_once_per_person_and_only_to_superusers(database, tmp_path):
+        scene = await _scene(database, tmp_path)
+        stock = [await _runtime_failed(scene, f"S5.stock{index}") for index in range(3)]
+        # F18 (data shape): the third becomes a SELF Work (classification keys only).
+        async with database.immediate_session() as writer:
+            await writer.execute(
+                update(work)
+                .where(work.c.id == stock[2])
+                .values(
+                    source_json=func.json_set(
+                        work.c.source_json,
+                        "$.origin",
+                        "self_initiative",
+                        "$.principal_kind",
+                        "self",
+                    )
+                )
+            )
+        keys = {_key(identity, (await scene.work(identity))["revision"]) for identity in stock}
+    
+        # F13: first deployment: all stock failures, one turn and one message per person.
+&gt;       assert await scene.tick() == ["finished"]
+E       AssertionError: assert [] == ['finished']
+E         
+E         Right contains one more item: 'finished'
+E         Use -v to get more diff
+
+tests/integration/test_watchdog_failed_work_e2e.py:568: AssertionError</failure></testcase><testcase classname="tests.integration.test_watchdog_failed_work_e2e" name="test_a_failing_read_is_undetermined" time="0.226"><failure message="AssertionError: assert [] == ['finished']&#10;  &#10;  Right contains one more item: 'finished'&#10;  Use -v to get more diff">database = &lt;yuki.persistence.database.Database object at 0x10d62cb90&gt;
+tmp_path = PosixPath('/private/var/folders/q_/1c1h01l12dz816vt7yh20pm80000gn/T/pytest-of-yuanyeyoutao/pytest-490/test_a_failing_read_is_undeter0')
+monkeypatch = &lt;_pytest.monkeypatch.MonkeyPatch object at 0x10d572810&gt;
+
+    async def test_a_failing_read_is_undetermined(database, tmp_path, monkeypatch):
+        scene = await _scene(database, tmp_path)
+        identity = await _runtime_failed(scene, "S6.private")
+        key = _key(identity, (await scene.work(identity))["revision"])
+&gt;       assert await scene.tick() == ["finished"]
+E       AssertionError: assert [] == ['finished']
+E         
+E         Right contains one more item: 'finished'
+E         Use -v to get more diff
+
+tests/integration/test_watchdog_failed_work_e2e.py:628: AssertionError</failure></testcase><testcase classname="tests.integration.test_watchdog_failed_work_e2e" name="test_storage_holders_and_failed_issue_are_separate" time="0.306"><failure message="AssertionError: assert {'protocol_st...2df7827dca:2'} &lt;= {'protocol_storage_near_cap'}&#10;  &#10;  Extra items in the left set:&#10;  'work_failed:ec97d60f-8a8b-4c5d-a75b-0b2df7827dca:2'">database = &lt;yuki.persistence.database.Database object at 0x10d0df3b0&gt;
+tmp_path = PosixPath('/private/var/folders/q_/1c1h01l12dz816vt7yh20pm80000gn/T/pytest-of-yuanyeyoutao/pytest-490/test_storage_holders_and_faile0')
+
+    async def test_storage_holders_and_failed_issue_are_separate(database, tmp_path):
+        scene = await _scene(database, tmp_path)
+        identity = await _runtime_failed(scene, "S7.private")
+        key = _key(identity, (await scene.work(identity))["revision"])
+        async with database.read_session() as reader:
+            used = await usage_bytes(reader)
+        assert used &gt; 0
+        scene.cap[0] = int(used / 0.9)  # above the warning line, below the cap
+    
+        # F17: both issues open; the holder list names the same failed Work.
+        assert await scene.tick() == ["finished"]
+        keys = await scene.issue_keys()
+&gt;       assert {key, "protocol_storage_near_cap"} &lt;= keys
+E       AssertionError: assert {'protocol_st...2df7827dca:2'} &lt;= {'protocol_storage_near_cap'}
+E         
+E         Extra items in the left set:
+E         'work_failed:ec97d60f-8a8b-4c5d-a75b-0b2df7827dca:2'
+
+tests/integration/test_watchdog_failed_work_e2e.py:664: AssertionError</failure></testcase></testsuite></testsuites>

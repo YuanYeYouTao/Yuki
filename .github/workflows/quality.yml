@@ -167,6 +167,12 @@ jobs:
           python3 -c "import json, sys;
           d = json.load(open('test-results/superuser-abandon-failed-work-e2e.json'));
           print(d['scenarios_passed']); sys.exit(0 if d['all_scenarios_passed'] else 1)"
+      - name: Watchdog failed Work E2E artifact
+        if: matrix.suite == 'integration'
+        run: >-
+          python3 -c "import json, sys;
+          d = json.load(open('test-results/watchdog-failed-work-e2e.json'));
+          print(d['scenarios_passed']); sys.exit(0 if d['all_scenarios_passed'] else 1)"
       - uses: actions/upload-artifact@v4
         if: always()
         with:

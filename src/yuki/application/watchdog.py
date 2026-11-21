@@ -42,7 +42,8 @@ from yuki.runtime.protocol_store import (
     stalled_unowned_object,
     usage_bytes,
 )
-from yuki.runtime.work_repository import suspended_works
+from yuki.runtime.work_management import CLASSIFICATION_KEYS, resume_blocker
+from yuki.runtime.work_repository import runtime_failed_works, suspended_works
 from yuki.services.proactive_turns import (
     MAX_ATTEMPTS,
     ProactivePrivateTurns,
@@ -411,7 +412,11 @@ class Watchdog:
     async def observe(self, now: float, snapshot: RuntimeConfigSnapshot) -> Observation:
         observation = Observation()
         checks: tuple[tuple[str, tuple[str, ...], Callable[..., Awaitable[None]]], ...] = (
-            ("works", ("work_suspended:", "protocol_storage_"), self._check_works),
+            (
+                "works",
+                ("work_suspended:", "work_failed:", "protocol_storage_"),
+                self._check_works,
+            ),
             ("protocol_gc", ("protocol_gc_stalled",), self._check_gc),
             ("delegations", ("delegation_", "operation_unconfirmed:"), self._check_delegations),
             ("automations", ("automation:",), self._check_automations),
@@ -447,6 +452,31 @@ class Watchdog:
             # Only a storage issue names the failed Works still holding bytes; giving
             # one up stays the owner's decision in an ordinary turn.
             held = await failed_holders(reader, _LISTED_HOLDERS) if near else None
+            # A runtime exception stopped these and nothing was delivered; the
+            # model's own endings are not among them. One key per failure: a
+            # failed Work's revision only changes when it leaves failed.
+            failed = [
+                {
+                    **row,
+                    "blocker": await resume_blocker(
+                        reader, row, {key: row[key] for key in CLASSIFICATION_KEYS}, now
+                    ),
+                }
+                for row in await runtime_failed_works(reader)
+            ]
+        for row in failed:
+            observation.present[f"work_failed:{row['id']}:{row['revision']}"] = {
+                "work_id": row["id"],
+                "revision": row["revision"],
+                "origin": _code(row["origin"]),
+                "owner": _code(row["owner"]),
+                "conversation_id": row["conversation_id"],
+                "stage": _code(row["stage"]),
+                "code": _code(row["code"]),
+                "failed_at": _iso(row["updated"]),
+                "model_requests": row["model_requests"],
+                "resume_blocker": row["blocker"],
+            }
         for row in suspended:
             if row["reason"] not in CAPACITY_REASONS:
                 observation.present[f"work_suspended:{row['id']}"] = {
