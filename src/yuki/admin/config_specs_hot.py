@@ -276,6 +276,18 @@ def hot_config_specs() -> tuple[ConfigSpec, ...]:
             category="memory",
         ),
         _spec(
+            "memory.resident_enabled",
+            "常驻记忆",
+            "是否在每轮主 Agent 当前消息里渲染常驻记忆段，并在 Dream 批次后自动挑选核心集。"
+            "关闭后下一轮起不再渲染、不再自动挑选；已存核心集与事实保留，管理 CLI 照常可用。",
+            value_type="boolean",
+            scopes=_G,
+            env_alias="MEMORY_RESIDENT_ENABLED",
+            getter=_field("memory_resident_enabled"),
+            settings_fields=("memory_resident_enabled",),
+            category="memory",
+        ),
+        _spec(
             "context.local_event_limit",
             "近期本地事件数量",
             "主 Agent 每轮读取近期本地事件的资源上限；语义窗口和压缩水位按 token 热配置计算。",

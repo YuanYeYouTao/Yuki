@@ -271,6 +271,16 @@ class DreamHealth(_DreamModel):
     compaction_evidence_after: int = Field(default=0, ge=0)
     compaction_last_error_category: str | None = None
 
+    resident_pending_owners: int = Field(
+        default=0,
+        ge=0,
+        description="Resident core-set owners due for selection and not yet processed.",
+    )
+    resident_oldest_pending_at: datetime | None = Field(
+        default=None,
+        description="Creation time of the oldest candidate no selection has considered yet.",
+    )
+
 
 @dataclass(frozen=True, slots=True)
 class DreamMutationResult:

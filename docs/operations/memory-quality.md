@@ -46,4 +46,34 @@ Embedding 的可恢复失败与 Rebuild 的未提交失败按原任务、item �
 沿配置的重试等待间隔保留累计尝试，不按次数转 FAILED，也不因提交准备完成就第一次封口。
 Rebuild 已提交事实与 proposal 回执共同核对，确认已提交不再次写入；历史失败状态保留。
 
+## 常驻记忆核心集
+
+运行时热配置 `memory.resident_enabled`（全局，默认关闭）同时控制两件事：每轮当前消息是否渲染常驻记忆段，
+Dream 运行处理完全部簇后是否对到期主人做核心集挑选。关闭后下一轮起生效，表与事实都保留，不需要重启。
+下面的命令都不看这个开关；默认使用当前配置的数据库，也可加 `--database-url`。
+
+```bash
+yuki memory resident show --person <person-id> [--content]   # 或 --space <space-id> / --self
+yuki memory resident render --conversation <conversation-id>
+yuki memory resident set --person <person-id> --facts 12,34    # 写入并锁定（source=owner）；--facts '' 清空
+yuki memory resident unlock --person <person-id>               # 交还挑选步骤
+yuki memory resident select --person <person-id> [--dry-run] [--content]
+yuki memory resident status
+yuki memory resident check > check.json
+python scripts/verify_resident_check.py --database <sqlite-file> --check check.json
+```
+
+- 挑选沿用 `memory_dream` 模型路由。Dream 内每个到期主人至多一次结构化调用，每次运行至多
+  `MEMORY_RESIDENT_MAX_SELECTIONS_PER_RUN` 个主人（默认 12），按已看水位、再按主人 ID 排队；
+  没轮到的留到下次。调用次数单独计数写进 `memory_resident_selection_finished` 日志，不占 Dream 簇的
+  `model_calls` 预算。每个主人的换入、换出 fact ID 写进 `memory_resident_selected` 日志。
+- `select` 在 CLI 进程内按 bot 启动时的同一方式装配模型运行时（环境变量、模型档案与已激活的重启覆盖），
+  调用记录写进同一数据库，不需要 bot 在跑；锁定的主人先 `unlock`。`--dry-run` 也会真实调用一次模型。
+- 人物合并时根人物那一行的已看水位归零，下一次挑选会重新看一遍合并后的全部候选。
+- 挑选只写 `memory_resident_sets`，不改事实，不产生 Dream 操作行，也不参与 Dream 回滚；失败记日志，
+  该主人不变、留到下次，Dream 运行照常收尾。`DreamHealth.resident_pending_owners` 与
+  `resident_oldest_pending_at`（`status` 同样输出）持续增长说明挑选长期没跑或一直轮不到。
+- `check` 只对全部会话各渲染两次，输出渲染出的 fact ID 和两次不一致的会话；可见范围的独立复核在
+  `scripts/verify_resident_check.py`，用自己的只读 SQL 逐条核对，违反条数应为 0。
+
 当前合同见 [Memory](../architecture/memory-v2.md)与[来源审计](../architecture/memory-v2-quality.md)。

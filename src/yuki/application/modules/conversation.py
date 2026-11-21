@@ -22,6 +22,8 @@ from yuki.memory.maintenance import MemoryMaintenanceWorker
 from yuki.memory.mutation.service import MemoryMutationService
 from yuki.memory.rebuild.service import MemoryRebuildService
 from yuki.memory.rebuild.worker import MemoryRebuildWorker
+from yuki.memory.resident import ResidentMemory
+from yuki.memory.resident_selection import ResidentSelection
 from yuki.memory.runtime.partition_lookup import DatabaseMemoryPartitionLookup
 from yuki.memory.self_reflection.repository import SelfReflectionRepository
 from yuki.memory.self_reflection.service import SelfReflectionService
@@ -82,6 +84,7 @@ class ConversationModule:
         tool_artifacts: ToolArtifactWriter,
         tool_receipts: ToolReceiptRecorder,
         processing_status: ProcessingStatusService,
+        resident: ResidentMemory,
     ) -> None:
         self._settings = settings
         self._persistence = persistence
@@ -102,6 +105,7 @@ class ConversationModule:
         self._tool_artifacts = tool_artifacts
         self._tool_receipts = tool_receipts
         self._processing_status = processing_status
+        self._resident = resident
 
     def build(self) -> ConversationBundle:
         settings = self._settings
@@ -159,6 +163,7 @@ class ConversationModule:
             conversation_scopes=persistence.conversation_scopes,
             effect_gate=self._effect_gate,
             processing_status=self._processing_status,
+            resident=self._resident,
         )
         memory_rebuild_service = MemoryRebuildService(
             settings=settings,
@@ -199,6 +204,14 @@ class ConversationModule:
                 facts=persistence.memories,
                 mutations=memory_mutations,
                 embeddings=self._memory_embeddings,
+                models=models,
+                concurrency=self._concurrency,
+            ),
+            runtime_config=self._runtime_config,
+            resident=ResidentSelection(
+                settings=settings,
+                database=persistence.database,
+                resident=self._resident,
                 models=models,
                 concurrency=self._concurrency,
             ),

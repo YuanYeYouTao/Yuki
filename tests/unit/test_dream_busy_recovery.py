@@ -9,7 +9,12 @@ import pytest
 from sqlalchemy import func, select, update
 from sqlalchemy.exc import OperationalError
 from tests.conftest import make_settings
-from tests.unit.test_memory_dream import _empty_dream_statistics, _fact_with_evidence, _services
+from tests.unit.test_memory_dream import (
+    _empty_dream_statistics,
+    _fact_with_evidence,
+    _resident_wiring,
+    _services,
+)
 
 from yuki.memory.dream.db_models import (
     MemoryDreamClusterModel,
@@ -81,7 +86,12 @@ async def _case(database, monkeypatch, *, clusters=1):
         ), 1
 
     monkeypatch.setattr(service, "_decide", decide)
-    worker = DreamWorker(settings=settings, repository=dreams, service=service)
+    worker = DreamWorker(
+        settings=settings,
+        repository=dreams,
+        service=service,
+        **_resident_wiring(database, settings),
+    )
     return facts, dreams, service, run, worker, calls
 
 

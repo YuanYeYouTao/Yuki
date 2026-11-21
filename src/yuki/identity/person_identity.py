@@ -21,6 +21,7 @@ from yuki.identity.db_models import CanonicalPersonModel
 from yuki.identity.errors import CanonicalIdentityError
 from yuki.persistence.models import (
     AdminOperationEventModel,
+    MemoryResidentSetModel,
     PersonAliasModel,
     RuntimeConfigOverrideModel,
 )
@@ -496,6 +497,17 @@ async def merge_persons(
             revision=CanonicalPersonModel.revision + 1,
             updated_at=moment,
         )
+    )
+    # The source family's facts now count toward the target's resident core set
+    # with IDs that may sit below its selection watermark; let the next selection
+    # consider every candidate again.
+    await session.execute(
+        update(MemoryResidentSetModel)
+        .where(
+            MemoryResidentSetModel.owner_kind == "person",
+            MemoryResidentSetModel.owner_person_id == target_id,
+        )
+        .values(considered_through_fact_id=0, updated_at=moment)
     )
     if prepared.source_name and source_alias is None:
         session.add(

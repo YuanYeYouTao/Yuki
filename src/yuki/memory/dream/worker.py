@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 
+from yuki.admin.config_service import RuntimeConfigService
 from yuki.config import Settings
 from yuki.memory.dream.db_models import (
     MemoryDreamClusterModel,
@@ -25,6 +26,7 @@ from yuki.memory.dream.models import (
 )
 from yuki.memory.dream.repository import DreamRepository
 from yuki.memory.dream.service import DreamBudgetExhausted, DreamQualityError, DreamService
+from yuki.memory.resident_selection import ResidentSelection
 from yuki.model_runtime.structured import StructuredTaskError
 
 logger = logging.getLogger(__name__)
@@ -37,10 +39,14 @@ class DreamWorker:
         settings: Settings,
         repository: DreamRepository,
         service: DreamService,
+        runtime_config: RuntimeConfigService,
+        resident: ResidentSelection,
     ) -> None:
         self._settings = settings
         self._repository = repository
         self._service = service
+        self._runtime_config = runtime_config
+        self._resident = resident
         self._timezone = ZoneInfo(settings.memory_dream_timezone)
         self._stop = asyncio.Event()
         self._wake = asyncio.Event()
@@ -127,8 +133,11 @@ class DreamWorker:
             if self._task is not None and self._task.done() and not self._task.cancelled()
             else None
         )
+        pending = await self._resident.pending()
         return snapshot.model_copy(
             update={
+                "resident_pending_owners": len(pending.owners),
+                "resident_oldest_pending_at": pending.oldest_pending_at,
                 **(
                     {"running": False, "last_error_category": type(task_error).__name__}
                     if task_error is not None
@@ -177,6 +186,7 @@ class DreamWorker:
             run = refreshed
             cluster = await self._repository.claim_next_cluster(run.public_id)
             if cluster is None:
+                await self._select_resident(run.public_id)
                 await self._repository.finalize_run(run.public_id)
                 return
             try:
@@ -218,6 +228,20 @@ class DreamWorker:
                 status=(DreamClusterStatus.COMPLETED if valid else DreamClusterStatus.STALE),
                 operation_count=operations,
                 error_category=(None if valid else "snapshot_changed"),
+            )
+
+    async def _select_resident(self, run_public_id: str) -> None:
+        """Post-batch core-set selection; it never changes this run's outcome."""
+
+        if not (await self._runtime_config.snapshot()).memory.resident_enabled:
+            return
+        try:
+            await self._resident.run(run_public_id)
+        except Exception as exc:
+            logger.warning(
+                "memory_resident_selection_aborted run_id=%s error_category=%s",
+                run_public_id,
+                type(exc).__name__,
             )
 
     async def _finish_cluster_failure(

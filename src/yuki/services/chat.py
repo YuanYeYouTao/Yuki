@@ -52,6 +52,7 @@ from yuki.execution_trace.phases import collect_phase_metrics, timed_lock, turn_
 from yuki.execution_trace.recorder import trace_span
 from yuki.llm.base import LLMEmptyResponseError
 from yuki.memory.context import MemoryContextService
+from yuki.memory.resident import ResidentMemory
 from yuki.memory.runtime.partition_lookup import MemoryPartitionLookup
 from yuki.memory.runtime.turn_session import (
     TurnMemorySession,
@@ -233,6 +234,7 @@ class ChatService:
         conversation_scopes: ConversationScopeRepository,
         effect_gate: ConversationEffectGate,
         processing_status: ProcessingStatusService,
+        resident: ResidentMemory | None = None,
     ) -> None:
         self._memory_partition_lookup = memory_partition_lookup
         self._settings = settings
@@ -255,6 +257,7 @@ class ChatService:
             settings=settings,
             ledger=self._ledger,
             conversation_scopes=self._conversation_scopes,
+            resident=resident,
         )
         self._prompt_composer = prompt_composer
         self._turn_coordinator = turn_coordinator
