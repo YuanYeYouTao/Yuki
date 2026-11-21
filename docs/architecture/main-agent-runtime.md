@@ -72,7 +72,7 @@ created_at/updated_at 是原回执时间，生命周期和计数本身不能证�
 不因为查询工具能读全局目录就自动注入其他会话的工作。
 不注入完整 journal、工具正文或其他主体的任务。既有请求链只追加当前视图，不重写历史状态。
 
-当前场景只用简短的群聊/私聊说明，不预取称呼全集、记忆引用或关系评分。短期记录只展示当前有内容的 slot/text，写入只需要 slot/text，返回本次槽位结果；清空和到期仍沿原存储语义处理。插件资料保留实际来源。
+当前场景只用简短的群聊/私聊说明，不预取称呼全集或关系评分。常驻记忆段可以含称呼类事实，并带 `fact:ID`。短期记录只展示当前有内容的 slot/text，写入只需要 slot/text，返回本次槽位结果；清空和到期仍沿原存储语义处理。插件资料保留实际来源。
 
 `Settings` 从唯一 `SOUL_FILE` 读取用户人格原件，名称取当前 `character_profile` 的已提交资料。
 `PromptComposer` 将最小角色身份、SOUL、`prompting.contracts.core_contract` 和 Memory grounding
@@ -102,7 +102,7 @@ scheduled_for，与同块 `current_time` 一起明确当前目标已经到期，
 执行仍核验当前身份和授权；真实媒体、附件错误、聊天时间线及发送回执保留在原入口。
 当前 Work 状态沿原私有有序输入尾部接入。工具往返与恢复保原签名、调用/回执配对和初始请求，不将新运行块插回已经增长的轨迹前面。
 有 Work 和无 Work 的 Main 均在本来需要的下一次正常请求前，经 `AgentToolBackend.participation_context(runtime)` 读取相关参与事实：`participation` 下的原讨论和对象、自身意愿、语义判断及原来源顺序。只投影已有 SelfReport、UnitSemanticReview 和未释放的相关 Boundary，不复制概率、队列、人物列表或新建第三份刹车状态。反馈沿原有序输入尾部追加；已付请求、冻结前缀和初始运行块不改写。原生 pause 或 opaque 精确续接不能插入时，留待下个合法业务请求。反馈不进入业务 mailbox，不单独唤醒 Main 或购买确认请求，也不否决发送、已接纳输入或原任务；后端收起尚未选择的普通机会，本体结合当前交流决定是否继续闲聊。
-文件、终端、完整自动化目录和长期记忆均使用已有工具按需查询。
+文件、终端、完整自动化目录均使用已有工具按需查询；长期记忆除[常驻记忆段](memory-v2.md#常驻记忆段)外也按需查询。
 
 主 Agent 的 `get_tasks(id=...)` 按原内部 Work ID 只读查询全局安全目录，
 与安排目录读取一致，不按创建者、当前会话或 generation 过滤；
@@ -135,7 +135,7 @@ SELF 及当前真实授权核验；创建时的 USER 身份不永久封顶。每
 
 `ToolActor` 传递真实主体和执行来源。聊天保留内部事件 ID，定时任务保留原 run/execution ID；
 不能生成假的 InboundMessage、QQ 消息或提及来通过校验。定时来源仍为 scheduled_automation。
-历史、记忆的主动补查使用同一读取授权；长期记忆不自动预取或注入。记忆写入仍需真实证据，
+历史、记忆的主动补查使用同一读取授权；长期记忆除常驻记忆段外不自动预取或注入。常驻记忆段的可见范围比读取授权更窄：不含私聊来源的他人事实。记忆写入仍需真实证据，
 定时任务通过 evidence_event_id 引用创建者在当前会话的原始事件，不把任务指令伪装成人类发言。
 
 SELF 使用数据库内唯一的 `PrincipalRef(self, self)`，不携带真人 user/person。自主入口的
@@ -143,7 +143,7 @@ SELF 使用数据库内唯一的 `PrincipalRef(self, self)`，不携带真人 us
 `automation_run_id` 与 `scheduled_automation`，沿同一时间扫描、唯一到期发生和共同 Main 工具合同执行。`SelfInitiativeTrigger` 固定原 Conversation、
 generation、Space、Presence 与群传输目标。目标成员和资料来源都不授予其私人权限。
 `ConversationTurnSnapshot` 使用原 event、initiative run 或 automation run 三者之一；无事件工作不得借
-最近真人消息补锚点。SELF主入口按需读取当前群及该群可见的SELF Memory；主动SELF写入沿原initiative和原执行的真实工具回执，不借真人事件。
+最近真人消息补锚点。SELF主入口除常驻记忆段外按需读取当前群及该群可见的SELF Memory；主动SELF写入沿原initiative和原执行的真实工具回执，不借真人事件。
 每次模型请求、工具执行和发送准备仍复核原 run 与场景权限。SELF 自动化保留原
 Conversation、Space、Presence 和群绑定；每次新到期发生使用该会话的当前 generation，
 已接纳 Work 则保留原发生代次。SELF 的社交调用沿共同目标选择、资料授权和发送回执处理，不设来源专属四动作、当前群或提及名单。
@@ -224,7 +224,7 @@ after/interval 认相对秒数，once 必须包含 UTC offset，daily/weekly 的
 注册表、steps、模板、save_as 或外层步骤解释器。原目标 Conversation、scope、generation
 及 run ID 构成本次真实来源，不生成真人 Inbound。群和私聊都复用共同历史准备；不再有
 scene/include_memories/history_limit/context_profile 读取预设或 creator_private 旁路。
-长期记忆沿共同检索工具按需读取。
+长期记忆除常驻记忆段外沿共同检索工具按需读取；定时任务的常驻记忆段按它所在的会话渲染。
 
 已有 claim_due → 唯一到期槽 create_run → 共同 Main → 原回执/finish_run 安排链保持。
 到期扫描按 `(next_run_at, id)` 用 SQL keyset 读取 128 条候选页，每页在原 writer 核验、

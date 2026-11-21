@@ -5,7 +5,7 @@
 Embedding 是事实库的可选派生索引；`memory_facts`、真实证据和 canonical owner 仍是事实源。
 向量、profile 和任务可以重建，不引入第二套记忆所有权。
 
-主 Agent 通过 `search_memory` 按需查询，不执行每轮自动预取。
+主 Agent 通过 `search_memory` 按需查询，不执行基于 embedding 的每轮自动预取；常驻记忆段是确定性渲染，不经过 embedding。
 授权 SQL 先筛选人物、群及可见 SELF，词法与向量候选在获准范围内全局排序并用 RRF 合并。
 显式目标和内部精确目标读取仍限制到解析后的目标，语义相似不能扩大权限。
 检索合同见 [当前检索](memory-v2-retrieval.md)。

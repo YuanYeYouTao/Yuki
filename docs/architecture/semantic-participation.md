@@ -36,7 +36,7 @@ tick 时，Social 回执只能证明表达，不能制造尚未读取的事件 S
 `SemanticParticipationService` 读取已提交的 canonical 群事件，按
 Conversation/generation 保存控制器快照。新观察只以真实人类事件为焦点，context 可包含真实人类和 SELF 发言；
 来源沿带版本的内部 event ID 传递。后台 Memory 扫描、seed 事件及 recall/contact 新候选已退出，
-Memory 仍由主 Agent 按需查询；
+Memory 除常驻记忆段外仍由主 Agent 按需查询；
 目标人物只是交流对象，不是执行主体。观测正文保留原事件中按原位置还原的 `@名字`，
 与 Main 共用入账时的目标及名称快照；不在 JEV 侧再补查资料或把其他成员改称 Yuki。
 Host 从同一原 segments 复制窄 `EventMention` 到 `ScopedEvent.mentions`，保原顺序、重复、展示名、
@@ -164,7 +164,7 @@ SubagentScheduler 和 Runner 运行，身份保持 SELF，内部结果交给父 
 
 SELF 使用共同 Social 目标解析、通讯录、历史、发送、结构化 @、戳人和原发送撤回。
 默认当前群仍使用原场景与 Presence；显式目标沿共同路由和真实授权核验。
-Memory 按需查询当前群与该群可见的 SELF 范围，不自动预取或从最后发言者生成个人上下文。
+Memory 除常驻记忆段外按需查询当前群与该群可见的 SELF 范围。自主轮的常驻记忆段只带本群核心与本群可见的 SELF 原则，不从最后发言者生成个人上下文。
 完整工具声明仍固定提供；工具是否可执行由上述可信来源和现有权限检查决定。
 
 SELF 当前指令只保简短意图与真实来源编号，不重复附来源正文包；详情沿已有历史和记忆
