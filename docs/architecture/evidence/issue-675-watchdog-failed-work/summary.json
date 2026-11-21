@@ -1,0 +1,87 @@
+{
+  "fixed_artifact": {
+    "all_scenarios_passed": true,
+    "results_sha256": "6bd0ad0df6af2f11d56ce0b152fb03168f8b25dc8819735a41a861c8ecb9b652",
+    "two_runs_byte_identical": true
+  },
+  "runs": {
+    "baseline-c528f322": {
+      "cases": {
+        "test_a_failing_read_is_undetermined": {
+          "failing_line": 628,
+          "message": "AssertionError: assert [] == ['finished']",
+          "outcome": "failed"
+        },
+        "test_model_decided_endings_are_not_told": {
+          "failing_line": 420,
+          "message": "AssertionError: assert [] == ['finished']",
+          "outcome": "failed"
+        },
+        "test_resume_closes_refailure_is_told_again_and_abandon_closes": {
+          "failing_line": 500,
+          "message": "AssertionError: assert [] == ['finished']",
+          "outcome": "failed"
+        },
+        "test_runtime_failure_is_told_once": {
+          "failing_line": 295,
+          "message": "AssertionError: assert [] == ['finished']",
+          "outcome": "failed"
+        },
+        "test_stock_is_told_once_per_person_and_only_to_superusers": {
+          "failing_line": 568,
+          "message": "AssertionError: assert [] == ['finished']",
+          "outcome": "failed"
+        },
+        "test_storage_holders_and_failed_issue_are_separate": {
+          "failing_line": 664,
+          "message": "AssertionError: assert {'protocol_st...2df7827dca:2'} <= {'protocol_storage_near_cap'}",
+          "outcome": "failed"
+        },
+        "test_workers_records_retries_and_suspensions_are_excluded": {
+          "failing_line": 474,
+          "message": "AssertionError: assert set() == {'work_failed...f708a6617c:2'}",
+          "outcome": "failed"
+        }
+      },
+      "how": "same final test file copied into a detached worktree of origin/main c528f322 (unmodified src)",
+      "src_blobs": {
+        "src/yuki/application/watchdog.py": "781c30891a6d12407e6410ab25919c2f690b6727",
+        "src/yuki/runtime/work_repository.py": "7975671e661d1989141d93e82f692dcc39666742",
+        "src/yuki/runtime/work_supervisor.py": "2a6fc1fe2cd365beb476b74f94af51a8d14cd017"
+      }
+    },
+    "fixed": {
+      "cases": {
+        "test_a_failing_read_is_undetermined": {
+          "outcome": "passed"
+        },
+        "test_model_decided_endings_are_not_told": {
+          "outcome": "passed"
+        },
+        "test_resume_closes_refailure_is_told_again_and_abandon_closes": {
+          "outcome": "passed"
+        },
+        "test_runtime_failure_is_told_once": {
+          "outcome": "passed"
+        },
+        "test_stock_is_told_once_per_person_and_only_to_superusers": {
+          "outcome": "passed"
+        },
+        "test_storage_holders_and_failed_issue_are_separate": {
+          "outcome": "passed"
+        },
+        "test_workers_records_retries_and_suspensions_are_excluded": {
+          "outcome": "passed"
+        }
+      },
+      "how": "this branch's src (blobs below), same test file",
+      "src_blobs": {
+        "src/yuki/application/watchdog.py": "83cbfdb1d250c718738b71c5bb77048d5814053b",
+        "src/yuki/runtime/work_repository.py": "de80fe534b7308967627b389fa674a5e69ffd2d0",
+        "src/yuki/runtime/work_supervisor.py": "3061fe979da7ce25dc71bd2cc5f48c9f174a1323"
+      }
+    }
+  },
+  "test_file_blob": "0093e43fefa98ca2c049303d14af98941ce96f54",
+  "test_file_sha256": "3f22853e993d80de63815948e268b9dc98a57b56fb5ebcfb21feb73a48b79b9a"
+}

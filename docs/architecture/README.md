@@ -1,5 +1,6 @@
 # 架构文档入口
 
+2026-11-21 [看门狗报告运行时异常失败 Work 任务书](Yuki-看门狗报告运行时异常失败Work任务书-2026-11-21.md)：#675，运行时异常让根 Work 进入 failed（模型没做决定、没有交付）时看门狗开 `work_failed:{work_id}:{revision}`，判据为 recovery `exit_reason='failed'` 且 Work `reason` 等于失败码；模型主动 fail、管理端 fail、工作者与委派记录不报；报给全部当前超管，存量首次上线报一次；与存储持有者列表不去重；无迁移、工具声明与通知指示不变；已实施，PR #676 待核验。
 2026-11-21 [超管放弃跨会话代与群 SELF 的 failed Work 任务书](Yuki-超管放弃跨会话代与群SELF的failed-Work任务书-2026-11-21.md)：#673，本次范围外的 failed Work（旧会话代、群 SELF、工作者、别人的委派记录）由当前超管在本人私聊的直接输入中用 `manage_task cancel` 放弃恢复；七条授权事实在执行处核验（含 Desktop App 与 ACP 个人输入；Work 中调用提示另起一句直接说），只开放 failed → cancelled，固定原因码 `superuser_abandoned`；工具声明不变，无迁移；已实施，PR 待核验。
 2026-11-20 [failed Work 放弃恢复与协议存储持有者报告任务书](Yuki-failed-Work放弃恢复与协议存储持有者报告任务书-2026-11-20.md)：#666，放宽 `manage_work` 让 failed Work 可 cancel（放弃恢复），沿现有 `protocol_refs_closed_work` 触发器释放 refs、现有 GC 回收；看门狗协议存储事实附持有最多的 failed Work，只报告不取消；普通轮取消绑定 `get_tasks(id)` 读到的 revision；failed 委派记录真实写入 cancelled；无迁移；已合并（#671）。
 2026-11-20 [看门狗与主动私聊任务书](Yuki-看门狗与主动私聊任务书-2026-11-20.md)：只读事实检查周期运行、不花模型费；发现新问题时经超管的主动消息路由，由 Yuki 在一次 SELF 私聊（`proactive_private`）里只汇报、不执行管理；同一问题只说一次，清除超过无进展间隔后重现才再说，每人通知有最小间隔；迁移 0160（`proactive_turns`、`watchdog_issues`）；已实施，待合并。

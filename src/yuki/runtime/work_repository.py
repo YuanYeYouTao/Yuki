@@ -2884,3 +2884,57 @@ async def suspended_works(reader: AsyncSession, *, page: int = 256) -> list[dict
         if len(rows) < page:
             return found
         after = (rows[-1]["updated"], rows[-1]["id"])
+
+
+async def runtime_failed_works(reader: AsyncSession, *, page: int = 256) -> list[dict[str, Any]]:
+    """Root Works a runtime exception left failed, paged on ``(state, updated)`` (watchdog).
+
+    Only ``recover_failure`` without an accepted decision writes the Work's reason as
+    the failure code it records for that exit, in the same transaction. A model's own
+    ``fail`` writes reason ``"failed"``, a decided fail that met an auxiliary error
+    writes none, and a management ``fail`` leaves recovery untouched. Workers report to
+    their parent; delegation records never run the loop and have no recovery row.
+    """
+    code = func.json_extract(recovery.c.failure_json, "$.code")
+    found: list[dict[str, Any]] = []
+    after: tuple[float, str] | None = None
+    while True:
+        query = (
+            select(
+                work.c.id,
+                work.c.state,
+                work.c.revision,
+                work.c.conversation_id,
+                work.c.generation,
+                work.c.updated,
+                work.c.model_requests,
+                func.json_extract(work.c.source_json, "$.origin").label("origin"),
+                func.json_extract(work.c.source_json, "$.owner").label("owner"),
+                func.json_extract(work.c.source_json, "$.initiative_run_id").label(
+                    "initiative_run_id"
+                ),
+                recovery.c.stage,
+                code.label("code"),
+            )
+            .join(recovery, recovery.c.work_id == work.c.id)
+            .where(
+                work.c.state == "failed",
+                work.c.parent_work_id.is_(None),
+                recovery.c.exit_reason == "failed",
+                work.c.reason == code,
+            )
+            .order_by(work.c.updated, work.c.id)
+            .limit(page)
+        )
+        if after is not None:
+            query = query.where(
+                or_(
+                    work.c.updated > after[0],
+                    and_(work.c.updated == after[0], work.c.id > after[1]),
+                )
+            )
+        rows = [dict(row) for row in (await reader.execute(query)).mappings()]
+        found.extend(rows)
+        if len(rows) < page:
+            return found
+        after = (rows[-1]["updated"], rows[-1]["id"])

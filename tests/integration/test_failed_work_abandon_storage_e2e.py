@@ -80,6 +80,7 @@ from sqlalchemy import func, select, update
 from tests.conftest import MemorySender
 from tests.integration.test_watchdog_capacity_incident_e2e import (
     CHECK,
+    MIN_INTERVAL,
     Scene,
     _call,
     _runtime_context,
@@ -410,10 +411,13 @@ async def test_failed_holders_are_told_and_the_owner_abandons_one(database, tmp_
 
     monkeypatch.setattr(watchdog_module, "failed_holders", spy, raising=False)
 
-    # W1/Q2: below the warn line nothing about storage is opened or computed.
-    assert await scene.tick() == []
+    # W1/Q2: below the warn line nothing about storage is opened or computed. The three
+    # Works a runtime exception stopped are told on their own (#675), in one notice.
+    assert await scene.tick() == ["finished"]
     keys = {row["issue_key"] for row in await scene.rows(watchdog_issues)}
     assert not {key for key in keys if key.startswith("protocol_storage_")}
+    assert {key.rsplit(":", 1)[0] for key in keys} == {f"work_failed:{w}" for w in (a, b, c)}
+    assert len(scene.sends()) == 1
     below_calls = len(calls)
     assert below_calls == 0
 
@@ -436,11 +440,17 @@ async def test_failed_holders_are_told_and_the_owner_abandons_one(database, tmp_
 
     expected = await _expected_holders(database)
     before_tick = await _state(database)
-    outcomes = await scene.tick()
+    outcomes = await scene.tick(MIN_INTERVAL)  # the person's second notice
     assert outcomes == ["finished"]
     assert await _state(database) == before_tick  # W4: the notice moved no Work or ref
-    context = _runtime_context(scene.notice_requests[0])
-    assert context is not None
+    context = next(
+        context
+        for context in map(_runtime_context, scene.notice_requests)
+        if context is not None
+        and any(
+            issue["key"] == "protocol_storage_near_cap" for issue in context["watchdog"]["issues"]
+        )
+    )
     said = {issue["key"]: issue["facts"] for issue in context["watchdog"]["issues"]}
     facts = said["protocol_storage_near_cap"]
     holders = facts["failed_holders"]
@@ -491,7 +501,7 @@ async def test_failed_holders_are_told_and_the_owner_abandons_one(database, tmp_
     )
     assert "manage_task" not in notice_calls
     sends = scene.sends()
-    assert len(sends) == 1 and "protocol_storage_near_cap" in sends[0]
+    assert len(sends) == 2 and "protocol_storage_near_cap" in sends[1]
 
     # The owner agrees in an ordinary turn: Yuki reads A, then abandons it.
     scene.cap[0] = 2 * 1024**3

@@ -662,6 +662,13 @@ failed/completed 后代保持原状态，它们的 refs 随根 Work 的工作者
 看门狗只在协议存储达到告警线或出现容量挂起时，在存储事实里列出持有字节最多的 5 个 failed Work（只含内部 ID、
 revision、分类码、原因码、时间和字节），`exclusive_bytes`/`failed_only_bytes` 只是观察时的可回收估算或上界；
 看门狗不取消，放弃由主人在普通轮里决定。
+运行时异常让根 Work 进入 failed 时（不可重试的异常，没有已接受的生命周期决定；那一轮不交付），看门狗另开
+`work_failed:{work_id}:{revision}`（[#675 任务书](Yuki-看门狗报告运行时异常失败Work任务书-2026-11-21.md)）。判据是
+recovery 的 `exit_reason='failed'` 且 Work 的 `reason` 等于 `failure_json.code`：只有 `recover_failure` 在没有已接受决定时
+把两者写在同一事务；模型自己的 `fail`（reason `failed`）、已决定 fail 后的辅助异常（reason 为空）、管理端 fail（不写 recovery）、
+工作者（结果交给父 Work）与委派记录（没有 recovery）都不报。facts 只含 ID、revision、分类码、stage、失败码、时间、模型请求数
+和 `resume_blocker`（原执行链能否继续，为空表示可以），不含 goal 与 diagnostics。failed 期间 revision 不变，所以同一 Work
+恢复后再失败是新的一次；Work 被恢复、放弃或删除后问题按清除计时关闭。与存储持有者列表各自独立，不去重。
 本次范围（同会话、同代、同来源）里找不到的 failed Work，当前超管仍可用 `manage_task(cancel, id)` 放弃恢复
 （[#673 任务书](Yuki-超管放弃跨会话代与群SELF的failed-Work任务书-2026-11-21.md)），包括旧会话代、群里的 SELF Work、
 工作者和别人的委派记录。核验：本轮原 actor Person 当前是超管（reader 先核，写事务内再核）；本轮是该人物自己的直接输入
