@@ -192,9 +192,7 @@ class ToolInvocationCoordinator:
             while end < len(calls) and is_parallel_safe(calls[end]):
                 end += 1
             admitted = [candidate for candidate in calls[index:end] if await admit(candidate)]
-            async with asyncio.TaskGroup() as group:
-                for candidate in admitted:
-                    group.create_task(execute_one(candidate))
+            await _execute_stretch(admitted, execute_one)
             index = end
 
         for identity in overflow_ids:
@@ -214,6 +212,58 @@ class ToolInvocationCoordinator:
             evidence=facts,
             outcomes=outcomes,
         )
+
+
+async def _execute_stretch(
+    calls: list[ToolCall], execute_one: Callable[[ToolCall], Awaitable[None]]
+) -> None:
+    """Run one read-safe stretch concurrently; it ends the turn as a serial batch would.
+
+    A serial batch stops at its first failing call and raises that call's own exception,
+    a call cancelled from inside included. Here the first failure cancels the calls still
+    running and is raised itself: never wrapped in an ExceptionGroup, never dropped as a
+    missing result. A call cancelled by the stretch or by the turn is not a failure. The
+    turn's own cancellation, which reaches it while it awaits the stretch, propagates as
+    it would into an awaited serial call, even if a call failed meanwhile: its canceller
+    (a lease supervisor, a deadline) handles it within its own scope.
+    """
+    failure: BaseException | None = None
+    children: list[asyncio.Task[None]] = []
+
+    def abort() -> None:
+        for child in children:
+            child.cancel()  # a no-op for the failed call, which has finished
+
+    async def run(call: ToolCall) -> None:
+        nonlocal failure
+        try:
+            await execute_one(call)
+        except (Exception, asyncio.CancelledError) as error:
+            if isinstance(error, asyncio.CancelledError) and _cancel_requested():
+                raise
+            if failure is None:
+                failure = error
+                # After this call finishes, as a TaskGroup aborts: a sibling whose
+                # database statement already returned still gets its step first.
+                asyncio.get_running_loop().call_soon(abort)
+
+    try:
+        async with asyncio.TaskGroup() as group:
+            children.extend(group.create_task(run(call)) for call in calls)
+    finally:
+        # A raised exception's traceback keeps this frame; a cancelled call's frames
+        # must not live on through it.
+        children.clear()
+    if failure is not None:
+        # Outside the handler, so the call keeps its own cause and context.
+        raise failure
+
+
+def _cancel_requested() -> bool:
+    """Whether this task was cancelled, rather than raising CancelledError itself."""
+    task = asyncio.current_task()
+    assert task is not None
+    return task.cancelling() > 0
 
 
 def _attach_batch_results(
