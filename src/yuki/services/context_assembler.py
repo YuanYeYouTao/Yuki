@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Sequence, Set
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
@@ -20,6 +21,7 @@ from yuki.domain.conversations import ConversationScope, ScopeType
 from yuki.domain.messages import ChatMessage, InboundMessage
 from yuki.domain.profiles import UserProfileSnapshot
 from yuki.event_prompt import ChatEventPromptRenderer
+from yuki.memory.resident import ResidentMemory
 from yuki.persistence.event_repository import ConversationReadVersion
 from yuki.persistence.repositories import (
     EventLedgerRepository,
@@ -38,6 +40,8 @@ if TYPE_CHECKING:
     from yuki.conversation.projections import ProjectionSnapshot
     from yuki.conversation.prompt_history import PromptHistorySource
     from yuki.event_prompt import EventPromptReferences
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,6 +81,7 @@ class AssembledContext:
     projection_snapshot: ProjectionSnapshot | None = None
     history_incremental: bool = False
     prepared_fragments: FrozenFragments | None = None
+    resident_text: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,10 +112,12 @@ class ContextAssembler:
         settings: Settings,
         ledger: EventLedgerRepository,
         conversation_scopes: ConversationScopeRepository,
+        resident: ResidentMemory | None = None,
     ) -> None:
         self._settings = settings
         self._ledger = ledger
         self._scopes = conversation_scopes
+        self._resident = resident
 
     async def _assemble_activation(
         self,
@@ -283,15 +290,17 @@ class ContextAssembler:
                 raise ConversationCoverageError("external wakeup must not invent a message actor")
             if external_trigger is None or external_event is None:
                 raise ConversationCoverageError("external wakeup trigger is incomplete")
-            return await self._assemble_actorless_turn(
+            context = await self._assemble_actorless_turn(
                 event=external_event,
                 trigger=external_trigger,
                 identity=identity,
                 turn=turn,
                 runtime=runtime,
             )
+            return await self._with_resident(context, turn=turn, runtime=runtime)
         if inbound is None and profile is None:
-            return await self._assemble_activation(identity=identity, turn=turn, content=content)
+            context = await self._assemble_activation(identity=identity, turn=turn, content=content)
+            return await self._with_resident(context, turn=turn, runtime=runtime)
         if inbound is None or profile is None:
             raise ConversationCoverageError("message turn requires a real inbound actor")
         if turn.trigger_event_id is None:
@@ -316,7 +325,32 @@ class ContextAssembler:
             current_event=current,
         )
         await self._validate_history_source(snapshot, current)
-        return context
+        return await self._with_resident(context, turn=turn, runtime=runtime)
+
+    async def _with_resident(
+        self,
+        context: AssembledContext,
+        *,
+        turn: ConversationTurnSnapshot,
+        runtime: RuntimeConfigSnapshot,
+    ) -> AssembledContext:
+        """Attach the resident memory segment of this turn's Conversation."""
+        if self._resident is None or not runtime.memory.resident_enabled:
+            return context
+        try:
+            rendered = await self._resident.render_conversation(turn.conversation_id)
+        except Exception as exc:
+            # Deliberate single exception to the no-defensive-programming rule
+            # (memory layering P1 §5.6, F16): the resident segment is an optional
+            # prompt aid, so a render failure drops it for this turn only and the
+            # turn proceeds. The renderer itself has no fallback anywhere else.
+            logger.exception(
+                "memory_resident_render_failed conversation_id=%s exception_category=%s",
+                turn.conversation_id,
+                type(exc).__name__,
+            )
+            return context
+        return replace(context, resident_text=rendered.text)
 
     async def _assemble_actorless_turn(
         self,

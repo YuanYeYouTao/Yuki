@@ -110,6 +110,17 @@ class PromptComposer:
                     payload=state,
                 )
             )
+        if context.resident_text:
+            # A TURN contribution of the current message only: never a system
+            # message, never in invariant_contributions(), no cache breakpoint.
+            contributions.append(
+                PromptContribution(
+                    id="memory.resident",
+                    channel=PromptChannel.CONTEXT,
+                    priority=86,
+                    content=context.resident_text,
+                )
+            )
         if context.metadata_payload:
             contributions.append(
                 PromptContribution(
