@@ -661,7 +661,18 @@ failed/completed 后代保持原状态，它们的 refs 随根 Work 的工作者
 提示先用 cancel 放弃恢复、需要交还会话再 release；cancelled 记录的 release 与停止观察照旧。
 看门狗只在协议存储达到告警线或出现容量挂起时，在存储事实里列出持有字节最多的 5 个 failed Work（只含内部 ID、
 revision、分类码、原因码、时间和字节），`exclusive_bytes`/`failed_only_bytes` 只是观察时的可回收估算或上界；
-看门狗不取消，放弃由主人在普通轮里决定。工作者显式归档与 canonical 隐私清退沿各自合同处理。
+看门狗不取消，放弃由主人在普通轮里决定。
+本次范围（同会话、同代、同来源）里找不到的 failed Work，当前超管仍可用 `manage_task(cancel, id)` 放弃恢复
+（[#673 任务书](Yuki-超管放弃跨会话代与群SELF的failed-Work任务书-2026-11-21.md)），包括旧会话代、群里的 SELF Work、
+工作者和别人的委派记录。核验：本轮原 actor Person 当前是超管（reader 先核，写事务内再核）；本轮是该人物自己的直接输入
+（`principal_kind=person`、`origin=user_message`、有触发事件；QQ 等平台私聊、Desktop App 和 ACP 会话的个人消息都经
+`AppIngress`/平台入站成为 `user_message`）；本轮会话是该人物的私聊（`kind=private`，Desktop App 与 ACP 会话也是）；
+Main 激活且不在任何 Work 中（本轮已登记自己的任务、工作者或之后的激活都不算）；激活租约仍有效；写事务里先核
+`get_tasks(id)` 读到的 revision（没读过用写事务里读到的），再核目标仍是 failed，然后走 `manage_work` 的 CAS。
+只开放 failed → cancelled，resume/fail/release 维持原范围与原错误。目标的归属、来源、会话和 generation 不变，
+原因写固定码 `superuser_abandoned`，不写模型的 `text`。非超管得到原错误；超管在 Work 中调用返回
+`superuser_abandon_direct_only`（提示另起一句直接说）；不满足来源或会话条件返回 `superuser_abandon_private_only`；
+读到的 revision 已变返回 `version_conflict`；目标不是 failed 返回 `superuser_abandon_failed_only`；都不写入。工具声明不变，只认完整 UUID。工作者显式归档与 canonical 隐私清退沿各自合同处理。
 表情原件、标签和索引沿共享沙箱文件维护，不在主业务库领取分析租约。Work 激活的有效期在执行
 数据库语句时核验；等待写锁期间到期的旧租约不能续期或提交状态。
 
