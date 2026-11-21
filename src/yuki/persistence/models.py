@@ -580,6 +580,53 @@ class MemoryFactModel(Base):
     )
 
 
+class MemoryResidentSetModel(Base):
+    """One owner's ordered resident core set: fact IDs only, never memory text.
+
+    A derived view over ``memory_facts``. Rendering re-applies every filter, so
+    rows never need syncing when facts change; see the memory layering P1 task book.
+    """
+
+    __tablename__ = "memory_resident_sets"
+    __table_args__ = (
+        CheckConstraint(
+            "(owner_kind = 'person' AND owner_person_id IS NOT NULL AND owner_space_id IS NULL)"
+            " OR (owner_kind = 'space' AND owner_space_id IS NOT NULL AND owner_person_id IS NULL)"
+            " OR (owner_kind = 'self' AND owner_person_id IS NULL AND owner_space_id IS NULL)",
+            name="ck_memory_resident_sets_owner",
+        ),
+        CheckConstraint(
+            "source IN ('dream', 'owner') AND (owner_kind != 'self' OR source = 'owner')",
+            name="ck_memory_resident_sets_source",
+        ),
+        Index(
+            "uq_memory_resident_sets_owner",
+            "owner_kind",
+            text("COALESCE(owner_person_id, '')"),
+            text("COALESCE(owner_space_id, '')"),
+            unique=True,
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    owner_kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    owner_person_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("persons.id", ondelete="CASCADE")
+    )
+    owner_space_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("spaces.id", ondelete="CASCADE")
+    )
+    fact_ids_json: Mapped[str] = mapped_column(Text, nullable=False, server_default="[]")
+    source: Mapped[str] = mapped_column(String(16), nullable=False)
+    considered_through_fact_id: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="0"
+    )
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    selected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class MemoryEvidenceModel(Base):
     """One immutable chat event or trusted tool receipt supporting a fact."""
 

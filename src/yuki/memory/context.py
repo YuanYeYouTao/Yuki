@@ -15,7 +15,9 @@ from yuki.memory.query import MemoryQueryBuilder
 from yuki.memory.retrieval import MemoryRetriever
 
 MEMORY_GROUNDING_RULE = (
-    "当前请求不自动附带长期记忆。可见聊天和已有资料不足以回答人物、群或自己的既往事实时，"
+    "当前消息开头的‘常驻记忆’只带少量稳定条目，可能为空；其余长期记忆不自动附带。"
+    "常驻条目与人格设定冲突时以人格设定为准，与当前对话里更新的明确要求冲突时以当前要求为准。"
+    "可见聊天和已有资料不足以回答人物、群或自己的既往事实时，"
     "按当前意图调用 search_memory；没有明确目标就不填 target，搜索当前主体有权读取的完整范围。"
     "按 content 中明确写出的事实回答。例如‘喜欢咖啡’只说明这项偏好，不代表‘不喝茶’；"
     "‘答应周末交稿’是计划，不能当作已经交稿。提及次数、最新状态也需有对应记录。"

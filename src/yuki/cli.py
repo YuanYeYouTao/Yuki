@@ -13,6 +13,7 @@ from uuid import uuid4
 
 from alembic import command
 from alembic.config import Config
+from sqlalchemy import select
 
 from yuki import __version__
 from yuki.acp_adapter.cli import add_acp_parser, run_acp_command
@@ -20,20 +21,38 @@ from yuki.admin.config_service import RuntimeConfigService
 from yuki.admin.models import RuntimeConfigSnapshot
 from yuki.admin_api.cli import add_admin_parser, admin_command
 from yuki.admin_api.client import admin_client, mutate, plugin_mutation, read
+from yuki.application.lifecycle import LifecycleRegistry
+from yuki.application.modules.model_runtime import ModelRuntimeModule
 from yuki.character.repository import CharacterRepository
 from yuki.client_api.identity import ClientIdentityService
 from yuki.client_sdk.cli import add_client_parser, run_client_command
 from yuki.config import Settings
+from yuki.conversation.canonical_db_models import CanonicalConversationModel
 from yuki.deployment_setup import add_setup_parser, run_setup_command
 from yuki.gateway.compatibility import provider_doctor_payload
 from yuki.gateway.providers import builtin_provider_catalog
 from yuki.gateway.providers.snowluma import SNOWLUMA_PROVIDER_ID
 from yuki.gateway.registry import GatewayConnectionRegistry
 from yuki.http_environment import load_http_environment
+from yuki.identity.person_identity import current_person_id
 from yuki.identity.routing import PresenceRouter
 from yuki.memory.quality.audit import MemoryProductionQualityAudit
 from yuki.memory.quality.hygiene import MemoryProvenanceHygiene
 from yuki.memory.repository import MemoryJobRepository
+from yuki.memory.resident import (
+    ResidentMemory,
+    ResidentOwner,
+    ResidentSet,
+    ResidentValidationError,
+)
+from yuki.memory.resident_selection import (
+    ResidentOwnerLocked,
+    ResidentQueue,
+    ResidentSelection,
+    ResidentSelectionOutcome,
+    ResidentSelectionRejected,
+    owner_label,
+)
 from yuki.model_runtime import (
     ModelInvocationRepository,
     ModelProfileCatalog,
@@ -43,8 +62,10 @@ from yuki.model_runtime import (
 from yuki.model_runtime.legacy_migration import run_migration_command
 from yuki.model_runtime.models import ModelStats
 from yuki.model_runtime.profiles import model_profile_environment
+from yuki.model_runtime.structured import StructuredTaskError
 from yuki.persistence.database import Database
 from yuki.plugin_host.manifest import load_manifest
+from yuki.services.concurrency import ConcurrencyManager
 from yuki_plugin_sdk.api import PLUGIN_API_VERSION
 from yuki_plugin_sdk.testing.contract import run_plugin_contract_tests
 
@@ -198,6 +219,57 @@ def _add_memory_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentP
     rebuild_fts = hygiene_commands.add_parser("rebuild-fts", help="在独立维护窗口全量重建 FTS 索引")
     rebuild_fts.add_argument("fingerprint")
     rebuild_fts.add_argument("--database-url", required=True)
+    _add_resident_parser(commands)
+
+
+def _add_resident_parser(
+    commands: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
+    resident = commands.add_parser(
+        "resident", help="常驻记忆核心集：查看、渲染、检查、改写与挑选；不看运行时开关"
+    )
+    resident_commands = resident.add_subparsers(dest="resident_command", required=True)
+
+    def owner_arguments(
+        parser: argparse.ArgumentParser, *, allow_self: bool
+    ) -> argparse.ArgumentParser:
+        group = parser.add_mutually_exclusive_group(required=True)
+        group.add_argument("--person", help="人物 ID；按合并后的根人物读写")
+        group.add_argument("--space", help="群 space ID")
+        if allow_self:
+            group.add_argument("--self", dest="self_owner", action="store_true")
+        parser.add_argument("--database-url", help="默认使用当前配置的数据库")
+        return parser
+
+    show = owner_arguments(
+        resident_commands.add_parser("show", help="列出主人的明确事实 ID 与核心集"), allow_self=True
+    )
+    show.add_argument("--content", action="store_true", help="同时打印正文")
+    render = resident_commands.add_parser("render", help="打印该会话此刻会渲染出的常驻段")
+    render.add_argument("--conversation", required=True)
+    render.add_argument("--database-url")
+    check = resident_commands.add_parser(
+        "check", help="对全部会话做两次只读渲染，输出渲染出的 fact ID 与不稳定的会话"
+    )
+    check.add_argument("--database-url")
+    set_command = owner_arguments(
+        resident_commands.add_parser("set", help="改写并锁定核心集（source=owner）"),
+        allow_self=True,
+    )
+    set_command.add_argument("--facts", required=True, help="逗号分隔的有序 fact ID；空串清空")
+    owner_arguments(
+        resident_commands.add_parser("unlock", help="把核心集交还 Dream 挑选"), allow_self=False
+    )
+    select_command = owner_arguments(
+        resident_commands.add_parser(
+            "select", help="立即用 memory_dream 模型路由对一个主人跑一次挑选"
+        ),
+        allow_self=False,
+    )
+    select_command.add_argument("--dry-run", action="store_true", help="只打印结果，不写库")
+    select_command.add_argument("--content", action="store_true", help="同时打印正文")
+    status = resident_commands.add_parser("status", help="到期主人、最早未看候选与各主人修订号")
+    status.add_argument("--database-url")
 
 
 def _model_catalog(settings: Settings) -> ModelProfileCatalog:
@@ -364,7 +436,205 @@ async def _memory_command(settings: Settings, args: argparse.Namespace) -> int:
             return 0
         finally:
             await database.close()
+    if action == "resident":
+        return await _resident_command(settings, args)
     return 1
+
+
+async def _resident_owner(database: Database, args: argparse.Namespace) -> ResidentOwner:
+    if getattr(args, "self_owner", False):
+        return ResidentOwner("self")
+    if args.space is not None:
+        return ResidentOwner("space", space_id=str(args.space))
+    async with database.read_session() as session:
+        return ResidentOwner("person", person_id=await current_person_id(session, args.person))
+
+
+def _resident_set_payload(current: ResidentSet | None) -> dict[str, object] | None:
+    if current is None:
+        return None
+    return {
+        "fact_ids": list(current.fact_ids),
+        "source": current.source,
+        "revision": current.revision,
+        "considered_through_fact_id": current.considered_through_fact_id,
+        "selected_at": current.selected_at.isoformat() if current.selected_at else None,
+    }
+
+
+async def _resident_command(settings: Settings, args: argparse.Namespace) -> int:
+    action = str(args.resident_command)
+    database = Database(str(args.database_url or settings.database_url))
+    resident = ResidentMemory(database)
+    queue = ResidentQueue(database=database, resident=resident)
+    try:
+        payload: dict[str, object]
+        if action == "render":
+            rendered = await resident.render_conversation(str(args.conversation))
+            print(rendered.text)
+            payload = {
+                "fact_ids": list(rendered.fact_ids),
+                "omitted_explicit": rendered.omitted_explicit,
+            }
+        elif action == "check":
+            payload = await _resident_check(database, resident)
+        elif action == "status":
+            pending = await queue.pending()
+            sets = await queue.owner_sets()
+            selected = [
+                item.selected_at
+                for item in sets
+                if item.source == "dream" and item.selected_at is not None
+            ]
+            payload = {
+                "due_owners": len(pending.owners),
+                "oldest_pending_at": (
+                    pending.oldest_pending_at.isoformat() if pending.oldest_pending_at else None
+                ),
+                "queue": [owner_label(item.owner) for item in pending.owners],
+                "last_selected_at": max(selected).isoformat() if selected else None,
+                "sets": [
+                    {"owner": owner_label(item.owner), **(_resident_set_payload(item) or {})}
+                    for item in sets
+                ],
+            }
+        else:
+            owner = await _resident_owner(database, args)
+            payload = {"owner": owner_label(owner)}
+            if action == "show":
+                explicit = await queue.pinned_fact_ids(owner)
+                current = await resident.load_set(owner)
+                payload |= {
+                    "explicit_fact_ids": list(explicit),
+                    "core_set": _resident_set_payload(current),
+                }
+                if args.content:
+                    shown = (*explicit, *(current.fact_ids if current else ()))
+                    payload["content"] = await queue.fact_contents(shown)
+            elif action == "set":
+                facts = tuple(int(item) for item in str(args.facts).split(",") if item.strip())
+                try:
+                    written = await resident.write_set(owner, facts, source="owner")
+                except ResidentValidationError as exc:
+                    print(json.dumps({**payload, "error": str(exc)}, ensure_ascii=False))
+                    return 1
+                payload["core_set"] = _resident_set_payload(written)
+            elif action == "unlock":
+                payload["unlocked"] = await queue.unlock(owner)
+            else:
+                try:
+                    outcome = await _resident_select(
+                        settings, database, resident, owner, dry_run=bool(args.dry_run)
+                    )
+                except (
+                    ResidentOwnerLocked,
+                    ResidentSelectionRejected,
+                    ResidentValidationError,
+                    StructuredTaskError,
+                ) as exc:
+                    print(json.dumps({**payload, "error": repr(exc)}, ensure_ascii=False))
+                    return 1
+                payload |= {
+                    "dry_run": bool(args.dry_run),
+                    "previous": list(outcome.previous),
+                    "selected": list(outcome.selected),
+                    "added": list(outcome.added),
+                    "removed": list(outcome.removed),
+                    "pinned": list(outcome.pinned),
+                    "offered_new": list(outcome.offered_new),
+                    "considered_through_fact_id": outcome.considered_through_fact_id,
+                    "model_calls": outcome.model_calls,
+                    "core_set": _resident_set_payload(outcome.written),
+                }
+                if args.content:
+                    payload["content"] = await queue.fact_contents(
+                        (*outcome.previous, *outcome.offered_new)
+                    )
+        print(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
+        return 0
+    finally:
+        await database.close()
+
+
+async def _resident_check(database: Database, resident: ResidentMemory) -> dict[str, object]:
+    """Batch-render every conversation twice; verification lives in an acceptance script."""
+
+    async with database.read_session() as session:
+        conversations = tuple(
+            (
+                await session.execute(
+                    select(
+                        CanonicalConversationModel.id,
+                        CanonicalConversationModel.kind,
+                        CanonicalConversationModel.person_id,
+                        CanonicalConversationModel.space_id,
+                    ).order_by(CanonicalConversationModel.id)
+                )
+            ).all()
+        )
+    rendered: list[dict[str, object]] = []
+    unstable: list[str] = []
+    for conversation_id, kind, person_id, space_id in conversations:
+        first = await resident.render_conversation(conversation_id)
+        second = await resident.render_conversation(conversation_id)
+        if first != second:
+            unstable.append(conversation_id)
+        if first.fact_ids:
+            rendered.append(
+                {
+                    "conversation_id": conversation_id,
+                    "kind": kind,
+                    "person_id": person_id,
+                    "space_id": space_id,
+                    "fact_ids": list(first.fact_ids),
+                    "omitted_explicit": first.omitted_explicit,
+                }
+            )
+    return {
+        "conversations": len(conversations),
+        "with_resident_segment": len(rendered),
+        "unstable": unstable,
+        "rendered": rendered,
+    }
+
+
+async def _resident_select(
+    settings: Settings,
+    database: Database,
+    resident: ResidentMemory,
+    owner: ResidentOwner,
+    *,
+    dry_run: bool,
+) -> ResidentSelectionOutcome:
+    """Run one selection in this process with the bot's memory_dream model route.
+
+    The CLI assembles the same model runtime the bot builds at startup (environment,
+    model profile files and activated restart overrides), records invocations in
+    the shared database, and writes through the same short ``write_set``
+    transaction. It needs no running bot and ignores ``memory.resident_enabled``.
+    """
+
+    runtime_config = RuntimeConfigService(settings=settings, database=database)
+    await runtime_config.initialize()
+    active = Settings(
+        _env_file=None,
+        **{**settings.model_dump(), **await runtime_config.startup_settings_updates()},
+    )
+    lifecycle = LifecycleRegistry()
+    models = ModelRuntimeModule(
+        active.model_runtime, database, lifecycle=lifecycle, web_settings=active.web
+    ).build()
+    await lifecycle.start()
+    try:
+        return await ResidentSelection(
+            settings=active,
+            database=database,
+            resident=resident,
+            models=models.executor,
+            concurrency=ConcurrencyManager(),
+        ).select(owner, dry_run=dry_run)
+    finally:
+        await lifecycle.close()
 
 
 def main() -> None:

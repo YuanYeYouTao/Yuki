@@ -17,6 +17,7 @@ from tests.support.correctness_wire import wire
 from tests.support.event_seed import seed_event
 from tests.support.model_executor import InjectedModelExecutor
 
+from yuki.admin.config_service import RuntimeConfigService
 from yuki.domain.conversations import ScopeType
 from yuki.domain.messages import ChatResponse, ToolCall, ToolFunction
 from yuki.identity.db_models import (
@@ -74,6 +75,8 @@ from yuki.memory.partition import (
     resolve_fact_canonical_owners,
 )
 from yuki.memory.repository import MemoryFactRepository
+from yuki.memory.resident import ResidentMemory
+from yuki.memory.resident_selection import ResidentSelection
 from yuki.memory.service import MemoryFactService
 from yuki.model_runtime.structured import StructuredTaskRunner
 from yuki.persistence.database import Database
@@ -86,6 +89,20 @@ from yuki.persistence.models import (
 )
 from yuki.persistence.repositories import EventLedgerRepository
 from yuki.services.concurrency import ConcurrencyManager
+
+
+def _resident_wiring(database, settings):
+    """Dream worker collaborators for the resident selection step (switch off by default)."""
+    return {
+        "runtime_config": RuntimeConfigService(settings=settings, database=database),
+        "resident": ResidentSelection(
+            settings=settings,
+            database=database,
+            resident=ResidentMemory(database),
+            models=SimpleNamespace(),
+            concurrency=ConcurrencyManager(),
+        ),
+    }
 
 
 def _services(
@@ -441,7 +458,12 @@ async def test_dream_worker_recovers_disabled_owner_same_run_and_preserves_actua
 
     # Reproduce the old resolver against a real disabled owner after Provider success.
     monkeypatch.setattr(facts, "requested_target_owners", legacy_transport_resolution)
-    failed_worker = DreamWorker(settings=settings, repository=dreams, service=service)
+    failed_worker = DreamWorker(
+        settings=settings,
+        repository=dreams,
+        service=service,
+        **_resident_wiring(database, settings),
+    )
     with pytest.raises(MemoryPartitionResolutionError) as error:
         await failed_worker._drain_active()
     assert error.value.reason == "missing_owner" and len(provider.requests) == 1
@@ -453,7 +475,12 @@ async def test_dream_worker_recovers_disabled_owner_same_run_and_preserves_actua
     assert len(await dreams.ready_preview_fingerprints(cluster_id)) == 1
     assert (await facts.get_fact(source.id)).status is MemoryStatus.ACTIVE
     monkeypatch.setattr(facts, "requested_target_owners", resolver)
-    worker = DreamWorker(settings=settings, repository=dreams, service=service)
+    worker = DreamWorker(
+        settings=settings,
+        repository=dreams,
+        service=service,
+        **_resident_wiring(database, settings),
+    )
     completed = asyncio.Event()
     finalize = dreams.finalize_run
 
@@ -1222,10 +1249,12 @@ async def test_dream_recompose_consumes_actual_outputs_and_normalizes_model_meta
 async def test_dream_loop_database_failure_and_cancellation(database, monkeypatch, cancelled):
     from unittest.mock import AsyncMock
 
+    loop_settings = make_settings(database.url, memory_dream_poll_seconds=0.001)
     worker = DreamWorker(
-        settings=make_settings(database.url, memory_dream_poll_seconds=0.001),
+        settings=loop_settings,
         repository=SimpleNamespace(),
         service=SimpleNamespace(),
+        **_resident_wiring(database, loop_settings),
     )
     attempts = 0
 

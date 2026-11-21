@@ -199,6 +199,8 @@ class MemorySettings(DomainSettings):
     memory_maintenance_enabled: bool
     memory_maintenance_interval_seconds: float = Field(gt=0)
     memory_maintenance_batch_limit: int = Field(gt=0)
+    memory_resident_enabled: bool
+    memory_resident_max_selections_per_run: int = Field(gt=0)
     memory_embedding_enabled: bool
     memory_embedding_provider: str
     memory_embedding_base_url: str
