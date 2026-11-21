@@ -70,6 +70,7 @@ import hashlib
 import json
 import time
 import uuid
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -113,6 +114,7 @@ from yuki.conversation.canonical_db_models import CanonicalConversationModel
 from yuki.conversation.hydrate import bump_canonical_generation
 from yuki.domain.conversations import ScopeType
 from yuki.domain.messages import InboundMessage, SenderIdentity
+from yuki.external_agents.db_models import AgentOperationModel
 from yuki.identity.db_models import CanonicalPersonModel
 from yuki.llm.base import LLMInvalidRequestError
 from yuki.persistence.models import AutomationRunModel, ChatEventModel
@@ -312,22 +314,13 @@ async def _turn(
 
 
 async def _facts(database, *identities: str) -> dict[str, Any]:
-    """What a refused call must not move: each target's row, its refs, and all mail."""
-    rows = {}
-    for identity in identities:
-        row = await _row(database, identity)
-        rows[identity] = (
-            row["state"],
-            row["revision"],
-            row["reason"],
-            row["source_json"],
-            row["conversation_id"],
-            row["generation"],
-            tuple(sorted(await _refs(database, identity))),
-        )
+    """What a refused call must not move: every fact each target owns, all mail and
+    all native operations (each target's full ``_snapshot``)."""
+    owned = {identity: await _snapshot(database, identity) for identity in identities}
     async with database.read_session() as reader:
         mail = int(await reader.scalar(select(func.count()).select_from(inputs)))
-    return {"rows": rows, "inputs": mail}
+        operations = int(await reader.scalar(select(func.count()).select_from(AgentOperationModel)))
+    return {"works": owned, "inputs": mail, "native_operations": operations}
 
 
 async def _set_superuser(database, person: str, value: bool) -> None:
@@ -716,12 +709,21 @@ async def test_refusals_write_nothing(database, tmp_path, monkeypatch):
 
 
 async def test_only_failed_targets(database, tmp_path):
-    """Targets that are not failed are refused before any write."""
+    """Targets that are not failed are refused before any write.
+
+    They belong to the group's current generation (``/ai new`` would cancel live ones),
+    outside the owner's private scope; each keeps its real state up to the call.
+    """
     scene = await Scene(database, tmp_path).build()
     group = scene.env.context.conversation_id
+    await _new_generation(database, group)
     states = ("queued", "running", "suspended", "completed", "cancelled")
     targets = {state: await _self_work(scene, state=state) for state in states}
-    await _new_generation(database, group)
+    for state, identity in targets.items():
+        row = await _row(database, identity)
+        assert row["state"] == state, (state, row["state"])
+        assert row["conversation_id"] == group
+        assert row["generation"] == await _generation(database, group)
     baseline = await _facts(database, *targets.values())
     results = await _turn(
         scene,
@@ -731,7 +733,12 @@ async def test_only_failed_targets(database, tmp_path):
     for state, result in zip(states, results, strict=True):
         assert _code(result, FAILED_ONLY), (state, result)
     assert await _facts(database, *targets.values()) == baseline
-    RESULTS["S4_only_failed_targets"] = {state: FAILED_ONLY for state in states}
+    for state, identity in targets.items():
+        assert (await _row(database, identity))["state"] == state
+    RESULTS["S4_only_failed_targets"] = {
+        state: {"state_before_call": state, "result": FAILED_ONLY, "facts_unchanged": True}
+        for state in states
+    }
 
 
 # --------------------------------------------------------------- real deployment
@@ -1051,12 +1058,21 @@ async def test_real_resume_entry_races_the_abandon(acp_runtime, database, monkey
     read_revision = (await _row(database, raced))["revision"]
     real_manage = work_control_module.manage_work
     real_writer = database.immediate_session
-    queued = asyncio.Event()
+    queued, release = asyncio.Event(), asyncio.Event()
     loser: list[asyncio.Task] = []
 
+    @asynccontextmanager
+    async def held(*args, **kwargs):
+        # The resume request is in flight with revision r while the abandon holds
+        # the writer; it proceeds only after the abandon's facts are photographed.
+        queued.set()
+        await release.wait()
+        async with real_writer(*args, **kwargs) as session_:
+            yield session_
+
     def writer(*args, **kwargs):
-        if loser and asyncio.current_task() is loser[0]:
-            queued.set()
+        if loser and asyncio.current_task() is loser[0] and not queued.is_set():
+            return held(*args, **kwargs)
         return real_writer(*args, **kwargs)
 
     async def manage_holding_writer(session_, identity, *args, **kwargs):
@@ -1075,10 +1091,14 @@ async def test_real_resume_entry_races_the_abandon(acp_runtime, database, monkey
         ],
     )
     monkeypatch.setattr(work_control_module, "manage_work", real_manage)
-    monkeypatch.setattr(database, "immediate_session", real_writer)
-    assert queued.is_set() and len(loser) == 1
-    resume_response = await loser[0]
+    assert queued.is_set() and len(loser) == 1 and not loser[0].done()
     assert abandoned == {"id": raced, "status": "cancelled"}, abandoned
+    after_abandon = await _facts(database, raced)
+    release.set()
+    resume_response = await loser[0]
+    monkeypatch.setattr(database, "immediate_session", real_writer)
+    # The refused resume moved nothing the abandon left.
+    assert await _facts(database, raced) == after_abandon
     assert resume_response.status_code == 409, resume_response.text
     assert "version_conflict" in resume_response.text
     row = await _row(database, raced)
@@ -1088,6 +1108,7 @@ async def test_real_resume_entry_races_the_abandon(acp_runtime, database, monkey
         "abandon": "cancelled",
         "resume_entry": {"status": 409, "problem": "version_conflict"},
         "revision_step": 1,
+        "refused_resume_wrote_nothing": True,
     }
 
     # R4: no prior read; the resume entry lands between the reader check and the

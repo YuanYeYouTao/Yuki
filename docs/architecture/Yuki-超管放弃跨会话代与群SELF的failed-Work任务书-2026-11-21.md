@@ -1,6 +1,6 @@
 # Yuki 超管放弃跨会话代与群 SELF 的 failed Work 任务书（2026-11-21）
 
-状态：**第二阶段：决定已定（§2，用户 2026-11-21 批准 Q1 选 A、Q2–Q11 按推荐），已在原分支实施；第三轮按用户要求补真实 resume 竞态 E2E、Work 中调用的拒绝提示与 Desktop/ACP 个人输入 E2E（§8.3）。PR #674 保持 draft 待用户核验，未合并**。对应 [#673](https://github.com/YuanYeYouTao/Yuki/issues/673)，接续 [#666](https://github.com/YuanYeYouTao/Yuki/issues/666) / [#671](https://github.com/YuanYeYouTao/Yuki/pull/671)。分支 `docs/673-superadmin-abandon-failed-work-spec`，基线 origin/main `db7b5c26`（#671 已合入；迁移 head `0161`）。第一阶段调研见 §1，实施记录见 §8。
+状态：**第二阶段：决定已定（§2，用户 2026-11-21 批准 Q1 选 A、Q2–Q11 按推荐），已在原分支实施；第三轮按用户要求补真实 resume 竞态 E2E、Work 中调用的拒绝提示与 Desktop/ACP 个人输入 E2E（§8.3）；第四轮修正 S4 覆盖缺口、补全拒绝前后快照、保存先红证据（§8.4）。PR #674 保持 draft 待用户核验，未合并**。对应 [#673](https://github.com/YuanYeYouTao/Yuki/issues/673)，接续 [#666](https://github.com/YuanYeYouTao/Yuki/issues/666) / [#671](https://github.com/YuanYeYouTao/Yuki/pull/671)。分支 `docs/673-superadmin-abandon-failed-work-spec`，基线 origin/main `db7b5c26`（#671 已合入；迁移 head `0161`）。第一阶段调研见 §1，实施记录见 §8。
 
 标记约定沿用 #666 任务书：【实证】是源码或现有测试查到的事实；【issue】是 #673 给出的生产数据，本阶段**没有**到生产只读复核；【假设】是尚未查实、需在实施或 E2E 中确认的判断；【决定】是用户已批准的取舍（第一阶段的【推荐】已全部按 §2 批准）。路径省略 `src/yuki/`，行号以 `db7b5c26` 为准。
 
@@ -156,13 +156,13 @@ writer（一个 BEGIN IMMEDIATE）:
 
 - **S1 生产形态**（Scene）：群 SELF failed Work（按 `accept_in_session` 写入的来源形状插入）挂上协议对象 → 真实 `bump_canonical_generation` 进入旧代 → 新一代活 Work 共享一个对象 → 看门狗 facts 列出它 → 所有者私聊 `get_tasks` + `manage_task cancel(text=…)` → cancelled、revision +1、`superuser_abandoned`、来源/会话/代/父/goal 不变、`failure_json` 保留、refs 释放 → 宽限期内外 GC 行为正确。（F1、F12、F13、F17）
 - **S2**（Scene）：本人旧代 Work；挂起 SELF 父下的 failed 工作者（父收到 1 条 `worker-result`，仍 suspended）；另一人的 failed 委派记录（零原生调用、无新操作）。（F2、F11）
-- **S3 拒绝且不写入**（Scene）：非超管；超管群轮次；resume/fail/release；reader 后、writer 前撤销资格；超管自己的定时发生（无当前 Work、无触发事件 → `private_only`）。（F3、F4、F5、F8、F16）
-- **S4**（Scene）：五种非 failed 目标都 `failed_only` 且不写入。（F7）
+- **S3 拒绝且不写入**（Scene）：非超管；超管群轮次；resume/fail/release；reader 后、writer 前撤销资格；超管自己的定时发生（无当前 Work、无触发事件 → `private_only`）。目标是旧代群 SELF failed Work 与另一人的旧代 failed 委派记录（都是终态，换代不改它们）；每一步前后比对两者的全量快照（行全部列、refs、mailbox、waits、recovery、journal、effects）、全库 mailbox 行数与原生操作行数。（F3、F4、F5、F8、F16）
+- **S4**（Scene）：先让群进入新一代，再在**当前代**建 queued/running/suspended/completed/cancelled 五个 SELF Work（不在所有者私聊范围内）；调用前逐个断言它们的真实状态、会话与代；五次 `cancel` 都 `failed_only`；调用后全量快照与调用前相同，且各自仍是原状态。（F7）
 - **S5 Desktop 与 ACP**（真实部署）：failed Work 来自真实 ACP 轮次（`manage_task start` 后模型拒绝请求）。超管在 Desktop App 会话里 `get_tasks` + `cancel` 成功；在另一个 ACP 会话里 `cancel` 成功；同一 Desktop 轮先 `manage_task start` 登记自己的任务再 `cancel` → `superuser_abandon_direct_only`，文案含“另起一句直接说”，目标全部事实不变。（F18、F19）
 - **S6 真实 resume 竞态**（真实部署；resume 走真实入口：超管自己的聊天设备 token 调 `POST /admin/v1/works/{id}/resume`；不直接改库）：
   - R1：Desktop 读到 failed（r）→ resume 入口先行（200，queued r+1）→ `cancel` 与不重读的重试都 `version_conflict`；Work 的行、refs、mailbox、waits、recovery、journal、effects 与 resume 之后逐项相同。
   - R2：读到 failed（r）→ 真实 resume → 真实 WorkScheduler 运行、模型再次拒绝 → 仍 failed 但 revision 更新 → `cancel` 与重试都 `version_conflict`，期间全部事实不变；重新 `get_tasks` 后放弃成功。
-  - R3：两边都基于 r：放弃持有 writer 时 resume 请求到达并排在其后（以 resume 任务进入 writer 排队为确定性同步点）→ 放弃成功（revision +1），resume 入口返回 409 `version_conflict`。
+  - R3：两边都基于 r：放弃持有 writer 时 resume 请求到达（以 resume 任务请求 writer 为确定性同步点），并被挡在 writer 外直到放弃提交、拍下全量快照之后才放行 → 放弃成功（revision +1、`superuser_abandoned`），resume 入口返回 409 `version_conflict`，resume 之后的全量快照与放弃之后相同。
   - R4：未读过；resume 入口落在 reader 核验与 writer 之间 → `failed_only`，全部事实与 resume 之后相同。（F7、F9、F20）
 
 **仍未做成 E2E 的项**（如实列出）：合并到超管 root 的原 Person、账号转移后的新持有人、停用 Person（由 `person_is_superuser` 的现有语义保证，本 E2E 只覆盖撤销）；插件轮次与工作者激活（由 A2 的 `origin` 与 A4 判断，未单独驱动）；`/ai new` 之后旧激活的写入（沿用现有 `_assert_lease`）；群里他人插话（群轮次已整体拒绝）。S1–S4 的群 SELF Work 是按接纳写入的来源形状插入的，没有驱动真实 initiative run 失败；S3 的撤销资格是直接改 `is_superuser`（设置身份事实，不是 resume/状态竞态）。工具声明与 manifest 未改动。
@@ -214,3 +214,11 @@ python3 -c "import json,sys; sys.exit(0 if json.load(open('test-results/superuse
 - **变异核对**（逐个改后还原，`cmp` 确认）：去掉 Work 中拒绝 → S5:940；failed 判断提前到 revision 之前 → S6:984；忽略读到的 revision → S6:984；去掉 writer 内超管复核 → S3:640；去掉 failed 判断 → S4:732、S6:1111；去掉私聊/直接输入判断 → S3:599；不写固定原因码 → S1、S2、S5、S6 失败。
 - **产物**：连续两次运行逐字节相同，`all_scenarios_passed = true`，`results_sha256 = eb6a827d8ca4c877ce363440e4553bda3903030bb628588c298484cdd7a318ba`。
 - **其余验证**：`ruff check .`、`ruff format --check`（改动文件）、`mypy --platform linux src` 通过；引用 `manage_task`/`WorkControl` 的 99 个测试文件加 `test_acp_runtime_integration.py`：1277 passed、3 skipped、1 failed。失败的仍是 `test_work_execution_receipt_regressions.py::...[False-terminal_exec]`，已在基线上确认同样失败（§8.2）。
+
+### 8.4 第四轮（独立审查后的更正，2026-11-21）
+
+- **审查指出、核实属实**：第二、三轮的 S4 先建 queued/running/suspended 三个 SELF Work，**再**调用 `/ai new`（`bump_canonical_generation` 会取消旧代的非终态 Work），所以调用时这三个其实已经是 cancelled。它们得到 `failed_only` 是因为 cancelled，不是因为 queued/running/suspended。§8.2、§8.3 中“五种非 failed 状态”的覆盖说法**不成立**，实际只覆盖了 completed、cancelled。§8.3 所说“冲突与拒绝一律比对……全部事实”对 S3/S4 也**不成立**：当时 S3/S4 只比较了行的部分列、refs 与全库 mailbox 行数；R3 只断言了终态，没有在 resume 被拒前后各拍一次快照。
+- **更正**：S4 改为先换代、再在当前代建目标，调用前逐个断言真实状态；S3/S4 的 `_facts` 改为每个目标的全量 `_snapshot` 加全库 mailbox 与原生操作行数；R3 让 resume 请求在放弃提交后被挡住，先拍快照再放行，并比对 resume 前后快照。实现没有改动。
+- **变异核对（本轮测试文件）**：去掉 Work 中拒绝 → S5:947；failed 判断提前到 revision 之前 → S6:991；忽略读到的 revision → S6:991；去掉 writer 内超管复核 → S3:633；去掉 failed 判断 → S4:734（第一个真实 queued 目标被取消）与 S6:1132；去掉私聊/直接输入判断 → S3:592；不写固定原因码 → S1:403、S2:524、S5:925、S6:1106。§8.2、§8.3 中的行号对应当时的测试文件。
+- **先红证据（持久）**：`docs/architecture/evidence/issue-673-superuser-abandon/`。用本轮最终测试文件分别在基线 `db7b5c26`、PR 第一版 `44d928a9` 与本提交的 `work_control.py` 上运行，保存 junit、逐用例摘要、所用文件的 git blob 与 `summary.json`。基线 6 failed；`44d928a9` 4 passed、2 failed（S5:947、S6:991）；本提交 6 passed。这是本机对旧实现的回放，不是 CI 记录；§8.2、§8.3 的先红只记在终端与本书里，没有单独的持久文件，**不能独立证明**，以本轮证据为准。
+- **产物**：`test-results/superuser-abandon-failed-work-e2e.json` 连续两次运行逐字节相同，`all_scenarios_passed = true`，`results_sha256 = 0e16376aefc8cd5b8dc0349ef63f43ffea62d37f09f4e66157e0eaa498dce2cb`；同一份副本存于证据目录 `fixed/`。

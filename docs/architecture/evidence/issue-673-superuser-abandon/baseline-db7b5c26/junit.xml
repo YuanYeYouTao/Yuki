@@ -1,0 +1,281 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="6" skipped="0" tests="6" time="3.621" timestamp="2026-11-21T03:35:50.800384-08:00" hostname="Yuanyeyoutaos-Mac-Mini.local"><testcase classname="tests.integration.test_superuser_abandon_failed_work_e2e" name="test_owner_abandons_an_old_group_self_failed_work_from_private" time="0.486"><failure message="AssertionError: {'error': 'work_not_found_or_not_authorized', 'message': 'id 对应的任务不存在或无权操作；先用 get_tasks 查看。', 'ok': False}&#10;assert {'error': 'wo..., 'ok': False} == {'id': '2d286...: 'cancelled'}&#10;  &#10;  Left contains 3 more items:&#10;  {'error': 'work_not_found_or_not_authorized',&#10;   'message': 'id 对应的任务不存在或无权操作；先用 get_tasks 查看。',&#10;   'ok': False}&#10;  Right contains 2 more items:&#10;  {'id': '2d286816-bc55-4547-9936-50d203031ea0', 'status': 'cancelled'}&#10;  Use -v to get more diff">database = &lt;yuki.persistence.database.Database object at 0x10e84f170&gt;
+tmp_path = PosixPath('<tmp>')
+
+    async def test_owner_abandons_an_old_group_self_failed_work_from_private(database, tmp_path):
+        """#673 production shape: watchdog names it, the owner abandons it, GC reclaims it."""
+        scene = await Scene(database, tmp_path).build()
+        group = scene.env.context.conversation_id
+        held = await _self_work(scene)
+        old_generation = await _generation(database, group)
+        pad = await _attach(database, held, "pad-SELF", 300 * KB)
+        shared = await _attach(database, held, "shared-live", 50 * KB)
+        # The group moves on (production: generation 32 -&gt; 44).
+        current_generation = await _new_generation(database, group)
+        assert current_generation == old_generation + 1
+        # A live Work of the group's current generation shares one object with it.
+        live = await _self_work(scene, state="running")
+        assert await _attach(database, live, "shared-live", 50 * KB) == shared
+        assert (await _row(database, held))["state"] == "failed"
+        assert (await _row(database, held))["generation"] == old_generation
+    
+        # The watchdog names it among the failed holders near the cap.
+        scene.cap[0] = int(await _usage(database) / 0.9)
+        assert await scene.tick() == ["finished"]
+        context = _runtime_context(scene.notice_requests[0])
+        assert context is not None
+        facts = {issue["key"]: issue["facts"] for issue in context["watchdog"]["issues"]}
+        holders = facts["protocol_storage_near_cap"]["failed_holders"]
+        named = [holder for holder in holders if holder["work_id"] == held]
+        assert named and named[0]["origin"] == "self_initiative"
+        assert named[0]["conversation_id"] == group
+        scene.cap[0] = 2 * 1024**3
+        async with database.read_session() as reader:
+            open_issues = set(await reader.scalars(select(watchdog_issues.c.issue_key)))
+        assert "protocol_storage_near_cap" in open_issues
+    
+        # F1: the owner's private turn reads it and abandons it.
+        before = await _row(database, held)
+        read, cancelled = await _turn(
+            scene,
+            "abandon",
+            [
+                ("get_tasks", {"id": held}),
+                ("manage_task", {"action": "cancel", "id": held, "text": "SECRET-TEXT 主人同意"}),
+            ],
+        )
+        assert read["status"] == "failed", read
+&gt;       assert cancelled == {"id": held, "status": "cancelled"}, cancelled
+E       AssertionError: {'error': 'work_not_found_or_not_authorized', 'message': 'id 对应的任务不存在或无权操作；先用 get_tasks 查看。', 'ok': False}
+E       assert {'error': 'wo..., 'ok': False} == {'id': '2d286...: 'cancelled'}
+E         
+E         Left contains 3 more items:
+E         {'error': 'work_not_found_or_not_authorized',
+E          'message': 'id 对应的任务不存在或无权操作；先用 get_tasks 查看。',
+E          'ok': False}
+E         Right contains 2 more items:
+E         {'id': '2d286816-bc55-4547-9936-50d203031ea0', 'status': 'cancelled'}
+E         Use -v to get more diff
+
+tests/integration/test_superuser_abandon_failed_work_e2e.py:398: AssertionError</failure></testcase><testcase classname="tests.integration.test_superuser_abandon_failed_work_e2e" name="test_owner_abandons_own_old_generation_work_worker_and_others_record" time="0.231"><failure message="AssertionError: {'error': 'work_not_found_or_not_authorized', 'message': 'id 对应的任务不存在或无权操作；先用 get_tasks 查看。', 'ok': False}&#10;assert {'error': 'wo..., 'ok': False} == {'id': '375b2...: 'cancelled'}&#10;  &#10;  Left contains 3 more items:&#10;  {'error': 'work_not_found_or_not_authorized',&#10;   'message': 'id 对应的任务不存在或无权操作；先用 get_tasks 查看。',&#10;   'ok': False}&#10;  Right contains 2 more items:&#10;  {'id': '375b23e8-7267-4bdb-abbd-f4f5d3fed2d1', 'status': 'cancelled'}&#10;  Use -v to get more diff">database = &lt;yuki.persistence.database.Database object at 0x10ecac860&gt;
+tmp_path = PosixPath('<tmp>')
+
+    async def test_owner_abandons_own_old_generation_work_worker_and_others_record(database, tmp_path):
+        scene = await Scene(database, tmp_path).build()
+        private = await scene.conversation()
+        group = scene.env.context.conversation_id
+    
+        # F2: the owner's own failed Work of an older private generation (seeded as the
+        # private Host admission writes it), after the private conversation's /ai new.
+        own = str(uuid.uuid4())
+        now = time.time()
+        private_generation = await _generation(database, private)
+        async with database.immediate_session() as writer:
+            await writer.execute(
+                work.insert().values(
+                    id=own,
+                    conversation_id=private,
+                    generation=private_generation,
+                    source_key=f"private:{own}",
+                    source_json=json.dumps(
+                        {
+                            "origin": "user_message",
+                            "principal_kind": "person",
+                            "actor_person_id": scene.env.person,
+                        }
+                    ),
+                    goal="SECRET-GOAL 本人旧任务",
+                    state="failed",
+                    reason="RemoteProtocolError",
+                    created=now,
+                    updated=now,
+                )
+            )
+        await _attach(database, own, "pad-own", 64 * KB)
+        await _new_generation(database, private)
+    
+        # F11: another person's failed delegation record of an older group generation,
+        # and a failed worker under a suspended SELF parent of the current one.
+        async with database.immediate_session() as writer:
+            other = await ensure_person(writer, "10002")
+        delegated = await _failed_record(database, group, other)
+        await _new_generation(database, group)
+        parent = await _self_work(scene, state="suspended")
+        worker = await _self_work(scene, parent=parent, worker=True)
+        await _attach(database, worker, "pad-worker", 32 * KB)
+        recorder = Recorder()
+        database.external_agents = recorder
+        operations = await _operations(database)
+    
+        def mail_for(identity: str):
+            return select(func.count()).select_from(inputs).where(inputs.c.work_id == identity)
+    
+        async with database.read_session() as reader:
+            parent_mail = int(await reader.scalar(mail_for(parent)))
+        first, second, third = await _turn(
+            scene,
+            "mine",
+            [
+                ("manage_task", {"action": "cancel", "id": own}),
+                ("manage_task", {"action": "cancel", "id": worker}),
+                ("manage_task", {"action": "cancel", "id": delegated["record"]}),
+            ],
+        )
+&gt;       assert first == {"id": own, "status": "cancelled"}, first
+E       AssertionError: {'error': 'work_not_found_or_not_authorized', 'message': 'id 对应的任务不存在或无权操作；先用 get_tasks 查看。', 'ok': False}
+E       assert {'error': 'wo..., 'ok': False} == {'id': '375b2...: 'cancelled'}
+E         
+E         Left contains 3 more items:
+E         {'error': 'work_not_found_or_not_authorized',
+E          'message': 'id 对应的任务不存在或无权操作；先用 get_tasks 查看。',
+E          'ok': False}
+E         Right contains 2 more items:
+E         {'id': '375b23e8-7267-4bdb-abbd-f4f5d3fed2d1', 'status': 'cancelled'}
+E         Use -v to get more diff
+
+tests/integration/test_superuser_abandon_failed_work_e2e.py:519: AssertionError</failure></testcase><testcase classname="tests.integration.test_superuser_abandon_failed_work_e2e" name="test_refusals_write_nothing" time="0.289"><failure message="AssertionError: {'error': 'work_not_found_or_not_authorized', 'message': 'id 对应的任务不存在或无权操作；先用 get_tasks 查看。', 'ok': False}&#10;assert False&#10; +  where False = _code({'error': 'work_not_found_or_not_authorized', 'message': 'id 对应的任务不存在或无权操作；先用 get_tasks 查看。', 'ok': False}, 'superuser_abandon_private_only')">database = &lt;yuki.persistence.database.Database object at 0x10f22f6b0&gt;
+tmp_path = PosixPath('<tmp>')
+monkeypatch = &lt;_pytest.monkeypatch.MonkeyPatch object at 0x10f22f350&gt;
+
+    async def test_refusals_write_nothing(database, tmp_path, monkeypatch):
+        """Non-superuser, group, schedule, actions other than cancel, revocation in between."""
+        scene = await Scene(database, tmp_path).build()
+        group = scene.env.context.conversation_id
+        target = await _self_work(scene)
+        await _attach(database, target, "pad-target", 16 * KB)
+        async with database.immediate_session() as writer:
+            other = await ensure_person(writer, "10002")
+        delegated = await _failed_record(database, group, other)
+        database.external_agents = Recorder()
+        await _new_generation(database, group)
+        watched = (target, delegated["record"])
+        baseline = await _facts(database, *watched)
+        outcomes: dict[str, Any] = {}
+    
+        # F3: a non-superuser gets today's errors.
+        await _set_superuser(database, scene.env.person, False)
+        plain, record = await _turn(
+            scene,
+            "plain",
+            [
+                ("manage_task", {"action": "cancel", "id": target}),
+                ("manage_task", {"action": "cancel", "id": delegated["record"]}),
+            ],
+        )
+        assert _code(plain, DENIED), plain
+        assert _code(record, "subtask_not_owned"), record
+        assert await _facts(database, *watched) == baseline
+        outcomes["non_superuser"] = {"work": DENIED, "record": "subtask_not_owned"}
+        await _set_superuser(database, scene.env.person, True)
+    
+        # F5: the superuser's group turn.
+        (in_group,) = await _turn(
+            scene, "group", [("manage_task", {"action": "cancel", "id": target})], group=True
+        )
+&gt;       assert _code(in_group, PRIVATE_ONLY), in_group
+E       AssertionError: {'error': 'work_not_found_or_not_authorized', 'message': 'id 对应的任务不存在或无权操作；先用 get_tasks 查看。', 'ok': False}
+E       assert False
+E        +  where False = _code({'error': 'work_not_found_or_not_authorized', 'message': 'id 对应的任务不存在或无权操作；先用 get_tasks 查看。', 'ok': False}, 'superuser_abandon_private_only')
+
+tests/integration/test_superuser_abandon_failed_work_e2e.py:592: AssertionError</failure></testcase><testcase classname="tests.integration.test_superuser_abandon_failed_work_e2e" name="test_only_failed_targets" time="0.305"><failure message="AssertionError: ('queued', {'error': 'work_not_found_or_not_authorized', 'message': 'id 对应的任务不存在或无权操作；先用 get_tasks 查看。', 'ok': False})&#10;assert False&#10; +  where False = _code({'error': 'work_not_found_or_not_authorized', 'message': 'id 对应的任务不存在或无权操作；先用 get_tasks 查看。', 'ok': False}, 'superuser_abandon_failed_only')">database = &lt;yuki.persistence.database.Database object at 0x10f306090&gt;
+tmp_path = PosixPath('<tmp>')
+
+    async def test_only_failed_targets(database, tmp_path):
+        """Targets that are not failed are refused before any write.
+    
+        They belong to the group's current generation (``/ai new`` would cancel live ones),
+        outside the owner's private scope; each keeps its real state up to the call.
+        """
+        scene = await Scene(database, tmp_path).build()
+        group = scene.env.context.conversation_id
+        await _new_generation(database, group)
+        states = ("queued", "running", "suspended", "completed", "cancelled")
+        targets = {state: await _self_work(scene, state=state) for state in states}
+        for state, identity in targets.items():
+            row = await _row(database, identity)
+            assert row["state"] == state, (state, row["state"])
+            assert row["conversation_id"] == group
+            assert row["generation"] == await _generation(database, group)
+        baseline = await _facts(database, *targets.values())
+        results = await _turn(
+            scene,
+            "states",
+            [("manage_task", {"action": "cancel", "id": targets[state]}) for state in states],
+        )
+        for state, result in zip(states, results, strict=True):
+&gt;           assert _code(result, FAILED_ONLY), (state, result)
+E           AssertionError: ('queued', {'error': 'work_not_found_or_not_authorized', 'message': 'id 对应的任务不存在或无权操作；先用 get_tasks 查看。', 'ok': False})
+E           assert False
+E            +  where False = _code({'error': 'work_not_found_or_not_authorized', 'message': 'id 对应的任务不存在或无权操作；先用 get_tasks 查看。', 'ok': False}, 'superuser_abandon_failed_only')
+
+tests/integration/test_superuser_abandon_failed_work_e2e.py:734: AssertionError</failure></testcase><testcase classname="tests.integration.test_superuser_abandon_failed_work_e2e" name="test_desktop_app_and_acp_direct_input_abandon" time="0.947"><failure message="AssertionError: {'error': 'work_not_found_or_not_authorized', 'message': 'id 对应的任务不存在或无权操作；先用 get_tasks 查看。', 'ok': False}&#10;assert {'error': 'wo..., 'ok': False} == {'id': '704bd...: 'cancelled'}&#10;  &#10;  Left contains 3 more items:&#10;  {'error': 'work_not_found_or_not_authorized',&#10;   'message': 'id 对应的任务不存在或无权操作；先用 get_tasks 查看。',&#10;   'ok': False}&#10;  Right contains 2 more items:&#10;  {'id': '704bd6e4-3a07-4d72-a3ec-d8b5ab265270', 'status': 'cancelled'}&#10;  Use -v to get more diff">acp_runtime = namespace(app=&lt;yuki.container.ApplicationContainer object at 0x10eee39e0&gt;, http=&lt;httpx.AsyncClient object at 0x10e52d2...i_device_uXtbWQfW4PksdGdlOU5XED3N1krNyn9mGwu1C_Aa8wA'}, provider=&lt;yuki.llm.fake.FakeLLMProvider object at 0x10f11f890&gt;)
+database = &lt;yuki.persistence.database.Database object at 0x10f1c2e40&gt;
+
+    async def test_desktop_app_and_acp_direct_input_abandon(acp_runtime, database):
+        """Q5: the Desktop App and an ACP session are the superuser's direct input too."""
+        deployment = await Deployment(acp_runtime, database).setup()
+        origin_session = await new_session(acp_runtime)
+        from_desktop = await deployment.failed_in_acp(origin_session, "A")
+        from_acp = await deployment.failed_in_acp(origin_session, "B")
+        in_work = await deployment.failed_in_acp(origin_session, "C")
+        pad = await _attach(database, from_desktop, "pad-desktop", 32 * KB)
+    
+        # The Desktop App conversation is a different private conversation: the
+        # origin session's Work is outside its own scope.
+        read, abandoned = await deployment.turn(
+            "desktop",
+            [
+                ("get_tasks", {"id": from_desktop}),
+                ("manage_task", {"action": "cancel", "id": from_desktop, "text": "SECRET-TEXT"}),
+            ],
+        )
+        assert read["status"] == "failed", read
+&gt;       assert abandoned == {"id": from_desktop, "status": "cancelled"}, abandoned
+E       AssertionError: {'error': 'work_not_found_or_not_authorized', 'message': 'id 对应的任务不存在或无权操作；先用 get_tasks 查看。', 'ok': False}
+E       assert {'error': 'wo..., 'ok': False} == {'id': '704bd...: 'cancelled'}
+E         
+E         Left contains 3 more items:
+E         {'error': 'work_not_found_or_not_authorized',
+E          'message': 'id 对应的任务不存在或无权操作；先用 get_tasks 查看。',
+E          'ok': False}
+E         Right contains 2 more items:
+E         {'id': '704bd6e4-3a07-4d72-a3ec-d8b5ab265270', 'status': 'cancelled'}
+E         Use -v to get more diff
+
+tests/integration/test_superuser_abandon_failed_work_e2e.py:923: AssertionError</failure></testcase><testcase classname="tests.integration.test_superuser_abandon_failed_work_e2e" name="test_real_resume_entry_races_the_abandon" time="0.588"><failure message="AssertionError: {'error': 'work_not_found_or_not_authorized', 'message': 'id 对应的任务不存在或无权操作；先用 get_tasks 查看。', 'ok': False}&#10;assert False&#10; +  where False = _code({'error': 'work_not_found_or_not_authorized', 'message': 'id 对应的任务不存在或无权操作；先用 get_tasks 查看。', 'ok': False}, 'version_conflict')">acp_runtime = namespace(app=&lt;yuki.container.ApplicationContainer object at 0x10eb5d0d0&gt;, http=&lt;httpx.AsyncClient object at 0x10fb481...i_device_TbiXqF13utNz5LdhmcywDUc795Ll8f68z4OxMw5EQfk'}, provider=&lt;yuki.llm.fake.FakeLLMProvider object at 0x10ebc90a0&gt;)
+database = &lt;yuki.persistence.database.Database object at 0x10f84af90&gt;
+monkeypatch = &lt;_pytest.monkeypatch.MonkeyPatch object at 0x10fbbf4a0&gt;
+
+    async def test_real_resume_entry_races_the_abandon(acp_runtime, database, monkeypatch):
+        """The real resume entry and the abandon act on the same read revision."""
+        deployment = await Deployment(acp_runtime, database).setup()
+        session = await new_session(acp_runtime)
+        outcomes: dict[str, Any] = {}
+    
+        # R1: Desktop reads it failed at r; the resume entry wins first; the abandon and a
+        # retry without a new read are version_conflict and write nothing.
+        resumed = await deployment.failed_in_acp(session, "R1")
+        read_revision = (await _row(database, resumed))["revision"]
+        after_resume: dict[str, Any] = {}
+    
+        async def resume_first(index: int) -&gt; None:
+            if index == 1:
+                response = await deployment.resume(resumed, read_revision)
+                assert response.status_code == 200, response.text
+                after_resume.update(await _snapshot(database, resumed))
+    
+        read, conflict, retry = await deployment.turn(
+            "r1",
+            [
+                ("get_tasks", {"id": resumed}),
+                ("manage_task", {"action": "cancel", "id": resumed}),
+                ("manage_task", {"action": "cancel", "id": resumed}),
+            ],
+            hook=resume_first,
+        )
+        assert read["status"] == "failed" and read.get("id", resumed) == resumed
+&gt;       assert _code(conflict, "version_conflict"), conflict
+E       AssertionError: {'error': 'work_not_found_or_not_authorized', 'message': 'id 对应的任务不存在或无权操作；先用 get_tasks 查看。', 'ok': False}
+E       assert False
+E        +  where False = _code({'error': 'work_not_found_or_not_authorized', 'message': 'id 对应的任务不存在或无权操作；先用 get_tasks 查看。', 'ok': False}, 'version_conflict')
+
+tests/integration/test_superuser_abandon_failed_work_e2e.py:991: AssertionError</failure></testcase></testsuite></testsuites>

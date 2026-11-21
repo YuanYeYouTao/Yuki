@@ -1,0 +1,3 @@
+FAILED tests/integration/test_superuser_abandon_failed_work_e2e.py::test_desktop_app_and_acp_direct_input_abandon
+FAILED tests/integration/test_superuser_abandon_failed_work_e2e.py::test_real_resume_entry_races_the_abandon
+2 failed, 4 passed, 1 warning in 4.35s

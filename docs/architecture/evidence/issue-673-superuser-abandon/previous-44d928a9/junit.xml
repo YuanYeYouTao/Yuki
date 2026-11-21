@@ -1,0 +1,89 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="2" skipped="0" tests="6" time="4.350" timestamp="2026-11-21T03:35:56.301354-08:00" hostname="Yuanyeyoutaos-Mac-Mini.local"><testcase classname="tests.integration.test_superuser_abandon_failed_work_e2e" name="test_owner_abandons_an_old_group_self_failed_work_from_private" time="0.591" /><testcase classname="tests.integration.test_superuser_abandon_failed_work_e2e" name="test_owner_abandons_own_old_generation_work_worker_and_others_record" time="0.234" /><testcase classname="tests.integration.test_superuser_abandon_failed_work_e2e" name="test_refusals_write_nothing" time="0.573" /><testcase classname="tests.integration.test_superuser_abandon_failed_work_e2e" name="test_only_failed_targets" time="0.287" /><testcase classname="tests.integration.test_superuser_abandon_failed_work_e2e" name="test_desktop_app_and_acp_direct_input_abandon" time="1.384"><failure message="AssertionError: {'id': '5ff5cf23-665d-4a9f-b693-7d3b4b6aee6e', 'status': 'cancelled'}&#10;assert False&#10; +  where False = _code({'id': '5ff5cf23-665d-4a9f-b693-7d3b4b6aee6e', 'status': 'cancelled'}, 'superuser_abandon_direct_only')">acp_runtime = namespace(app=&lt;yuki.container.ApplicationContainer object at 0x11175e270&gt;, http=&lt;httpx.AsyncClient object at 0x11146e2...i_device_Gb-ZBEvPLgMCzL9p-AUyOtBfy8xoCh10LwwJ2R_GYtg'}, provider=&lt;yuki.llm.fake.FakeLLMProvider object at 0x111576690&gt;)
+database = &lt;yuki.persistence.database.Database object at 0x1115fc1d0&gt;
+
+    async def test_desktop_app_and_acp_direct_input_abandon(acp_runtime, database):
+        """Q5: the Desktop App and an ACP session are the superuser's direct input too."""
+        deployment = await Deployment(acp_runtime, database).setup()
+        origin_session = await new_session(acp_runtime)
+        from_desktop = await deployment.failed_in_acp(origin_session, "A")
+        from_acp = await deployment.failed_in_acp(origin_session, "B")
+        in_work = await deployment.failed_in_acp(origin_session, "C")
+        pad = await _attach(database, from_desktop, "pad-desktop", 32 * KB)
+    
+        # The Desktop App conversation is a different private conversation: the
+        # origin session's Work is outside its own scope.
+        read, abandoned = await deployment.turn(
+            "desktop",
+            [
+                ("get_tasks", {"id": from_desktop}),
+                ("manage_task", {"action": "cancel", "id": from_desktop, "text": "SECRET-TEXT"}),
+            ],
+        )
+        assert read["status"] == "failed", read
+        assert abandoned == {"id": from_desktop, "status": "cancelled"}, abandoned
+        row = await _row(database, from_desktop)
+        assert row["reason"] == "superuser_abandoned" and await _refs(database, from_desktop) == set()
+        assert pad not in await _refs(database, from_desktop)
+    
+        # Another ACP session of the same person.
+        other_session = await new_session(acp_runtime)
+        (from_other,) = await deployment.turn(
+            "acp", [("manage_task", {"action": "cancel", "id": from_acp})], session=other_session
+        )
+        assert from_other == {"id": from_acp, "status": "cancelled"}, from_other
+        assert (await _row(database, from_acp))["reason"] == "superuser_abandoned"
+    
+        # Inside a Work (this turn first registers its own task) the call is refused and
+        # tells Yuki to have the person say it directly in a new message.
+        before = await _snapshot(database, in_work)
+        started, refused = await deployment.turn(
+            "inside-work",
+            [
+                ("manage_task", {"action": "start", "goal": "先登记一个任务"}),
+                ("manage_task", {"action": "cancel", "id": in_work}),
+            ],
+        )
+        assert "error" not in json.dumps(started), started
+&gt;       assert _code(refused, DIRECT_ONLY), refused
+E       AssertionError: {'id': '5ff5cf23-665d-4a9f-b693-7d3b4b6aee6e', 'status': 'cancelled'}
+E       assert False
+E        +  where False = _code({'id': '5ff5cf23-665d-4a9f-b693-7d3b4b6aee6e', 'status': 'cancelled'}, 'superuser_abandon_direct_only')
+
+tests/integration/test_superuser_abandon_failed_work_e2e.py:947: AssertionError</failure></testcase><testcase classname="tests.integration.test_superuser_abandon_failed_work_e2e" name="test_real_resume_entry_races_the_abandon" time="0.630"><failure message="AssertionError: {'error': 'superuser_abandon_failed_only', 'message': '只能放弃已失败的任务；它现在不是 failed，先用 get_tasks 查看。', 'ok': False}&#10;assert False&#10; +  where False = _code({'error': 'superuser_abandon_failed_only', 'message': '只能放弃已失败的任务；它现在不是 failed，先用 get_tasks 查看。', 'ok': False}, 'version_conflict')">acp_runtime = namespace(app=&lt;yuki.container.ApplicationContainer object at 0x11257f9e0&gt;, http=&lt;httpx.AsyncClient object at 0x1128829...i_device_mgwbD-KBk7qUtRXRUQ0RU8mAJxqZogCJSm4jGLxK7kg'}, provider=&lt;yuki.llm.fake.FakeLLMProvider object at 0x11144a900&gt;)
+database = &lt;yuki.persistence.database.Database object at 0x1113ed670&gt;
+monkeypatch = &lt;_pytest.monkeypatch.MonkeyPatch object at 0x1123d5520&gt;
+
+    async def test_real_resume_entry_races_the_abandon(acp_runtime, database, monkeypatch):
+        """The real resume entry and the abandon act on the same read revision."""
+        deployment = await Deployment(acp_runtime, database).setup()
+        session = await new_session(acp_runtime)
+        outcomes: dict[str, Any] = {}
+    
+        # R1: Desktop reads it failed at r; the resume entry wins first; the abandon and a
+        # retry without a new read are version_conflict and write nothing.
+        resumed = await deployment.failed_in_acp(session, "R1")
+        read_revision = (await _row(database, resumed))["revision"]
+        after_resume: dict[str, Any] = {}
+    
+        async def resume_first(index: int) -&gt; None:
+            if index == 1:
+                response = await deployment.resume(resumed, read_revision)
+                assert response.status_code == 200, response.text
+                after_resume.update(await _snapshot(database, resumed))
+    
+        read, conflict, retry = await deployment.turn(
+            "r1",
+            [
+                ("get_tasks", {"id": resumed}),
+                ("manage_task", {"action": "cancel", "id": resumed}),
+                ("manage_task", {"action": "cancel", "id": resumed}),
+            ],
+            hook=resume_first,
+        )
+        assert read["status"] == "failed" and read.get("id", resumed) == resumed
+&gt;       assert _code(conflict, "version_conflict"), conflict
+E       AssertionError: {'error': 'superuser_abandon_failed_only', 'message': '只能放弃已失败的任务；它现在不是 failed，先用 get_tasks 查看。', 'ok': False}
+E       assert False
+E        +  where False = _code({'error': 'superuser_abandon_failed_only', 'message': '只能放弃已失败的任务；它现在不是 failed，先用 get_tasks 查看。', 'ok': False}, 'version_conflict')
+
+tests/integration/test_superuser_abandon_failed_work_e2e.py:991: AssertionError</failure></testcase></testsuite></testsuites>

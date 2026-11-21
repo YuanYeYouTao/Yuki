@@ -1,0 +1,113 @@
+{
+  "fixed_artifact": {
+    "all_scenarios_passed": true,
+    "results_sha256": "0e16376aefc8cd5b8dc0349ef63f43ffea62d37f09f4e66157e0eaa498dce2cb",
+    "two_runs_byte_identical": true
+  },
+  "runs": {
+    "baseline-db7b5c26": {
+      "cases": {
+        "test_desktop_app_and_acp_direct_input_abandon": {
+          "error_codes_seen": [
+            "work_not_found_or_not_authorized"
+          ],
+          "failing_line": 923,
+          "outcome": "failed"
+        },
+        "test_only_failed_targets": {
+          "error_codes_seen": [
+            "work_not_found_or_not_authorized"
+          ],
+          "failing_line": 734,
+          "outcome": "failed"
+        },
+        "test_owner_abandons_an_old_group_self_failed_work_from_private": {
+          "error_codes_seen": [
+            "work_not_found_or_not_authorized"
+          ],
+          "failing_line": 398,
+          "outcome": "failed"
+        },
+        "test_owner_abandons_own_old_generation_work_worker_and_others_record": {
+          "error_codes_seen": [
+            "work_not_found_or_not_authorized"
+          ],
+          "failing_line": 519,
+          "outcome": "failed"
+        },
+        "test_real_resume_entry_races_the_abandon": {
+          "error_codes_seen": [
+            "work_not_found_or_not_authorized"
+          ],
+          "failing_line": 991,
+          "outcome": "failed"
+        },
+        "test_refusals_write_nothing": {
+          "error_codes_seen": [
+            "work_not_found_or_not_authorized"
+          ],
+          "failing_line": 592,
+          "outcome": "failed"
+        }
+      },
+      "work_control_blob": "398bdcf18487c3dd0060a00e57a9dcb48ac5e029",
+      "work_control_source": "db7b5c26:src/yuki/runtime/work_control.py"
+    },
+    "fixed": {
+      "cases": {
+        "test_desktop_app_and_acp_direct_input_abandon": {
+          "outcome": "passed"
+        },
+        "test_only_failed_targets": {
+          "outcome": "passed"
+        },
+        "test_owner_abandons_an_old_group_self_failed_work_from_private": {
+          "outcome": "passed"
+        },
+        "test_owner_abandons_own_old_generation_work_worker_and_others_record": {
+          "outcome": "passed"
+        },
+        "test_real_resume_entry_races_the_abandon": {
+          "outcome": "passed"
+        },
+        "test_refusals_write_nothing": {
+          "outcome": "passed"
+        }
+      },
+      "work_control_blob": "ad68bb60ab79c30be1fc16c9e37a35ee0b1175a7",
+      "work_control_source": "src/yuki/runtime/work_control.py of the commit adding this file"
+    },
+    "previous-44d928a9": {
+      "cases": {
+        "test_desktop_app_and_acp_direct_input_abandon": {
+          "error_codes_seen": [],
+          "failing_line": 947,
+          "outcome": "failed"
+        },
+        "test_only_failed_targets": {
+          "outcome": "passed"
+        },
+        "test_owner_abandons_an_old_group_self_failed_work_from_private": {
+          "outcome": "passed"
+        },
+        "test_owner_abandons_own_old_generation_work_worker_and_others_record": {
+          "outcome": "passed"
+        },
+        "test_real_resume_entry_races_the_abandon": {
+          "error_codes_seen": [
+            "superuser_abandon_failed_only"
+          ],
+          "failing_line": 991,
+          "outcome": "failed"
+        },
+        "test_refusals_write_nothing": {
+          "outcome": "passed"
+        }
+      },
+      "work_control_blob": "075739d29d642dff5fc716247dd7daef888a5648",
+      "work_control_source": "44d928a9:src/yuki/runtime/work_control.py"
+    }
+  },
+  "test_file_blob": "abfa0d5dbba3d569de880bf9f09084b75746178a",
+  "test_file_sha256": "2e3badac49a8209683ba0d71b131917b99c3739cb1a3efd2878d19c9cab9a2af"
+}
