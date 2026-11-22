@@ -80,7 +80,7 @@ async def test_shared_watermark_compacts_public_before_main_without_profile_limi
         assert control.requests_started == len(provider.requests)
 
 
-async def test_soft_watermark_does_not_require_summary_below_trigger_or_recompact_checkpoint(
+async def test_soft_watermark_does_not_require_summary_below_trigger_or_rebuy_large_checkpoint(
     database, tmp_path
 ):
     control, session, initial = await _session(database, tmp_path)
@@ -98,10 +98,12 @@ async def test_soft_watermark_does_not_require_summary_below_trigger_or_recompac
     assert len(provider.requests) == 1
     await execution.prepare_request(0, (), WebMode.DISABLED)
     assert len(provider.requests) == 1
+    # The paid checkpoint alone stays above the trigger. Its replacement could
+    # not bring the request below it, so a new finding buys no further summary.
     execution.state.transcript.append(ChatMessage("assistant", "A new completed finding."))
     await execution.prepare_request(0, (), WebMode.DISABLED)
-    assert len(provider.requests) == 2
-    assert control.requests_started == 2
+    assert len(provider.requests) == 1
+    assert control.requests_started == 1
 
 
 @pytest.mark.parametrize("outcome", ["tool_call", "incomplete", "empty"])
