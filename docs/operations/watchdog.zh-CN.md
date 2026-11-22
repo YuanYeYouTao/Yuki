@@ -22,7 +22,7 @@
 
 ## 运行时异常停住的 Work
 
-根 Work 因不可重试的运行时异常进入 failed（例如回复传到一半断开的 `RemoteProtocolError`、重启打断在途请求的 `work_response_not_persisted`）时，那一轮没有任何交付，看门狗开 `work_failed:{work_id}:{revision}` 告诉超管停在哪一步（`stage`、`code`）、能否沿原执行链恢复（`resume_blocker` 为空表示可以）。模型自己用 `manage_task(fail)` 结束的、子任务和委派记录都不报；管理端 fail 的通常不报，但若原因文本恰好等于该 Work 之前的失败码（例如 resume 后、尚未有新响应时被结束），会被误报为运行时失败。处理方式：本人的任务可以让 Yuki 继续；也可以放弃恢复（#666/#673）。上线后第一次检查会把当时所有这样的 failed Work 合并成每人一次通知；之后只报新出现的失败，同一 Work 恢复后再失败会再说一次。
+根 Work 因不可重试的运行时异常进入 failed（例如原生搜索请求回复传到一半断开得到的 `LLMNativeToolError`、重启打断在途请求的 `work_response_not_persisted`）时，那一轮没有任何交付，看门狗开 `work_failed:{work_id}:{revision}` 告诉超管停在哪一步（`stage`、`code`）、能否沿原执行链恢复（`resume_blocker` 为空表示可以）。模型自己用 `manage_task(fail)` 结束的、子任务和委派记录都不报；管理端 fail 的通常不报，但若原因文本恰好等于该 Work 之前的失败码（例如 resume 后、尚未有新响应时被结束），会被误报为运行时失败。处理方式：本人的任务可以让 Yuki 继续；也可以放弃恢复（#666/#673）。上线后第一次检查会把当时所有这样的 failed Work 合并成每人一次通知；之后只报新出现的失败，同一 Work 恢复后再失败会再说一次。
 
 只读核对哪些 failed Work 会被报告：
 

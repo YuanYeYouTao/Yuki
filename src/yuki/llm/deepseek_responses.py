@@ -47,7 +47,8 @@ class DeepSeekResponsesProvider(JSONHTTPProvider):
     prompt_cache_breakpoints = False
 
     protocol = "responses"
-    # Preserve the Responses ReadError contract; native calls never retry.
+    # Re-send only when the request never reached the provider or timed out; a read or
+    # protocol failure (outcome unknown) is reported once. Native calls never retry.
     transport_errors = (httpx.ConnectError, httpx.TimeoutException)
 
     def __init__(self, *, options: ChatWireOptions | None = None, **kwargs: Any) -> None:
