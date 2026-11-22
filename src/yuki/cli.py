@@ -41,6 +41,27 @@ from yuki.identity.routing import PresenceRouter
 from yuki.memory.dream.db_models import MemoryDreamRunModel
 from yuki.memory.episode_index import EpisodeIndex
 from yuki.memory.episode_titles import EpisodeTitleRejected, EpisodeTitles, set_episode_title
+from yuki.memory.profile_admin import (
+    ProfileGeneration,
+    ProfileOutcome,
+    ProfilePlan,
+    apply_plan,
+    check_profiles,
+    diff_entries,
+    displayed_targets,
+    dropped_positions,
+    latest_window,
+    profile_status,
+    rollback,
+)
+from yuki.memory.profiles import (
+    ProfileAudience,
+    ProfileConflict,
+    ProfileEntry,
+    ProfileStore,
+    ProfileValidationError,
+    SpaceMembers,
+)
 from yuki.memory.quality.audit import MemoryProductionQualityAudit
 from yuki.memory.quality.hygiene import MemoryProvenanceHygiene
 from yuki.memory.quality.task_scoped import (
@@ -235,6 +256,7 @@ def _add_memory_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentP
     _add_task_scoped_parser(hygiene_commands)
     _add_resident_parser(commands)
     _add_episodes_parser(commands)
+    _add_profile_parser(commands)
 
 
 def _add_task_scoped_parser(
@@ -341,6 +363,76 @@ def _add_episodes_parser(
         "status", help="水位、运行中的 Dream、标题覆盖与各会话条数"
     )
     for parser in (render, check, backfill, set_title, status):
+        parser.add_argument("--database-url", help="默认使用当前配置的数据库")
+
+
+def _add_profile_parser(
+    commands: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
+    profile = commands.add_parser(
+        "profile",
+        help="人物画像：查看、历史、对比、回滚、锁定、离线生成与写入、群活跃名单、检查与状态",
+    )
+    profile_commands = profile.add_subparsers(dest="profile_command", required=True)
+
+    def target(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
+        parser.add_argument("--person", required=True, help="Person ID，按根解析")
+        parser.add_argument("--audience", choices=("public", "private"), required=True)
+        return parser
+
+    show = target(profile_commands.add_parser("show", help="当前版本、来源、锁定、签名与条目编号"))
+    show.add_argument("--content", action="store_true", help="同时打印正文；只在部署环境内使用")
+    history = target(profile_commands.add_parser("history", help="全部版本：来源、原因、条目数"))
+    diff = target(profile_commands.add_parser("diff", help="两个版本按条目对比"))
+    diff.add_argument("--from", dest="from_version", type=int, required=True)
+    diff.add_argument("--to", dest="to_version", type=int, required=True)
+    diff.add_argument("--content", action="store_true", help="同时打印正文；只在部署环境内使用")
+    rollback_command = target(
+        profile_commands.add_parser(
+            "rollback", help="以版本 N 的条目生成新版本（source=owner），校验后自动锁定"
+        )
+    )
+    rollback_command.add_argument("--to", dest="to_version", type=int, required=True)
+    lock = target(profile_commands.add_parser("lock", help="Dream 挑选跳过该画像；程序清理照常"))
+    unlock = target(profile_commands.add_parser("unlock", help="把画像交还 Dream 挑选"))
+    generate = profile_commands.add_parser(
+        "generate", help="用 memory_dream 模型路由生成画像，写进计划文件；不写库"
+    )
+    which = generate.add_mutually_exclusive_group(required=True)
+    which.add_argument("--person", help="Person ID，按根解析")
+    which.add_argument("--displayed", action="store_true", help="最近一次 Dream 窗口的维护集合")
+    generate.add_argument(
+        "--audience", choices=("public", "private"), help="只配合 --person；省略时两份都生成"
+    )
+    generate.add_argument("--out", type=Path, required=True)
+    apply = profile_commands.add_parser(
+        "apply", help="签名与当前版本号仍一致的画像写新版本；改过条目的自动锁定"
+    )
+    apply.add_argument("plan", type=Path)
+    members = profile_commands.add_parser("members", help="查看或固定群活跃名单")
+    members.add_argument("--space", required=True, help="群 space ID")
+    pin = members.add_mutually_exclusive_group()
+    pin.add_argument("--pin", help="逗号分隔的 Person ID，最多 5 个，按根解析")
+    pin.add_argument("--unpin", action="store_true", help="交还 Dream，下次收尾重算")
+    check = profile_commands.add_parser(
+        "check", help="对全部画像做渲染时校验，输出条目编号与违规；有违规时退出码 1"
+    )
+    status = profile_commands.add_parser(
+        "status", help="最近一次名单窗口、维护集合、到期画像与各画像版本"
+    )
+    for parser in (
+        show,
+        history,
+        diff,
+        rollback_command,
+        lock,
+        unlock,
+        generate,
+        apply,
+        members,
+        check,
+        status,
+    ):
         parser.add_argument("--database-url", help="默认使用当前配置的数据库")
 
 
@@ -517,6 +609,8 @@ async def _memory_command(settings: Settings, args: argparse.Namespace) -> int:
         return await _resident_command(settings, args)
     if action == "episodes":
         return await _episodes_command(settings, args)
+    if action == "profile":
+        return await _profile_command(settings, args)
     return 1
 
 
@@ -796,6 +890,289 @@ async def _episodes_command(settings: Settings, args: argparse.Namespace) -> int
         return 0
     finally:
         await database.close()
+
+
+def _entry_payload(entry: ProfileEntry, *, content: bool) -> dict[str, object]:
+    payload: dict[str, object] = {"section": entry.section, "fact_ids": list(entry.fact_ids)}
+    if content:
+        payload["text"] = entry.text
+    return payload
+
+
+def _outcome_payload(item: ProfileOutcome) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "person_id": item.person_id,
+        "audience": item.audience,
+        "code": item.code,
+    }
+    if item.fact_ids:
+        payload["fact_ids"] = list(item.fact_ids)
+    return payload
+
+
+def _members_payload(members: SpaceMembers | None) -> dict[str, object] | None:
+    if members is None:
+        return None
+    return {
+        "person_ids": list(members.person_ids),
+        "source": members.source,
+        "dream_run_public_id": members.dream_run_public_id,
+        "updated_at": members.updated_at.isoformat(),
+    }
+
+
+async def _profile_command(settings: Settings, args: argparse.Namespace) -> int:
+    """``yuki memory profile``: owner tooling for person profiles (P4 §9)."""
+
+    action = str(args.profile_command)
+    database = Database(str(args.database_url or settings.database_url))
+    store = ProfileStore(database)
+    try:
+        try:
+            payload, code = await _profile_action(settings, database, store, action, args)
+        except (ProfileConflict, ProfileValidationError) as exc:
+            payload, code = {"error": exc.code}, 1
+        print(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
+        return code
+    finally:
+        await database.close()
+
+
+async def _profile_action(
+    settings: Settings,
+    database: Database,
+    store: ProfileStore,
+    action: str,
+    args: argparse.Namespace,
+) -> tuple[dict[str, object], int]:
+    if action == "generate":
+        return await _profile_generate(settings, database, args)
+    if action == "apply":
+        applied, rejected = await apply_plan(store, ProfilePlan.read(Path(args.plan)))
+        return {
+            "applied": [asdict(item) for item in applied],
+            "rejected": [_outcome_payload(item) for item in rejected],
+        }, int(bool(rejected))
+    if action == "members":
+        space_id = str(args.space)
+        if args.pin is not None:
+            members: SpaceMembers | None = await store.pin_members(
+                space_id, [item.strip() for item in str(args.pin).split(",") if item.strip()]
+            )
+        elif args.unpin:
+            members = await store.unpin_members(space_id)
+        else:
+            members = await store.members(space_id)
+        return {"space_id": space_id, "members": _members_payload(members)}, 0
+    if action == "check":
+        return await _profile_check(store)
+    if action == "status":
+        return await _profile_status(database, store), 0
+    audience: ProfileAudience = "private" if args.audience == "private" else "public"
+    person = str(args.person)
+    if action == "show":
+        return await _profile_show(store, person, audience, content=bool(args.content)), 0
+    if action == "history":
+        versions = await store.history(person, audience)
+        profile = await store.load(person, audience)
+        return {
+            "person_id": profile.person_id if profile is not None else person,
+            "audience": audience,
+            "versions": [
+                {
+                    "version": item.version,
+                    "source": item.source,
+                    "reason": item.reason,
+                    "created_at": item.created_at.isoformat(),
+                    "entries": len(item.entries),
+                    "dream_run_public_id": item.dream_run_public_id,
+                }
+                for item in versions
+            ],
+        }, 0
+    if action == "diff":
+        old = await store.load_version(person, audience, int(args.from_version))
+        new = await store.load_version(person, audience, int(args.to_version))
+        if old is None or new is None:
+            raise ProfileValidationError("unknown_version")
+        content = bool(args.content)
+        diff = diff_entries(old.entries, new.entries)
+        return {
+            "audience": audience,
+            "from": old.version,
+            "to": new.version,
+            "added": [_entry_payload(item, content=content) for item in diff.added],
+            "removed": [_entry_payload(item, content=content) for item in diff.removed],
+            "rewritten": [
+                {
+                    "from": _entry_payload(before, content=content),
+                    "to": _entry_payload(after, content=content),
+                }
+                for before, after in diff.rewritten
+            ],
+            "unchanged": diff.unchanged,
+            "reordered": diff.reordered,
+        }, 0
+    if action == "rollback":
+        result = await rollback(store, person, audience, int(args.to_version))
+        return {
+            "person_id": result.commit.profile.person_id,
+            "audience": audience,
+            "rolled_back_to": result.version,
+            "written": result.commit.written,
+            "current_version": result.commit.profile.current_version,
+            "locked": result.commit.profile.locked,
+            "dropped": [
+                {
+                    **_entry_payload(item.entry, content=False),
+                    "index": item.index,
+                    "failed": list(item.failed),
+                }
+                for item in dropped_positions(result.entries, result.check)
+            ],
+            "replaced": [list(item) for item in result.check.replaced],
+        }, 0
+    locked = await store.set_locked(person, audience, action == "lock")
+    return {
+        "person_id": locked.person_id,
+        "audience": audience,
+        "current_version": locked.current_version,
+        "locked": locked.locked,
+    }, 0
+
+
+async def _profile_show(
+    store: ProfileStore, person: str, audience: ProfileAudience, *, content: bool
+) -> dict[str, object]:
+    profile = await store.load(person, audience)
+    available = await store.available(person, audience)
+    version = (
+        await store.load_version(person, audience, profile.current_version)
+        if profile is not None and profile.current_version
+        else None
+    )
+    return {
+        "person_id": profile.person_id if profile is not None else person,
+        "audience": audience,
+        "current_version": profile.current_version if profile is not None else 0,
+        "source": version.source if version is not None else None,
+        "reason": version.reason if version is not None else None,
+        "locked": profile.locked if profile is not None else False,
+        "considered_signature": profile.considered_signature if profile is not None else None,
+        "available_signature": available.signature,
+        "available_fact_ids": list(available.fact_ids),
+        "attempted_at": (
+            profile.attempted_at.isoformat()
+            if profile is not None and profile.attempted_at is not None
+            else None
+        ),
+        "entries": [
+            _entry_payload(entry, content=content)
+            for entry in (profile.entries if profile is not None else ())
+        ],
+    }
+
+
+async def _profile_generate(
+    settings: Settings, database: Database, args: argparse.Namespace
+) -> tuple[dict[str, object], int]:
+    """Generate in this process with the bot's memory_dream route; writes only the plan."""
+
+    if args.displayed:
+        targets = displayed_targets(await latest_window(database))
+    else:
+        audiences: tuple[ProfileAudience, ...] = (
+            ("public", "private")
+            if args.audience is None
+            else (("private",) if args.audience == "private" else ("public",))
+        )
+        targets = tuple((str(args.person), audience) for audience in audiences)
+    async with _cli_models(settings, database) as (active, executor):
+        result = await ProfileGeneration(
+            settings=active,
+            database=database,
+            models=executor,
+            concurrency=ConcurrencyManager(),
+        ).generate(targets)
+    result.plan.write(Path(args.out))
+    return {
+        "output": str(args.out),
+        "planned": len(result.plan.profiles),
+        "model_calls": result.model_calls,
+        "skipped": [_outcome_payload(item) for item in result.skipped],
+        "rejected": [_outcome_payload(item) for item in result.rejected],
+    }, int(bool(result.rejected))
+
+
+async def _profile_check(store: ProfileStore) -> tuple[dict[str, object], int]:
+    """§7.4 on every stored profile; the render-level check joins once rendering lands."""
+
+    checks = await check_profiles(store)
+    violations = [
+        {
+            "person_id": item.profile.person_id,
+            "audience": item.profile.audience,
+            "current_version": item.profile.current_version,
+            "locked": item.profile.locked,
+            "dropped": [
+                {
+                    **_entry_payload(position.entry, content=False),
+                    "index": position.index,
+                    "failed": list(position.failed),
+                }
+                for position in dropped_positions(item.profile.entries, item.check)
+            ],
+            "replaced": [list(pair) for pair in item.check.replaced],
+        }
+        for item in checks
+        if item.check.changed
+    ]
+    return {
+        "profiles": len(checks),
+        "entries": sum(len(item.profile.entries) for item in checks),
+        "violations": violations,
+        "rendered": [
+            {
+                "person_id": item.profile.person_id,
+                "audience": item.profile.audience,
+                "entries": [list(entry.fact_ids) for entry in item.check.entries],
+            }
+            for item in checks
+        ],
+    }, int(bool(violations))
+
+
+async def _profile_status(database: Database, store: ProfileStore) -> dict[str, object]:
+    status = await profile_status(database)
+    window = status.window
+    return {
+        "window": {
+            "start": window.start.isoformat(),
+            "end": window.end.isoformat(),
+            "dream_run_public_id": window.dream_run_public_id,
+        },
+        "spaces": {space: list(roots) for space, roots in window.spaces.items()},
+        "maintained": {"public": list(window.public), "private": list(window.private)},
+        "due": [{"person_id": person, "audience": audience} for person, audience in status.due],
+        "member_lists": [
+            {"space_id": item.space_id, **(_members_payload(item) or {})}
+            for item in await store.all_members()
+        ],
+        "profiles": [
+            {
+                "person_id": item.profile.person_id,
+                "audience": item.profile.audience,
+                "current_version": item.profile.current_version,
+                "source": item.source,
+                "locked": item.profile.locked,
+                "attempted_at": (
+                    item.profile.attempted_at.isoformat() if item.profile.attempted_at else None
+                ),
+                "signature_current": item.signature_current,
+            }
+            for item in status.profiles
+        ],
+    }
 
 
 async def _conversation_rows(database: Database) -> tuple[Any, ...]:
