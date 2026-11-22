@@ -18,6 +18,9 @@ def serialize_dynamic(contributions: tuple[PromptContribution, ...]) -> str:
         )
         if not data:
             continue
+        if contribution.id == "memory.episodes_recent":
+            parts.append(data)
+            continue
         if contribution.id == "context.current":
             scene = data.get("scene")
             if scene:

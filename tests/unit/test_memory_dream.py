@@ -927,7 +927,10 @@ async def test_recompose_is_atomic_partial_one_to_many_and_reversible(
     )
     recompose_outputs = tuple(
         DreamRecomposePlan(
-            source_facts=(current_source,), content=item.content, importance=item.importance
+            source_facts=(current_source,),
+            content=item.content,
+            importance=item.importance,
+            focus=item.focus,
         )
         for item in action.outputs
     )

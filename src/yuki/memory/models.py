@@ -52,6 +52,7 @@ class MemoryFact(_MemoryModel):
     category: str
     content: str
     normalized_content: str
+    title: str | None = None
     importance: int = Field(ge=1, le=5)
     confidence: float = Field(ge=0, le=1)
     source_type: MemorySourceType
@@ -153,6 +154,7 @@ class MemoryFactCreate(_MemoryModel):
     memory_key: str = Field(min_length=1)
     category: str = Field(min_length=1)
     content: str = Field(min_length=1)
+    title: str | None = None  # episodes only (memory layering P2)
     importance: int = Field(default=3, ge=1, le=5)
     confidence: float = Field(default=1.0, ge=0, le=1)
     source_type: MemorySourceType

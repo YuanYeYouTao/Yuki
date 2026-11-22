@@ -181,6 +181,7 @@ class MemoryRetrievalRuntimeConfig:
     maintenance_interval_seconds: float = 300.0
     maintenance_batch_limit: int = 100
     resident_enabled: bool = False
+    episode_index_enabled: bool = False
 
 
 @dataclass(frozen=True, slots=True)

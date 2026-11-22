@@ -109,13 +109,32 @@ class _Fact:
 
 
 @dataclass(frozen=True, slots=True)
-class _Origin:
+class EvidenceOrigin:
     """Where one evidence row came from; ``direct`` means it names a chat event."""
 
     direct: bool
     conversation_kind: str | None
     person_root: str | None
     space_id: str | None
+
+
+def private_evidence_visible(evidence: Sequence[EvidenceOrigin], person_root: str | None) -> bool:
+    """Evidence rule for the private chat with ``person_root`` (shared with the episode index).
+
+    Never another person's private chat. Facts without evidence rows are allowed; an
+    evidence row whose conversation cannot be traced counts as someone else's private
+    chat.
+    """
+    return not any(
+        item.conversation_kind is None
+        or (item.conversation_kind == "private" and item.person_root != person_root)
+        for item in evidence
+    )
+
+
+def space_evidence_visible(evidence: Sequence[EvidenceOrigin], space_id: str | None) -> bool:
+    """Evidence rule for a group: at least one row, each a direct chat event in this space."""
+    return bool(evidence) and all(item.direct and item.space_id == space_id for item in evidence)
 
 
 class ResidentMemory:
@@ -130,21 +149,9 @@ class ResidentMemory:
 
     async def render_conversation(self, conversation_id: str) -> ResidentRender:
         async with self._database.read_session() as session:
-            row = (
-                await session.execute(
-                    select(
-                        CanonicalConversationModel.kind,
-                        CanonicalConversationModel.person_id,
-                        CanonicalConversationModel.space_id,
-                    ).where(CanonicalConversationModel.id == conversation_id)
-                )
-            ).one()
-            audience = (
-                ResidentAudience("private", row.person_id, None)
-                if row.kind == "private"
-                else ResidentAudience("space", None, row.space_id)
+            return await self._render(
+                session, await conversation_audience(session, conversation_id)
             )
-            return await self._render(session, audience)
 
     async def load_set(self, owner: ResidentOwner) -> ResidentSet | None:
         async with self._database.read_session() as session:
@@ -247,25 +254,15 @@ class ResidentMemory:
             )
         listed, current = await _resolve_listed(session, (*lists[owner.kind], *lists["self"]))
         facts = {**listed, **explicit}
-        origins = await _origins(
+        origins = await evidence_origins(
             session, (fact.id for fact in facts.values() if fact.eligible and fact.active)
         )
 
         def visible(fact: _Fact) -> bool:
             evidence = origins.get(fact.id, ())
             if owner.kind == "person":
-                # Never another person's private chat. Facts without evidence rows are
-                # allowed; an evidence row whose conversation cannot be traced counts as
-                # someone else's private chat.
-                return not any(
-                    item.conversation_kind is None
-                    or (item.conversation_kind == "private" and item.person_root != owner.person_id)
-                    for item in evidence
-                )
-            # Group: at least one evidence row, each a chat event in this space.
-            return bool(evidence) and all(
-                item.direct and item.space_id == owner.space_id for item in evidence
-            )
+                return private_evidence_visible(evidence, owner.person_id)
+            return space_evidence_visible(evidence, owner.space_id)
 
         def self_visible(fact: _Fact) -> bool:
             if fact.visibility_type == "global":
@@ -512,7 +509,25 @@ async def _successors(session: AsyncSession, fact_ids: set[int]) -> dict[int, in
     return found
 
 
-async def _origins(session: AsyncSession, fact_ids: Iterable[int]) -> dict[int, list[_Origin]]:
+async def conversation_audience(session: AsyncSession, conversation_id: str) -> ResidentAudience:
+    """Who a conversation's segments are for, from ``canonical_conversations``."""
+    row = (
+        await session.execute(
+            select(
+                CanonicalConversationModel.kind,
+                CanonicalConversationModel.person_id,
+                CanonicalConversationModel.space_id,
+            ).where(CanonicalConversationModel.id == conversation_id)
+        )
+    ).one()
+    if row.kind == "private":
+        return ResidentAudience("private", row.person_id, None)
+    return ResidentAudience("space", None, row.space_id)
+
+
+async def evidence_origins(
+    session: AsyncSession, fact_ids: Iterable[int]
+) -> dict[int, list[EvidenceOrigin]]:
     """Every evidence row's conversation for the given facts, in one query."""
     wanted = set(fact_ids)
     if not wanted:
@@ -535,9 +550,9 @@ async def _origins(session: AsyncSession, fact_ids: Iterable[int]) -> dict[int, 
         .outerjoin(person, person.id == conversation.person_id)
         .where(evidence.fact_id.in_(wanted))
     )
-    origins: dict[int, list[_Origin]] = {}
+    origins: dict[int, list[EvidenceOrigin]] = {}
     for fact_id, event_id, kind, person_root, space_id in rows:
         origins.setdefault(fact_id, []).append(
-            _Origin(event_id is not None, kind, person_root, space_id)
+            EvidenceOrigin(event_id is not None, kind, person_root, space_id)
         )
     return origins

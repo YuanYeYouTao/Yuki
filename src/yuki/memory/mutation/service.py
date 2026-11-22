@@ -133,6 +133,7 @@ class DreamRecomposePlan:
     source_facts: tuple[MemoryFact, ...]
     content: str
     importance: int
+    focus: str  # becomes the title of an episode output (memory layering P2)
 
 
 @dataclass(frozen=True, slots=True)
@@ -551,6 +552,9 @@ class MemoryMutationService:
                 replacement = output_anchor.model_copy(
                     update={
                         "content": normalized,
+                        "title": (
+                            output.focus if output_anchor.kind is MemoryKind.EPISODE else None
+                        ),
                         "importance": output.importance,
                         "status": MemoryStatus.ACTIVE,
                         "conflict_state": MemoryConflictState.CLEAR,
@@ -1399,7 +1403,7 @@ class MemoryMutationService:
         identity = (
             _fingerprint({"operation_id": context.operation_id})
             if context.operation_id is not None
-            else _fingerprint({**common, "request": request.model_dump(mode="json")})
+            else _fingerprint({**common, "request": _request_payload(request)})
         )
         return _PreparedMutation(
             request,
@@ -1946,7 +1950,9 @@ class MemoryMutationService:
         claim_fingerprint = _fingerprint(
             {
                 **common,
-                "claim": claim.fact.model_dump(mode="json"),
+                "claim": claim.fact.model_dump(
+                    mode="json", exclude={"title"} if claim.fact.title is None else None
+                ),
                 "evidence": claim.evidence.model_dump(mode="json"),
             }
         )
@@ -2253,7 +2259,7 @@ class MemoryMutationService:
         idempotency_key = (
             _fingerprint({"operation_id": context.operation_id})
             if context.operation_id is not None
-            else _fingerprint({**common, "request": request.model_dump(mode="json")})
+            else _fingerprint({**common, "request": _request_payload(request)})
         )
         return _PreparedMutation(
             request=request,
@@ -2459,6 +2465,7 @@ class MemoryMutationService:
             content=normalize_memory_text(
                 request.new_content or fact.content,
             ),
+            title=request.title or fact.title,
             importance=request.importance or fact.importance,
             confidence=request.confidence,
             source_type=source_type,
@@ -2568,6 +2575,7 @@ class MemoryMutationService:
                 memory_key=key,
                 category=category,
                 content=content,
+                title=request.title or (fact.title if fact else None),
                 importance=request.importance or (fact.importance if fact else 3),
                 confidence=request.confidence,
                 source_type=source_type,
@@ -3216,10 +3224,15 @@ def _fingerprint(payload: object) -> str:
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
+def _request_payload(request: MemoryMutationRequest) -> dict[str, Any]:
+    """Fingerprinted request fields; an absent title keeps receipts written before titles."""
+    return request.model_dump(mode="json", exclude={"title"} if request.title is None else None)
+
+
 def _request_fingerprint(request: MemoryMutationRequest, context: MemoryMutationContext) -> str:
     return _fingerprint(
         {
-            "request": request.model_dump(mode="json"),
+            "request": _request_payload(request),
             "event_id": context.event.id if context.event is not None else None,
             "initiative_run_id": context.initiative_run_id,
             "execution_id": context.decision_actor_id,

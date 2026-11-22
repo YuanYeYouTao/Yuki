@@ -48,7 +48,7 @@ Rebuild 已提交事实与 proposal 回执共同核对，确认已提交不再�
 
 ## 常驻记忆核心集
 
-运行时热配置 `memory.resident_enabled`（全局，默认关闭）同时控制两件事：每轮当前消息是否渲染常驻记忆段，
+运行时热配置 `memory.resident_enabled`（全局，默认关闭）同时控制两件事：每轮 system 消息末尾是否渲染常驻记忆段，
 Dream 运行处理完全部簇后是否对到期主人做核心集挑选。关闭后下一轮起生效，表与事实都保留，不需要重启。
 下面的命令都不看这个开关；默认使用当前配置的数据库，也可加 `--database-url`。
 
@@ -75,5 +75,30 @@ python scripts/verify_resident_check.py --database <sqlite-file> --check check.j
   `resident_oldest_pending_at`（`status` 同样输出）持续增长说明挑选长期没跑或一直轮不到。
 - `check` 只对全部会话各渲染两次，输出渲染出的 fact ID 和两次不一致的会话；可见范围的独立复核在
   `scripts/verify_resident_check.py`，用自己的只读 SQL 逐条核对，违反条数应为 0。
+
+## 经历目录
+
+运行时热配置 `memory.episode_index_enabled`（全局，默认关闭）只控制每轮是否渲染经历目录与今日新经历；
+经历标题由写经历的模型调用照常写入。下面的命令都不看这个开关；默认使用当前配置的数据库，也可加
+`--database-url`。
+
+```bash
+yuki memory episodes render --conversation <conversation-id> [--through-fact-id N]
+yuki memory episodes status                  # 水位所属运行、运行中的 Dream、有／无标题经历数、各会话条数
+yuki memory episodes backfill-titles --dry-run --limit 50
+yuki memory episodes backfill-titles         # 只写 title IS NULL 的 active 经历
+yuki memory episodes set-title --fact <fact-id> --text <标题>
+yuki memory episodes check > episodes.json
+python scripts/verify_episode_check.py --database <sqlite-file> --check episodes.json
+```
+
+- 水位是最近一次已收尾 Dream 运行的快照；`status` 的 `active_run` 长时间停在 running 说明 Dream 停住，
+  目录沿用上一次水位，新经历都留在当前消息里（至多 20 条）。
+- `backfill-titles`：Dream recompose 产生的经历直接取 focus，不调模型；其余按 fact ID 升序、按
+  `MEMORY_DREAM_MAX_INPUT_CHARACTERS` 分批走 `memory_dream` 模型路由，模型只能引用本批别名。只更新 `title`，
+  不改 `updated_at` 与正文，所以不会把这些事实重新排进 Dream。`--dry-run` 也会真实调用模型。
+- `--dry-run`、`render` 与 `set-title` 的输出含记忆派生内容，只在部署环境内查看，不贴进仓库或 issue。
+- `check` 只对全部会话各渲染两次，输出列出的 fact ID 和不稳定的会话；可见范围的独立复核在
+  `scripts/verify_episode_check.py`，违反条数应为 0。
 
 当前合同见 [Memory](../architecture/memory-v2.md)与[来源审计](../architecture/memory-v2-quality.md)。

@@ -18,6 +18,7 @@ from yuki.memory.dream.repository import DreamRepository
 from yuki.memory.dream.service import DreamService
 from yuki.memory.dream.worker import DreamWorker
 from yuki.memory.embedding.runtime import MemoryEmbeddingRuntime
+from yuki.memory.episode_index import EpisodeIndex
 from yuki.memory.maintenance import MemoryMaintenanceWorker
 from yuki.memory.mutation.service import MemoryMutationService
 from yuki.memory.rebuild.service import MemoryRebuildService
@@ -85,6 +86,7 @@ class ConversationModule:
         tool_receipts: ToolReceiptRecorder,
         processing_status: ProcessingStatusService,
         resident: ResidentMemory,
+        episodes: EpisodeIndex,
     ) -> None:
         self._settings = settings
         self._persistence = persistence
@@ -106,6 +108,7 @@ class ConversationModule:
         self._tool_receipts = tool_receipts
         self._processing_status = processing_status
         self._resident = resident
+        self._episodes = episodes
 
     def build(self) -> ConversationBundle:
         settings = self._settings
@@ -164,6 +167,7 @@ class ConversationModule:
             effect_gate=self._effect_gate,
             processing_status=self._processing_status,
             resident=self._resident,
+            episodes=self._episodes,
         )
         memory_rebuild_service = MemoryRebuildService(
             settings=settings,

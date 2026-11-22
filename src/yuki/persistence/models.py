@@ -524,6 +524,8 @@ class MemoryFactModel(Base):
     category: Mapped[str] = mapped_column(String(64), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     normalized_content: Mapped[str] = mapped_column(Text, nullable=False)
+    # Episode title (memory layering P2); every other kind keeps NULL.
+    title: Mapped[str | None] = mapped_column(Text, nullable=True)
     importance: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
     confidence: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)
     source_type: Mapped[str] = mapped_column(String(16), nullable=False)

@@ -6,14 +6,17 @@ import argparse
 import asyncio
 import json
 import os
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 from uuid import uuid4
 
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from yuki import __version__
 from yuki.acp_adapter.cli import add_acp_parser, run_acp_command
@@ -36,6 +39,9 @@ from yuki.gateway.registry import GatewayConnectionRegistry
 from yuki.http_environment import load_http_environment
 from yuki.identity.person_identity import current_person_id
 from yuki.identity.routing import PresenceRouter
+from yuki.memory.dream.db_models import MemoryDreamRunModel
+from yuki.memory.episode_index import EpisodeIndex
+from yuki.memory.episode_titles import EpisodeTitleRejected, EpisodeTitles, set_episode_title
 from yuki.memory.quality.audit import MemoryProductionQualityAudit
 from yuki.memory.quality.hygiene import MemoryProvenanceHygiene
 from yuki.memory.repository import MemoryJobRepository
@@ -59,11 +65,13 @@ from yuki.model_runtime import (
     ModelTask,
     load_model_profile_catalog,
 )
+from yuki.model_runtime.executor import ModelExecutor
 from yuki.model_runtime.legacy_migration import run_migration_command
 from yuki.model_runtime.models import ModelStats
 from yuki.model_runtime.profiles import model_profile_environment
 from yuki.model_runtime.structured import StructuredTaskError
 from yuki.persistence.database import Database
+from yuki.persistence.models import MemoryFactModel
 from yuki.plugin_host.manifest import load_manifest
 from yuki.services.concurrency import ConcurrencyManager
 from yuki_plugin_sdk.api import PLUGIN_API_VERSION
@@ -220,6 +228,7 @@ def _add_memory_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentP
     rebuild_fts.add_argument("fingerprint")
     rebuild_fts.add_argument("--database-url", required=True)
     _add_resident_parser(commands)
+    _add_episodes_parser(commands)
 
 
 def _add_resident_parser(
@@ -270,6 +279,35 @@ def _add_resident_parser(
     select_command.add_argument("--content", action="store_true", help="同时打印正文")
     status = resident_commands.add_parser("status", help="到期主人、最早未看候选与各主人修订号")
     status.add_argument("--database-url")
+
+
+def _add_episodes_parser(
+    commands: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
+    episodes = commands.add_parser(
+        "episodes", help="经历目录：渲染、检查、标题回填与改写、水位状态；不看运行时开关"
+    )
+    episode_commands = episodes.add_subparsers(dest="episodes_command", required=True)
+    render = episode_commands.add_parser("render", help="打印该会话此刻的经历目录与今日新经历")
+    render.add_argument("--conversation", required=True)
+    render.add_argument("--through-fact-id", type=int, help="用给定水位代替当前水位，供离线核对")
+    check = episode_commands.add_parser(
+        "check", help="对全部会话做两次只读渲染，输出列出的 fact ID 与不稳定的会话"
+    )
+    backfill = episode_commands.add_parser(
+        "backfill-titles",
+        help="为无标题的 active 经历补标题（recompose 取 focus，其余走 memory_dream）",
+    )
+    backfill.add_argument("--dry-run", action="store_true", help="只打印 fact ID 与标题，不写库")
+    backfill.add_argument("--limit", type=int, help="最多处理这么多条，按 fact ID 升序")
+    set_title = episode_commands.add_parser("set-title", help="改写一条经历的标题")
+    set_title.add_argument("--fact", type=int, required=True)
+    set_title.add_argument("--text", required=True)
+    status = episode_commands.add_parser(
+        "status", help="水位、运行中的 Dream、标题覆盖与各会话条数"
+    )
+    for parser in (render, check, backfill, set_title, status):
+        parser.add_argument("--database-url", help="默认使用当前配置的数据库")
 
 
 def _model_catalog(settings: Settings) -> ModelProfileCatalog:
@@ -438,6 +476,8 @@ async def _memory_command(settings: Settings, args: argparse.Namespace) -> int:
             await database.close()
     if action == "resident":
         return await _resident_command(settings, args)
+    if action == "episodes":
+        return await _episodes_command(settings, args)
     return 1
 
 
@@ -559,19 +599,7 @@ async def _resident_command(settings: Settings, args: argparse.Namespace) -> int
 async def _resident_check(database: Database, resident: ResidentMemory) -> dict[str, object]:
     """Batch-render every conversation twice; verification lives in an acceptance script."""
 
-    async with database.read_session() as session:
-        conversations = tuple(
-            (
-                await session.execute(
-                    select(
-                        CanonicalConversationModel.id,
-                        CanonicalConversationModel.kind,
-                        CanonicalConversationModel.person_id,
-                        CanonicalConversationModel.space_id,
-                    ).order_by(CanonicalConversationModel.id)
-                )
-            ).all()
-        )
+    conversations = await _conversation_rows(database)
     rendered: list[dict[str, object]] = []
     unstable: list[str] = []
     for conversation_id, kind, person_id, space_id in conversations:
@@ -608,10 +636,27 @@ async def _resident_select(
 ) -> ResidentSelectionOutcome:
     """Run one selection in this process with the bot's memory_dream model route.
 
-    The CLI assembles the same model runtime the bot builds at startup (environment,
-    model profile files and activated restart overrides), records invocations in
-    the shared database, and writes through the same short ``write_set``
-    transaction. It needs no running bot and ignores ``memory.resident_enabled``.
+    It needs no running bot and ignores ``memory.resident_enabled``.
+    """
+
+    async with _cli_models(settings, database) as (active, executor):
+        return await ResidentSelection(
+            settings=active,
+            database=database,
+            resident=resident,
+            models=executor,
+            concurrency=ConcurrencyManager(),
+        ).select(owner, dry_run=dry_run)
+
+
+@asynccontextmanager
+async def _cli_models(
+    settings: Settings, database: Database
+) -> AsyncIterator[tuple[Settings, ModelExecutor]]:
+    """The model runtime the bot builds at startup, assembled in this CLI process.
+
+    Environment, model profile files and activated restart overrides apply;
+    invocations are recorded in the shared database.
     """
 
     runtime_config = RuntimeConfigService(settings=settings, database=database)
@@ -626,15 +671,158 @@ async def _resident_select(
     ).build()
     await lifecycle.start()
     try:
-        return await ResidentSelection(
-            settings=active,
-            database=database,
-            resident=resident,
-            models=models.executor,
-            concurrency=ConcurrencyManager(),
-        ).select(owner, dry_run=dry_run)
+        yield active, models.executor
     finally:
         await lifecycle.close()
+
+
+async def _episodes_command(settings: Settings, args: argparse.Namespace) -> int:
+    action = str(args.episodes_command)
+    database = Database(str(args.database_url or settings.database_url))
+    episodes = EpisodeIndex(database, timezone=settings.memory_dream_timezone)
+    try:
+        payload: dict[str, object]
+        if action == "render":
+            rendered = await episodes.render_conversation(
+                str(args.conversation), through_fact_id=args.through_fact_id
+            )
+            print(rendered.index_text)
+            print()
+            print(rendered.recent_text)
+            payload = {
+                "index_fact_ids": list(rendered.index_fact_ids),
+                "recent_fact_ids": list(rendered.recent_fact_ids),
+                "through_fact_id": rendered.through_fact_id,
+            }
+        elif action == "check":
+            payload = await _episodes_check(database, episodes)
+        elif action == "status":
+            payload = await _episodes_status(database, episodes)
+        elif action == "set-title":
+            try:
+                await set_episode_title(database, int(args.fact), str(args.text))
+            except EpisodeTitleRejected as exc:
+                print(json.dumps({"fact_id": args.fact, "error": str(exc)}, ensure_ascii=False))
+                return 1
+            payload = {"fact_id": args.fact, "title": args.text}
+        else:
+            async with _cli_models(settings, database) as (active, executor):
+                try:
+                    outcome = await EpisodeTitles(
+                        settings=active,
+                        database=database,
+                        models=executor,
+                        concurrency=ConcurrencyManager(),
+                    ).backfill(dry_run=bool(args.dry_run), limit=args.limit)
+                except (EpisodeTitleRejected, StructuredTaskError) as exc:
+                    print(json.dumps({"error": repr(exc)}, ensure_ascii=False))
+                    return 1
+            payload = {
+                "dry_run": outcome.dry_run,
+                "model_calls": outcome.model_calls,
+                "items": [asdict(item) for item in outcome.items],
+            }
+        print(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
+        return 0
+    finally:
+        await database.close()
+
+
+async def _conversation_rows(database: Database) -> tuple[Any, ...]:
+    async with database.read_session() as session:
+        return tuple(
+            (
+                await session.execute(
+                    select(
+                        CanonicalConversationModel.id,
+                        CanonicalConversationModel.kind,
+                        CanonicalConversationModel.person_id,
+                        CanonicalConversationModel.space_id,
+                    ).order_by(CanonicalConversationModel.id)
+                )
+            ).all()
+        )
+
+
+async def _episodes_check(database: Database, episodes: EpisodeIndex) -> dict[str, object]:
+    """Render every conversation twice; verification lives in an acceptance script."""
+
+    conversations = await _conversation_rows(database)
+    rendered: list[dict[str, object]] = []
+    unstable: list[str] = []
+    through = 0
+    for conversation_id, kind, person_id, space_id in conversations:
+        first = await episodes.render_conversation(conversation_id)
+        second = await episodes.render_conversation(conversation_id)
+        through = first.through_fact_id
+        if first != second:
+            unstable.append(conversation_id)
+        if first.index_fact_ids or first.recent_fact_ids:
+            rendered.append(
+                {
+                    "conversation_id": conversation_id,
+                    "kind": kind,
+                    "person_id": person_id,
+                    "space_id": space_id,
+                    "index_fact_ids": list(first.index_fact_ids),
+                    "recent_fact_ids": list(first.recent_fact_ids),
+                }
+            )
+    return {
+        "conversations": len(conversations),
+        "through_fact_id": through,
+        "with_episodes": len(rendered),
+        "unstable": unstable,
+        "rendered": rendered,
+    }
+
+
+async def _episodes_status(database: Database, episodes: EpisodeIndex) -> dict[str, object]:
+    mark = await episodes.watermark()
+    run = MemoryDreamRunModel
+    fact = MemoryFactModel
+    async with database.read_session() as session:
+        active = await session.scalar(
+            select(run).where(run.status.in_(("planned", "running"))).order_by(run.id.desc())
+        )
+        titled: dict[bool, int] = {
+            bool(has_title): int(count)
+            for has_title, count in await session.execute(
+                select(fact.title.is_not(None), func.count())
+                .where(fact.kind == "episode", fact.status == "active")
+                .group_by(fact.title.is_not(None))
+            )
+        }
+    conversations = []
+    for conversation_id, *_identity in await _conversation_rows(database):
+        rendered = await episodes.render_conversation(conversation_id)
+        if rendered.index_fact_ids or rendered.recent_fact_ids:
+            conversations.append(
+                {
+                    "conversation_id": conversation_id,
+                    "index": len(rendered.index_fact_ids),
+                    "recent": len(rendered.recent_fact_ids),
+                }
+            )
+    return {
+        "watermark": {
+            "through_fact_id": mark.through_fact_id,
+            "run_id": mark.run_public_id,
+            "status": mark.status,
+            "completed_at": mark.completed_at.isoformat() if mark.completed_at else None,
+        },
+        "active_run": None
+        if active is None
+        else {
+            "run_id": active.public_id,
+            "status": active.status,
+            "snapshot_max_fact_id": active.snapshot_max_fact_id,
+            "started_at": active.started_at.isoformat() if active.started_at else None,
+        },
+        "episodes_with_title": titled.get(True, 0),
+        "episodes_without_title": titled.get(False, 0),
+        "conversations": conversations,
+    }
 
 
 def main() -> None:

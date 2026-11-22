@@ -11,6 +11,7 @@ from yuki.memory.enums import (
     MemoryAuthority,
     MemoryClaimOperation,
     MemoryEvidenceRelation,
+    MemoryKind,
     MemoryScopeType,
     MemorySourceType,
 )
@@ -203,6 +204,7 @@ class MemoryClaimValidator:
             memory_key=key,
             category=category,
             content=content,
+            title=(claim.title or None) if kind is MemoryKind.EPISODE else None,
             importance=claim.importance,
             confidence=claim.confidence,
             source_type=source_type,
