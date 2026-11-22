@@ -225,7 +225,8 @@ call ID，避免不同响应重复使用 `call_0` 被误合并；Provider 请求
 
 主入口使用同一固定提示词、工具顺序和参数 schema。run ID、资料、时间与状态在固定部分
 之后；不根据 legacy/semantic 或场景动态裁剪声明。Work journal 保存实际请求和 Provider
-continuation；未决协议按原检查点精确恢复，正常业务续跑使用当前获准聊天及必要任务材料。
+continuation；有原生 continuation 时续跑沿原链追加并经观察边界补入新聊天，没有时已配对唤醒以当前获准
+聊天、未观察回执及任务材料重建前缀。
 `initiative:<run_id>` 防止将变化后的 brief、short_state 或记忆当作新的发起事实；私有尾部退出或
 整理采用明确新链，公共聊天无需清空，预算与效果不清零。具体边界见[主 Agent 合同](main-agent-runtime.md)。
 
