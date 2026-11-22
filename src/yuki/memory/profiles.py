@@ -42,6 +42,7 @@ from yuki.persistence.models import (
     MemoryProfileVersionModel,
     MemorySpaceMemberModel,
 )
+from yuki.time.formatting import stored_utc
 
 MAX_PROFILE_ENTRIES = 10  # entries per profile
 MAX_PROFILE_ENTRY_CHARS = 40  # characters per entry after folding whitespace
@@ -494,16 +495,21 @@ class ProfileStore:
             return tuple(_version(row) for row in rows)
 
     async def profiles(self) -> tuple[Profile, ...]:
-        """Every stored profile with its current entries, by person and audience."""
+        """Every profile stored under a person root with its current entries, by person
+        and audience. Rows of a person merged into another root stay as history and are
+        left out: every write resolves to the root, so they are never cleaned or shown."""
+        person = CanonicalPersonModel
         async with self._database.read_session() as session:
             rows = (
                 await session.execute(
                     select(MemoryProfileModel, MemoryProfileVersionModel.entries_json)
+                    .join(person, person.id == MemoryProfileModel.person_id)
                     .outerjoin(
                         MemoryProfileVersionModel,
                         (MemoryProfileVersionModel.profile_id == MemoryProfileModel.id)
                         & (MemoryProfileVersionModel.version == MemoryProfileModel.current_version),
                     )
+                    .where(person.merged_into_person_id.is_(None))
                     .order_by(MemoryProfileModel.person_id, MemoryProfileModel.audience)
                 )
             ).all()
@@ -741,11 +747,6 @@ def _decode(value: str | None) -> tuple[ProfileEntry, ...]:
     )
 
 
-def _utc(value: datetime) -> datetime:
-    """SQLite returns stored UTC values without a zone."""
-    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
-
-
 def _profile(row: MemoryProfileModel, entries: tuple[ProfileEntry, ...]) -> Profile:
     audience: ProfileAudience = "private" if row.audience == "private" else "public"
     return Profile(
@@ -754,9 +755,9 @@ def _profile(row: MemoryProfileModel, entries: tuple[ProfileEntry, ...]) -> Prof
         current_version=row.current_version,
         entries=entries,
         considered_signature=row.considered_signature,
-        attempted_at=None if row.attempted_at is None else _utc(row.attempted_at),
+        attempted_at=None if row.attempted_at is None else stored_utc(row.attempted_at),
         locked=row.locked,
-        updated_at=_utc(row.updated_at),
+        updated_at=stored_utc(row.updated_at),
     )
 
 
@@ -768,7 +769,7 @@ def _version(row: MemoryProfileVersionModel) -> ProfileVersion:
         source=sources[row.source],
         reason=row.reason,
         dream_run_public_id=row.dream_run_public_id,
-        created_at=_utc(row.created_at),
+        created_at=stored_utc(row.created_at),
     )
 
 
@@ -779,7 +780,7 @@ def _members(space_id: str, rows: Sequence[MemorySpaceMemberModel]) -> SpaceMemb
         person_ids=tuple(row.person_id for row in rows),
         source=source,
         dream_run_public_id=rows[0].dream_run_public_id,
-        updated_at=max(_utc(row.updated_at) for row in rows),
+        updated_at=max(stored_utc(row.updated_at) for row in rows),
     )
 
 

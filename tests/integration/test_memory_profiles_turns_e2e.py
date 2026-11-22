@@ -645,6 +645,41 @@ async def test_h19_h20_merge_renders_by_root_and_forget_removes(scene):
     )
 
 
+async def test_h19_cleanup_leaves_the_root_and_the_merged_row_alone(scene):
+    """B' (with its own pre-merge public v1) merged into B (public v1): Dream cleanup
+    must not write B' 's emptied entries into B's profile, nor touch B' 's kept row."""
+    g1 = await scene.event("space:G", "B", "我是程序员", key="g1")
+    g2 = await scene.event("space:G", "B2", "我爱下围棋", key="g2")
+    b_public = await scene.fact("b_public", "B", "是程序员", evidence=(g1,))
+    b2_public = await scene.fact("b2_public", "B2", "爱下围棋", evidence=(g2,))
+    store, persons = scene.profiles, scene.persons
+    for key, fact_id, text in (("B", b_public, "是程序员"), ("B2", b2_public, "爱下围棋")):
+        await store.commit(
+            persons[key],
+            "public",
+            (scene.entry(text, fact_id),),
+            source="owner",
+            reason="合并前",
+            expected_version=0,
+            lock=True,
+        )
+    async with scene.database.immediate_session() as writer:
+        await merge_persons(writer, persons["B2"], persons["B"])
+    await scene.dream_run()
+    tables = await scene.profile_tables(tie_free=True)
+    turn = await scene.turn("B", "合并后的 Dream 之后")
+
+    versions = {
+        (row["person_id"], row["version"]): row for row in tables["memory_profile_versions"]
+    }
+    assert sorted(versions) == sorted([(persons["B"], 1), (persons["B2"], 1)])
+    assert profile_blocks(turn.segment) == {PUBLIC_TITLE: [f"- 是程序员（fact:{b_public}）"]}
+    scene.write(
+        "H19-merged-cleanup",
+        {"tables": tables, "private_after_dream": _record(turn, await scene.contract())},
+    )
+
+
 # ---------------------------------------------------------------------------- H14
 async def test_h14_system_prefix_changes_once_a_day(scene):
     """New speakers, rank changes and new facts change nothing until Dream; a fact
