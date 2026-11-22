@@ -14,6 +14,7 @@ builds before the implementation lands.
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -34,10 +35,110 @@ from yuki.persistence.models import MemoryEvidenceModel, MemoryToolReceiptModel
 
 RESULTS = Path(__file__).resolve().parents[2] / "test-results" / "memory-profiles"
 BOT = "80001"
+PROFILE_MARK = "你在为一个人物维护"
+LABELS = {"public": "公共画像", "private": "私人画像"}
+PUBLIC_TITLE = "[对方·公共画像]"
+PRIVATE_TITLE = "[对方·私聊画像]"
+MEMBERS_TITLE = "[群成员画像]"
+
+
+def profile_payload(request) -> dict[str, Any]:
+    """The structured input of a profile call (the JSON message carrying ``facts``)."""
+    for message in reversed(request.messages):
+        try:
+            value = json.loads(message.content or "")
+        except (TypeError, ValueError):
+            continue
+        if isinstance(value, dict) and "facts" in value and "profile" in value:
+            return value
+    raise AssertionError("profile call without its structured input")
+
+
+def profile_reply(entries: list[tuple[str | None, str, list[str]]], reason: str = "更新") -> str:
+    """Structured output of the profile model: entries cite f_N aliases only."""
+    return json.dumps(
+        {
+            "entries": [
+                {"section": section, "text": text, "facts": facts}
+                for section, text, facts in entries
+            ],
+            "reason": reason,
+        },
+        ensure_ascii=False,
+    )
+
+
+def current_reply(payload: dict[str, Any], reason: str = "不变") -> str:
+    """Echo ``cur_N`` verbatim (the "nothing changed" output)."""
+    return profile_reply(
+        [(row["section"], row["text"], row["facts"]) for row in payload["current"]], reason
+    )
+
+
+def profile_blocks(segment: str) -> dict[str, list[str]]:
+    """Profile section title -> its lines (member name lines and entries), in order."""
+    blocks: dict[str, list[str]] = {}
+    current: str | None = None
+    for line in segment.split("\n")[1:]:
+        if line.startswith("["):
+            current = line if line in (PUBLIC_TITLE, PRIVATE_TITLE, MEMBERS_TITLE) else None
+            if current is not None:
+                blocks[current] = []
+        elif current is not None:
+            blocks[current].append(line)
+    return blocks
 
 
 class ProfileScene(ResidentScene):
-    """The resident scene plus D, C in G and D in H."""
+    """The resident scene plus D, C in G and D in H; profile model calls are scripted."""
+
+    def __init__(self, database, tmp_path) -> None:
+        super().__init__(database, tmp_path)
+        self.profile_responder: Callable[[dict[str, Any], Any], Any] | None = None
+        self.profile_requests: list[Any] = []
+
+    def _respond(self, request):
+        if any(PROFILE_MARK in str(message.content or "") for message in request.messages):
+            self.profile_requests.append(request)
+            assert self.profile_responder is not None, "unexpected profile call"
+            return self.profile_responder(profile_payload(request), request)
+        return super()._respond(request)
+
+    async def person(self, key: str, *, groups: tuple[str, ...] = ()) -> str:
+        """Another fixture person (E, F) with an opened private chat and group memberships."""
+        async with self.database.immediate_session() as writer:
+            self.persons[key] = await ensure_person(
+                writer, QQ[key], display_name=f"person-{key}", now=datetime.now(UTC)
+            )
+        for group in groups:
+            await apply_observations(
+                self.database,
+                profile_message(user_id=QQ[key], nickname=f"person-{key}", group_id=GROUPS[group]),
+            )
+        await self.event(
+            f"private:{key}",
+            key,
+            f"opening private:{key}",
+            scope=ConversationScope.private(BOT, QQ[key]),
+        )
+        return self.persons[key]
+
+    def calls_citing(self, fact_id: int, audience: str) -> list[dict[str, Any]]:
+        """Payloads of the ``audience`` profile calls that offered ``fact_id`` as ``f_N``."""
+        return [
+            payload
+            for payload in (profile_payload(request) for request in self.profile_requests)
+            if payload["profile"] == LABELS[audience] and fact_id in self.offered(payload)
+        ]
+
+    def offered(self, payload: dict[str, Any]) -> dict[int, str]:
+        """Fixture fact ID -> f_N alias offered in a profile call (matched by text)."""
+        by_text = {" ".join(text.split()): fact_id for fact_id, text in self.contents.items()}
+        return {
+            by_text[row["content"]]: row["ref"]
+            for row in payload["facts"]
+            if row["content"] in by_text
+        }
 
     async def build(self, *, work_enabled: bool = False, **settings: Any) -> ProfileScene:
         await super().build(work_enabled=work_enabled, **settings)
@@ -111,8 +212,12 @@ class ProfileScene(ResidentScene):
             await writer.flush()
             return evidence.id
 
-    async def profile_tables(self) -> dict[str, list[dict[str, Any]]]:
-        """The three P4 tables, read with plain SQL (independent of the ORM models)."""
+    async def profile_tables(self, *, tie_free: bool = False) -> dict[str, list[dict[str, Any]]]:
+        """The three P4 tables, read with plain SQL (independent of the ORM models).
+
+        ``tie_free`` drops member positions (Dream breaks count ties by random root IDs)
+        and orders member rows by label, for artifacts of cases with ties.
+        """
         tables = {
             "memory_profiles": (
                 "SELECT p.id, p.person_id, p.audience, p.current_version,"
@@ -153,6 +258,14 @@ class ProfileScene(ResidentScene):
                 row.get("version", row.get("position", 0)),
             )
 
+        if tie_free:
+            result["memory_space_members"] = sorted(
+                (
+                    {key: value for key, value in row.items() if key != "position"}
+                    for row in result["memory_space_members"]
+                ),
+                key=lambda row: (labels.get(row["space_id"]), labels.get(row["person_id"])),
+            )
         return {name: sorted(rows, key=order) for name, rows in result.items()}
 
     async def evidence_count(self, fact_id: int) -> int:

@@ -17,7 +17,7 @@ import json
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -38,6 +38,9 @@ from yuki.persistence.models import (
     MemoryResidentSetModel,
     MemoryToolReceiptModel,
 )
+
+if TYPE_CHECKING:
+    from yuki.memory.profiles import RenderedProfile
 
 MAX_RESIDENT_SET = 10  # per group core set and SELF principles; a prompt budget
 MAX_RESIDENT_EXPLICIT = 30  # explicit facts rendered; the rest stay on demand
@@ -61,8 +64,9 @@ class ResidentAudience:
 @dataclass(frozen=True, slots=True)
 class ResidentRender:
     text: str  # empty: this turn has no resident segment
-    fact_ids: tuple[int, ...]  # rendered fact IDs in order of appearance
+    fact_ids: tuple[int, ...]  # fact IDs of the fact-per-line sections, in order
     omitted_explicit: int  # explicit facts not rendered because of the cap
+    profiles: tuple[RenderedProfile, ...] = ()  # person profiles in the segment (P4)
 
 
 @dataclass(frozen=True, slots=True)
@@ -351,10 +355,22 @@ class ResidentMemory:
             sections.append(("[本群]", pick(lists["space"], owner), MAX_RESIDENT_SET, ""))
         sections.append(("[我自己的原则]", pick(lists["self"], self_owner), MAX_RESIDENT_SET, ""))
 
+        # Person profiles (layered memory P4 §7) sit before the SELF principles. The
+        # import is local: the profile module builds on this module's fact helpers.
+        from yuki.memory.profiles import render_private_profiles, render_space_profiles
+
+        if owner.kind == "person":
+            assert owner.person_id is not None
+            profile_lines, profiles = await render_private_profiles(session, owner.person_id)
+        else:
+            assert owner.space_id is not None
+            profile_lines, profiles = await render_space_profiles(session, owner.space_id)
         seen: set[int] = set()
         lines: list[str] = []
         rendered: list[int] = []
         for title, candidates, cap, note in sections:
+            if title == "[我自己的原则]":
+                lines.extend(profile_lines)
             entries: list[_Fact] = []
             for fact in candidates:
                 if fact.id not in seen and fact.id not in {item.id for item in entries}:
@@ -370,7 +386,7 @@ class ResidentMemory:
                 lines.append(note)
         if not lines:
             return ResidentRender("", (), omitted)
-        return ResidentRender("\n".join((_HEADER, *lines)), tuple(rendered), omitted)
+        return ResidentRender("\n".join((_HEADER, *lines)), tuple(rendered), omitted, profiles)
 
 
 def _line(fact: _Fact) -> str:

@@ -25,7 +25,7 @@ from typing import Any, Literal
 from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from yuki.identity.db_models import CanonicalSpaceModel
+from yuki.identity.db_models import CanonicalPersonModel, CanonicalSpaceModel
 from yuki.identity.person_identity import person_family_condition, person_root_id
 from yuki.memory.resident import (
     evidence_origins,
@@ -46,6 +46,7 @@ MAX_PROFILE_ENTRIES = 10  # entries per profile
 MAX_PROFILE_ENTRY_CHARS = 40  # characters per entry after folding whitespace
 MAX_PROFILE_RENDERED_IDS = 2  # fact IDs shown per rendered entry; every ID is checked
 MAX_SPACE_MEMBERS = 5  # displayed members per group
+MAX_GROUP_MEMBER_ENTRIES = 5  # entries per member in a group (P4-Q1); private chats show all
 PROFILE_SECTIONS = ("身份", "关系", "兴趣", "做事方式", "相处")
 
 ProfileAudience = Literal["public", "private"]
@@ -155,6 +156,22 @@ class SpaceMembers:
     updated_at: datetime
 
 
+@dataclass(frozen=True, slots=True)
+class RenderedProfile:
+    """One profile as a turn renders it: checked entries with successor IDs."""
+
+    person_id: str
+    audience: ProfileAudience
+    entries: tuple[ProfileEntry, ...]
+
+
+PROFILE_TITLES: dict[ProfileAudience, str] = {
+    "public": "[对方·公共画像]",
+    "private": "[对方·私聊画像]",
+}
+GROUP_PROFILES_TITLE = "[群成员画像]"
+
+
 def profile_signature(fact_ids: Iterable[int]) -> str:
     """SHA-256 of the ascending fact IDs joined by commas."""
     return hashlib.sha256(",".join(str(item) for item in sorted(fact_ids)).encode()).hexdigest()
@@ -239,6 +256,83 @@ async def check_entries(
         mapped = tuple(dict.fromkeys(current[item] for item in entry.fact_ids))
         kept.append(replace(entry, fact_ids=mapped))
     return EntryCheck(tuple(kept), tuple(dropped), tuple(sorted(replaced.items())))
+
+
+def entry_line(entry: ProfileEntry) -> str:
+    """``- [小节] 正文（fact:a,b）``: every ID was checked, the first two are shown."""
+    section = f"[{entry.section}] " if entry.section else ""
+    shown = ",".join(str(item) for item in entry.fact_ids[:MAX_PROFILE_RENDERED_IDS])
+    return f"- {section}{entry.text}（fact:{shown}）"
+
+
+async def _rendered(
+    session: AsyncSession, root: str, audience: ProfileAudience
+) -> tuple[ProfileEntry, ...]:
+    row = await session.scalar(_profile_statement(root, audience))
+    if row is None or row.current_version == 0:
+        return ()
+    entries = await _entries(session, row.id, row.current_version)
+    return (await check_entries(session, root, audience, entries)).entries if entries else ()
+
+
+async def render_private_profiles(
+    session: AsyncSession, root: str
+) -> tuple[list[str], tuple[RenderedProfile, ...]]:
+    """§7.2: the counterpart's public and private profiles, every passing entry."""
+    lines: list[str] = []
+    rendered: list[RenderedProfile] = []
+    audiences: tuple[ProfileAudience, ...] = ("public", "private")
+    for audience in audiences:
+        entries = await _rendered(session, root, audience)
+        if entries:
+            lines.append(PROFILE_TITLES[audience])
+            lines.extend(entry_line(entry) for entry in entries)
+            rendered.append(RenderedProfile(root, audience, entries))
+    return lines, tuple(rendered)
+
+
+async def render_space_profiles(
+    session: AsyncSession, space_id: str
+) -> tuple[list[str], tuple[RenderedProfile, ...]]:
+    """§7.3: the stored member list's public profiles, first entries of each.
+
+    Members resolve to their root (a member merged after the list was written shows
+    once, under the root); the name line lists the root ID and every person ID merged
+    into it, so history envelopes with an old ID match. Members without a passing
+    entry are left out.
+    """
+    roots: list[str] = []
+    for person_id in await session.scalars(
+        select(MemorySpaceMemberModel.person_id)
+        .where(MemorySpaceMemberModel.space_id == space_id)
+        .order_by(MemorySpaceMemberModel.position)
+    ):
+        root = await person_root(session, person_id)
+        if root not in roots:
+            roots.append(root)
+    lines: list[str] = []
+    rendered: list[RenderedProfile] = []
+    for root in roots:
+        entries = (await _rendered(session, root, "public"))[:MAX_GROUP_MEMBER_ENTRIES]
+        if not entries:
+            continue
+        name = await session.scalar(
+            select(CanonicalPersonModel.display_name).where(CanonicalPersonModel.id == root)
+        )
+        merged = tuple(
+            await session.scalars(
+                select(CanonicalPersonModel.id)
+                .where(CanonicalPersonModel.merged_into_person_id == root)
+                .order_by(CanonicalPersonModel.id)
+            )
+        )
+        also = "；同一人另有 " + "、".join(f"person:{item}" for item in merged) if merged else ""
+        lines.append(f"· {' '.join(str(name or '').split())}（person:{root}{also}）")
+        lines.extend(entry_line(entry) for entry in entries)
+        rendered.append(RenderedProfile(root, "public", entries))
+    if lines:
+        lines.insert(0, GROUP_PROFILES_TITLE)
+    return lines, tuple(rendered)
 
 
 class ProfileStore:

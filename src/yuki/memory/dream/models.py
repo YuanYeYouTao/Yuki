@@ -283,11 +283,16 @@ class DreamHealth(_DreamModel):
     resident_pending_owners: int = Field(
         default=0,
         ge=0,
-        description="Resident core-set owners due for selection and not yet processed.",
+        description=(
+            "Group core sets and person profiles due for the selection step and not yet processed."
+        ),
     )
     resident_oldest_pending_at: datetime | None = Field(
         default=None,
-        description="Creation time of the oldest candidate no selection has considered yet.",
+        description=(
+            "Oldest pending time: a core set's oldest unconsidered candidate, a profile's "
+            "last attempt or else its oldest available fact."
+        ),
     )
 
 

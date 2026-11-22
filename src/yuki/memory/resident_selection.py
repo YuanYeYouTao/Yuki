@@ -25,6 +25,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func, or_, select, update
 
 from yuki.config import Settings
+from yuki.memory.profile_selection import DueProfile, ProfileMaintenance, profile_label
+from yuki.memory.profiles import ProfileStore
 from yuki.memory.resident import (
     MAX_RESIDENT_SET,
     ResidentMemory,
@@ -94,8 +96,13 @@ class ResidentDueOwner:
 
 @dataclass(frozen=True, slots=True)
 class ResidentPending:
-    owners: tuple[ResidentDueOwner, ...]
-    oldest_pending_at: datetime | None
+    owners: tuple[ResidentDueOwner, ...]  # due group core sets, queue order
+    oldest_pending_at: datetime | None  # over core sets and profiles
+    profiles: tuple[DueProfile, ...] = ()  # due person profiles, queue order (P4)
+
+    @property
+    def count(self) -> int:
+        return len(self.owners) + len(self.profiles)
 
 
 @dataclass(frozen=True, slots=True)
@@ -319,15 +326,44 @@ class ResidentSelection:
         self.queue = ResidentQueue(database=database, resident=resident)
         self._structured = StructuredTaskRunner(models)
         self._concurrency = concurrency
+        self.profiles = ProfileMaintenance(
+            settings=settings,
+            database=database,
+            store=ProfileStore(database),
+            structured=self._structured,
+            concurrency=concurrency,
+        )
 
     async def pending(self) -> ResidentPending:
-        return await self.queue.pending()
+        """Due core sets and profiles as if a Dream run started now (DreamHealth)."""
+        cores = await self.queue.pending()
+        profiles = await self.profiles.pending()
+        oldest = [
+            value
+            for value in (
+                cores.oldest_pending_at,
+                *(item.pending_since for item in profiles),
+            )
+            if value is not None
+        ]
+        return ResidentPending(cores.owners, min(oldest, default=None), profiles)
 
     async def run(self, run_public_id: str) -> int:
-        """Select due owners in queue order, at most the configured count per run."""
+        """Member lists, program cleanup, then due owners in queue order.
 
+        Group core sets go first (P1 order: watermark, then space ID), then profiles
+        (P4 §8.2 order); at most ``memory_resident_max_selections_per_run`` owners are
+        attempted, each with at most one model call.
+        """
+
+        activity = await self.profiles.activity(await self.profiles.window(run_public_id))
+        listed = await self.profiles.update_members(activity, run_public_id)
+        cleaned = await self.profiles.cleanup(run_public_id)
         pending = await self.queue.pending()
-        batch = pending.owners[: self._settings.memory_resident_max_selections_per_run]
+        profiles = await self.profiles.due(await self.profiles.maintained(activity))
+        cap = self._settings.memory_resident_max_selections_per_run
+        batch = pending.owners[:cap]
+        profile_batch = profiles[: cap - len(batch)]
         processed = calls = 0
         for due in batch:
             try:
@@ -350,14 +386,33 @@ class ResidentSelection:
                 continue
             processed += 1
             calls += outcome.model_calls
+        rejected: dict[str, int] = {}
+        for item in profile_batch:
+            result = await self.profiles.maintain(item, run_public_id)
+            calls += result.model_calls
+            if result.code is None:
+                processed += 1
+            else:
+                rejected[result.code] = rejected.get(result.code, 0) + 1
         logger.info(
             "memory_resident_selection_finished run_id=%s due=%d attempted=%d "
-            "processed=%d model_calls=%d",
+            "processed=%d model_calls=%d listed_spaces=%d window_start=%s cleaned=%d "
+            "profiles_due=%d profiles_attempted=%d profiles_void=%s deferred=%s",
             run_public_id,
-            len(pending.owners),
-            len(batch),
+            len(pending.owners) + len(profiles),
+            len(batch) + len(profile_batch),
             processed,
             calls,
+            len(listed),
+            activity.window.start.isoformat(),
+            cleaned,
+            len(profiles),
+            len(profile_batch),
+            json.dumps(rejected, sort_keys=True),
+            [
+                profile_label(item.person_id, item.audience)
+                for item in profiles[len(profile_batch) :]
+            ],
         )
         return processed
 

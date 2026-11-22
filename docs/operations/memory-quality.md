@@ -63,10 +63,14 @@ yuki memory resident check > check.json
 python scripts/verify_resident_check.py --database <sqlite-file> --check check.json
 ```
 
-- 挑选沿用 `memory_dream` 模型路由。Dream 内每个到期主人至多一次结构化调用，每次运行至多
-  `MEMORY_RESIDENT_MAX_SELECTIONS_PER_RUN` 个主人（默认 12），按已看水位、再按主人 ID 排队；
-  没轮到的留到下次。调用次数单独计数写进 `memory_resident_selection_finished` 日志，不占 Dream 簇的
-  `model_calls` 预算。每个主人的换入、换出 fact ID 写进 `memory_resident_selected` 日志。
+- 挑选沿用 `memory_dream` 模型路由。Dream 内每个到期主人（群核心集与人物画像）至多一次结构化调用，
+  每次运行至多 `MEMORY_RESIDENT_MAX_SELECTIONS_PER_RUN` 个主人（默认 24），群核心集按已看水位、再按主人 ID
+  排在前面，人物画像随后按上次尝试时间排队（规则见 [Memory 人物画像](../architecture/memory-v2.md#人物画像)）；
+  没轮到的留到下次。调用次数单独计数写进 `memory_resident_selection_finished` 日志（同时记名单窗口、
+  更新名单的群数、程序清理版本数、到期与作废画像数及按 code 的作废计数、推迟的画像），不占 Dream 簇的
+  `model_calls` 预算。每个群的换入、换出 fact ID 写进 `memory_resident_selected` 日志；画像写入、作废、
+  放弃与清理分别记 `memory_profile_maintained`、`memory_profile_rejected`、`memory_profile_abandoned`、
+  `memory_profile_cleaned`。
 - `select` 在 CLI 进程内按 bot 启动时的同一方式装配模型运行时（环境变量、模型档案与已激活的重启覆盖），
   调用记录写进同一数据库，不需要 bot 在跑；锁定的主人先 `unlock`。`--dry-run` 也会真实调用一次模型。
 - 挑选只写 `memory_resident_sets`，不改事实，不产生 Dream 操作行，也不参与 Dream 回滚；失败记日志，

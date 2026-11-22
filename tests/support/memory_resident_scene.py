@@ -49,12 +49,16 @@ from yuki.workspace.short_state import ShortState
 from yuki.workspace.store import WorkspaceStore
 
 BOT = "80001"
-QQ = {"A": "10001", "B": "10002", "C": "1003", "B2": "1004", "D": "1005"}
+QQ = {"A": "10001", "B": "10002", "C": "1003", "B2": "1004", "D": "1005", "E": "1006", "F": "1007"}
 GROUPS = {"G": "20001", "H": "20010001"}
 RESULTS = Path(__file__).resolve().parents[2] / "test-results" / "memory-resident"
 HEADER = "常驻记忆（"
 _FACT_MARK = re.compile(r"（fact:(\d+)）")
-_SEGMENT_LINE = re.compile(r"^(\[[^\]]+\]|- .*（fact:\d+）|（另有 \d+ 条.*）)$")
+# Section titles, fact lines (profile entries cite up to two IDs), profile name lines
+# of group members (P4) and the explicit overflow line.
+_SEGMENT_LINE = re.compile(
+    r"^(\[[^\]]+\]|- .*（fact:\d+(?:,\d+)*）|· .*（person:[^）]*）|（另有 \d+ 条.*）)$"
+)
 _UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 _SELECTION_ALIAS = re.compile(r"\b(kept|new|pinned)_\d+\b")
 _DREAM_REF = re.compile(r"\bmemory_\d+\b")
