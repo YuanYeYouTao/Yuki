@@ -1,11 +1,17 @@
 """E2E: the episode index and today's new episodes in every Main turn (memory layering P2).
 
 Authoritative spec: docs/architecture/Yuki-记忆分层P2经历目录任务书-2026-11-22.md §10
-(cases 1-24 = G1-G24) with every §9 item at its recommendation: titles live in one
+(cases 1-24 = G1-G24) with every §9 item at its recommendation, as amended by the
+P2.1 task book (docs/architecture/Yuki-记忆分层P2.1经历目录精简任务书-2026-11-23.md):
+the index is the audience's stored row written by the nightly Dream step (recent 15,
+long-term impressions, month counts; its own ``through`` replaces the global
+watermark, which stays only for audiences without a row), so G11, G14, G20 and G22
+follow P2.1; the P2.1 cases K1-K33 live in test_memory_episode_memorable_e2e.py.
+Titles live in one
 ``memory_facts.title`` column written by the call that writes the episode (Q9a/Q9b);
 the watermark is the newest finished Dream run's ``snapshot_max_fact_id`` (P2-Q1);
 groups never list person-scope episodes (P2-Q2) nor episodes with tool-receipt
-evidence (P2-Q3); 120 index lines and 20 recent lines (P2-Q4); the grounding rule
+evidence (P2-Q3); 20 recent lines (P2-Q4); the grounding rule
 mentions the index (P2-Q5); ``search_memory`` semantics stay (P2-Q6); writers store
 titles (P2-Q7). The index and the recent block render on every Main turn with no
 runtime switch (owner decision 2026-11-22), so G24 keeps only its writer half.
@@ -35,13 +41,13 @@ Failure cases, written before the implementation. The index or the recent block:
   G11 duplicates a merged person's episodes or renders them by the old owner;
   G12 lists a disabled person's episodes;
   G13 lists an ID that ``search_memory(fact_id=ID)`` cannot read in that chat;
-  G14 exceeds 120 index lines / 20 recent lines or miscounts months / overflow;
+  G14 exceeds 20 recent lines or miscounts the overflow;
   G15 makes the turn fail (or drops the resident segment) when the renderer fails;
   G16 moves the recovery contract hash;
   G17 changes the system prefix inside one Work activation;
   G18 leaks into a compact checkpoint;
   G19 reaches subagent or plugin turns, or lands in the wrong conversation's turns;
-  G20 is wrong without a finished Dream run, or moves while a run is still running;
+  G20 is wrong without a row, or moves while a Dream run is still running;
   G21 breaks the layout for a missing title or a multi-line title; backfill writes on
       dry runs, touches titled rows, ``updated_at`` or the Dream signature;
   G22 shows one episode in both the index and the recent block;
@@ -86,7 +92,6 @@ from tests.support.memory_episode_scene import (
     install_memory_segments,
     item_lines,
     local_day,
-    month_counts,
     render_record,
     turn_record,
     write_episode_artifact,
@@ -114,7 +119,6 @@ from yuki.persistence.models import (
 
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "verify_episode_check.py"
 EXPLICIT = {"source_type": MemorySourceType.EXPLICIT, "authority": MemoryAuthority.EXPLICIT}
-INDEX_LINES = 120
 RECENT_LINES = 20
 
 
@@ -368,8 +372,8 @@ async def test_g04_tool_receipt_evidence_keeps_episode_out_of_group(scene):
         evidence=(g1,),
     )
     evidence_id = await _receipt_evidence(scene, t, g2)
-    watermark = await scene.advance()
 
+    # No row yet: the tail lists visible episodes; the receipt keeps t out.
     before = await scene.episode_turn("B", "上周聊了什么", group="G")
     async with scene.database.immediate_session() as writer:
         await writer.execute(
@@ -377,6 +381,7 @@ async def test_g04_tool_receipt_evidence_keeps_episode_out_of_group(scene):
             .where(MemoryEvidenceModel.id == evidence_id)
             .values(event_id=g2, tool_receipt_id=None)
         )
+    watermark = await scene.advance()
     after = await scene.episode_turn("B", "再说一次", group="G")
 
     assert t not in before.index_ids + before.recent_ids
@@ -622,7 +627,11 @@ async def test_g10_forgetting_a_person_removes_rows_and_lines(scene):
 
 # --------------------------------------------------------------------------- G11
 async def test_g11_merged_person_renders_once_by_root(scene):
-    """Case 11: B' merged into B renders the same, without duplicates, from both accounts."""
+    """Case 11: B' merged into B renders B's row, without duplicates, from both accounts.
+
+    P2.1 (§4.2, §17 #5): B''s episodes written before B's row ``through`` are not new
+    episodes of B; they are counted by month at the next nightly run, not listed.
+    """
     from tests.support.person_merge import merge_persons
 
     b1 = await scene.event("private:B", "B", "我上周学会了游泳", key="b1")
@@ -641,7 +650,7 @@ async def test_g11_merged_person_renders_once_by_root(scene):
 
     assert by_root == by_old
     assert root_turn.index == old_turn.index == by_root.index_text
-    assert sorted(root_turn.index_ids) == sorted({b_ep, b2_ep})
+    assert root_turn.index_ids == [b_ep] and b2_ep not in root_turn.recent_ids
     assert len(set(root_turn.index_ids)) == len(root_turn.index_ids)
     contract = await scene.contract()
     scene.write(
@@ -736,10 +745,12 @@ async def test_g13_every_listed_id_is_readable_in_the_same_chat(scene):
 
 
 # --------------------------------------------------------------------------- G14
-async def test_g14_budgets_month_counts_and_overflow(scene):
-    """Case 14: 300 listed + 30 after the watermark -> 120 lines, months, 20 recent + overflow."""
+async def test_g14_recent_budget_and_overflow(scene):
+    """Case 14: 30 episodes after the nightly run -> 20 recent lines plus the overflow line.
+
+    The index part (120 lines, month counts) is replaced by P2.1 (K21).
+    """
     a1 = await scene.event("private:A", "A", "这一年里的很多事", key="a1")
-    start = _at("2026-01-01")
     old = [
         await scene.episode(
             f"o{index:03d}",
@@ -747,9 +758,9 @@ async def test_g14_budgets_month_counts_and_overflow(scene):
             f"第 {index} 件旧事",
             title=f"旧事 {index:03d}",
             evidence=(a1,),
-            valid_from=start + timedelta(days=index),
+            valid_from=_at("2026-01-01") + timedelta(days=index),
         )
-        for index in range(300)
+        for index in range(3)
     ]
     watermark = await scene.advance()
     fresh = [
@@ -766,26 +777,11 @@ async def test_g14_budgets_month_counts_and_overflow(scene):
 
     turn = await scene.episode_turn("A", "列一下经历")
 
-    expected_months: dict[str, int] = {}
-    for index in range(300 - INDEX_LINES):
-        month = (start + timedelta(days=index)).strftime("%Y-%m")
-        expected_months[month] = expected_months.get(month, 0) + 1
-    assert turn.index_ids == old[-INDEX_LINES:]
-    assert len(item_lines(turn.index)) == INDEX_LINES
-    assert month_counts(turn.index) == expected_months
-    assert sum(month_counts(turn.index).values()) == 300 - INDEX_LINES
-    lines = turn.index.split("\n")
-    assert all(line.startswith("- 2026-") for line in lines[1 : 1 + len(expected_months)])
+    assert turn.index_ids == old
     assert turn.recent_ids == fresh[-RECENT_LINES:]
     assert turn.recent.split("\n")[1] == "（另有 10 条，可用 search_memory 查）"
     await _assert_matches_render(scene, "private:A", turn)
-    scene.write(
-        "G14",
-        {
-            "private_A": turn_record(turn, await scene.contract(), watermark),
-            "month_counts": month_counts(turn.index),
-        },
-    )
+    scene.write("G14", {"private_A": turn_record(turn, await scene.contract(), watermark)})
 
 
 # --------------------------------------------------------------------------- G15
@@ -1325,13 +1321,14 @@ async def test_g19_plugin_turn_carries_no_index(database, tmp_path):
 
 # --------------------------------------------------------------------------- G20
 async def test_g20_watermark_without_runs_and_while_a_run_is_stuck(scene):
-    """Case 20: no finished run -> watermark 0; a running run keeps the previous watermark."""
+    """Case 20: no row -> empty index, tail above the global watermark; a running run
+    keeps the row."""
     a1 = await scene.event("private:A", "A", "这段时间做了很多事", key="a1")
     first = [
         await scene.episode(
             f"e{index:02d}", "A", f"做过的事 {index}", title=f"事 {index:02d}", evidence=(a1,)
         )
-        for index in range(25)
+        for index in range(12)
     ]
     no_run = await scene.render("private:A")
     watermark = await scene.advance()
@@ -1342,8 +1339,7 @@ async def test_g20_watermark_without_runs_and_while_a_run_is_stuck(scene):
     status = await run_cli(scene.database.url, "memory", "episodes", "status")
 
     assert no_run.through_fact_id == 0 and no_run.index_text == ""
-    assert no_run.recent_fact_ids == tuple(first[-RECENT_LINES:])
-    assert no_run.recent_text.split("\n")[1] == "（另有 5 条，可用 search_memory 查）"
+    assert no_run.recent_fact_ids == tuple(first)
     assert finished.through_fact_id == watermark == first[-1]
     assert finished.index_fact_ids == tuple(first) and finished.recent_text == ""
     assert stuck.status.value == "running" and stuck.snapshot_max_fact_id == later
@@ -1355,7 +1351,8 @@ async def test_g20_watermark_without_runs_and_while_a_run_is_stuck(scene):
     assert payload["watermark"]["completed_at"]
     assert payload["active_run"]["run_id"] == stuck.public_id
     assert payload["active_run"]["status"] == "running"
-    assert payload["episodes_with_title"] == 26 and payload["episodes_without_title"] == 0
+    assert payload["episodes_with_title"] == 13 and payload["episodes_without_title"] == 0
+    assert [item["through_fact_id"] for item in payload["indexes"]] == [watermark]
     scene.write(
         "G20",
         {
@@ -1571,7 +1568,6 @@ async def test_g22_one_place_per_episode_at_any_time(scene):
     a1 = await scene.event("private:A", "A", "最近去了两次博物馆", key="a1")
     e1 = await scene.episode("e1", "A", "第一次去博物馆", title="博物馆一", evidence=(a1,))
     renders = [await scene.render("private:A")]
-    renders.append(await scene.render("private:A", through_fact_id=0))
     await scene.advance()
     e2 = await scene.episode("e2", "A", "第二次去博物馆", title="博物馆二", evidence=(a1,))
     renders.append(await scene.render("private:A"))
@@ -1582,8 +1578,8 @@ async def test_g22_one_place_per_episode_at_any_time(scene):
     for rendered in renders:
         assert not set(rendered.index_fact_ids) & set(rendered.recent_fact_ids)
     assert renders[0].recent_fact_ids == (e1,)
-    assert renders[2].index_fact_ids == (e1,) and renders[2].recent_fact_ids == (e2,)
-    assert renders[3].index_fact_ids == (e1, e2) and renders[3].recent_fact_ids == ()
+    assert renders[1].index_fact_ids == (e1,) and renders[1].recent_fact_ids == (e2,)
+    assert renders[2].index_fact_ids == (e1, e2) and renders[2].recent_fact_ids == ()
     assert not set(turn.index_ids) & set(turn.recent_ids)
     assert turn.index_ids == [e1] and turn.recent_ids == [e2]
     scene.write(

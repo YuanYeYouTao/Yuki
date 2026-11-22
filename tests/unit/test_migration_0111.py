@@ -129,10 +129,12 @@ def test_0111_preserves_original_receipts_and_accepts_execution_sources(tmp_path
             async with database.read_session() as reader:
                 # Later migrations may append source facts; preserve every
                 # original field without treating those additions as data loss.
+                # 0165 drops the unused memory_facts.last_injected_at on purpose.
                 original_columns = {
                     name: ",".join(
                         f'"{row[1]}"'
                         for row in await reader.execute(text(f'PRAGMA table_info("{name}")'))
+                        if row[1] != "last_injected_at"
                     )
                     for name in tables
                 }

@@ -189,7 +189,6 @@ def project_memory_fact(
         updated_at=row.updated_at,
         last_confirmed_at=row.last_confirmed_at,
         invalidated_reason=row.invalidated_reason,
-        last_injected_at=row.last_injected_at,
         evidence_count=evidence_count,
         validation_version=row.validation_version,
         last_audited_at=row.last_audited_at,
