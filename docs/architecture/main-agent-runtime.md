@@ -81,7 +81,7 @@ created_at/updated_at 是原回执时间，生命周期和计数本身不能证�
 自主触发语义归程序规则。Main、SELF、自动化与子 Agent 复用相同入口。
 角色资料改名或 SOUL 编辑/reload 后，合法新激活使用新值；当前工具往返及原协议请求保持原材料。
 Main 的恢复合同只纳既有 INVARIANT 技术规则、实际模型设置和固定工具合同，SOUL 与名称保存在原请求正文中。
-改名不废弃原已付响应的未决工具尾部或签名，也不使未知派发可重购；完整配对后的合法业务续跑沿现有 rebase 使用新 SOUL。
+改名不废弃原已付响应的未决工具尾部或签名，也不使未知派发可重购；新 SOUL 随新链生效：有原生 continuation 的 Work 沿原链追加，到压缩或合同变化换链时才用新值；没有原生 continuation 时，已配对唤醒的 `rebase_business` 使用新 SOUL。
 工具说明使用中性角色称谓，不因改名重建 manifest；历史只认原事件名称快照，不用当前角色名补造旧名。
 桌面与 CLI 共用单 SOUL 读写/重载合同，详见[SOUL 管理与升级](../operations/soul-deployment-20261022.md)。
 Main 的系统约束、
@@ -347,11 +347,27 @@ SDK 先沿原 durable 来源取得实际 Work 租约，再准备上下文和请�
 核验。初始输入没有可容纳的合法切点时仍报告真实容量错误。
 
 恢复从原 journal 核对执行身份、预算、调用和回执；未决协议保持原签名和配对。
-业务续跑应接当前获准聊天和必要任务材料，已用原文可退出私有执行尾部，不要求永久
-恢复旧群史。改变已提交序列时使用显式新请求编排，不能混接新聊天与旧 opaque。
-真实子 Work 也沿完整配对边界建立业务新链，保原 Work ID、来源、父子关系、消耗和执行回执。
-精确私有恢复只取实际尚未执行的调用、仍开放的 Code 程序或 Provider pause；
-普通 unknown 仅约束原效果，不阻止无关业务使用当前上下文继续。
+跨唤醒续跑按原检查点有无 Provider 原生 continuation 分流：
+
+- **有原生 continuation**（Responses、Claude Messages、Gemini 适配器，以及带不透明推理状态的 Chat Completions 响应）：一律按精确恢复处理，接着原链追加，不重建前缀、
+  不改写已付输入。根 Work 在下一次真实模型派发前经公共观察边界把原链未见过的新聊天补在
+  末尾（见下文“根 Work 的精确协议恢复”）；Work 材料已在原链中，不再追加
+  `work_current_material`，首个请求也不另加参与资料。
+- **没有原生 continuation**（普通 Chat Completions 响应，及经其接入的其他模型）：原响应完整配对后的唤醒
+  走 `rebase_business`，以新准备的公共上下文为前缀，接上一轮尚未观察的工具轮（portable 证据，
+  保原调用键、参数与结果）、Host 选中的必要媒体和一份 `work_current_material`；旧 opaque、签名、
+  思考和创建时聊天不搬入新链。这是 #646 剩余问题 2 的现状：所有者已决定这些协议将来同样追加
+  到原链末尾，随模型 fallback 链实施，届时 rebase 只留给下述换链条件。实际尚未执行的调用、
+  仍开放的 Code 程序、Provider pause 与未完成的压缩不 rebase，沿原链精确恢复。
+- **子 Work** 不装载公共观察边界。没有原生 continuation 时，只有存在尚未观察的工具轮才 rebase 到
+  自己的初始材料，否则沿私有检查点追加；执行压缩后按精确恢复。新链保原 Work ID、来源、
+  父子关系、消耗和执行回执。
+
+换新链只有三种情况：恢复合同哈希变化（INVARIANT 技术规则、固定工具声明与 manifest／Script API
+revision、web 设置、Profile revision）；来源守卫失败（根 Work 的原来源修订变化且原依赖无法再证明）；
+公共或执行压缩。新链保原 Work ID、预算和回执，`chain_links` 记录 from／to／reason；合同或来源变化时，
+旧链未配对的调用按原 effect key 只读对账，不重发。来源守卫与隐私清退仍按原依赖和隐私代次使旧来源失效，
+精确恢复不绕过它们。普通 unknown 仅约束原效果，不阻止续跑。
 本轮已经接纳的精确恢复继续使用其原 read set；下一次激活重新按原回执选择恢复方式。
 退役工具合同及冻结最终发送计划只在离线升级保留原件，运行时不再提供旧计划执行或导入命令。
 公共历史的冻结与采用见[会话 Compact](conversation-compact.md)；
@@ -425,8 +441,8 @@ epoch；模型原请求链不变。准备期间正文、附件或身份变化，
 writer 与执行时的 owner/fence/generation/期限条件，不以锁外读取代替 CAS。
 
 未决私有协议恢复在公共历史准备前核原 journal、固定合同和持久来源依赖；合法时复用原
-协议，不准备最终不会派发的新公共窗口。业务恢复使用当前获准聊天与任务材料，最近一次
-私有 compact 检查点仍归原 Work。整理在完整往返边界建立新链，来源冲突不重购已付响应。
+协议，不准备最终不会派发的新公共窗口。业务恢复按上文原生 continuation 分流（追加原链或
+`rebase_business`），最近一次私有 compact 检查点仍归原 Work。整理在完整往返边界建立新链，来源冲突不重购已付响应。
 新 Work source guard 使用 codec 3：普通事件来源按实际 owner、输入、版本和引用核验，
 不绑定无关的诊断 privacy counter；存在 observation 依赖时仍核原隐私依赖。
 旧 codec 2 继续按原完整指纹和原计数围栏读取，不原地升级或用当前上下文重新认证。
