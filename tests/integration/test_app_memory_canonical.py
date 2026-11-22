@@ -102,7 +102,17 @@ async def test_app_memory_write_search_detail_and_correction_keep_original_perso
     detail = (
         await tools.execute("search_memory", json.dumps({"fact_id": fact_id}), runtime)
     ).model_payload()
-    assert detail == {"memories": found["memories"]}
+    # The App private chat is the person's own: the quoted inbound is shown as evidence.
+    assert detail == {
+        "memories": [
+            {
+                **found["memories"][0],
+                "evidence": [
+                    {"event_id": runtime.effective_trigger_event_id, "excerpt": "我喜欢喝茶"}
+                ],
+            }
+        ]
+    }
     corrected = (
         await tools.execute(
             "edit_memory",

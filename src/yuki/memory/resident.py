@@ -9,6 +9,10 @@ facts never render outside the private chat they came from.
 Rendering reads in one session, never calls a model and never writes. Every
 filter is re-applied at render time, so stored core sets never need syncing
 when facts change.
+
+The evidence classification below (``evidence_origins`` and the per-row predicates) is
+shared with the episode index and with the evidence of ``search_memory(fact_id)``
+(P4 task book §10).
 """
 
 from __future__ import annotations
@@ -110,26 +114,61 @@ class _Fact:
 
 @dataclass(frozen=True, slots=True)
 class EvidenceOrigin:
-    """Where one evidence row came from; ``direct`` means it names a chat event."""
+    """Where one evidence row came from: its chat event, or a tool receipt's trigger event.
 
-    direct: bool
+    ``event_id`` is set only for a direct chat event (``None`` for a tool receipt); the
+    conversation fields describe that event, or the receipt's trigger event.
+    """
+
+    event_id: int | None
     conversation_kind: str | None
     person_root: str | None
     space_id: str | None
+    excerpt: str
+
+    @property
+    def direct(self) -> bool:
+        return self.event_id is not None
+
+
+def group_direct_evidence(item: EvidenceOrigin) -> bool:
+    """A chat event in any group; all groups count as one public space (P4 §6)."""
+    return item.direct and item.conversation_kind not in (None, "private")
+
+
+def own_private_evidence(item: EvidenceOrigin, person_root: str | None) -> bool:
+    """A chat event, or a receipt's trigger event, in the private chat with ``person_root``."""
+    return (
+        person_root is not None
+        and item.conversation_kind == "private"
+        and item.person_root == person_root
+    )
+
+
+def foreign_private_evidence(item: EvidenceOrigin, person_root: str | None) -> bool:
+    """Someone else's private chat; a row whose conversation cannot be traced counts too."""
+    return item.conversation_kind is None or (
+        item.conversation_kind == "private" and item.person_root != person_root
+    )
+
+
+def evidence_shown_in(item: EvidenceOrigin, private_root: str | None) -> bool:
+    """Whether one evidence row may be quoted in a conversation (P4 §10.2).
+
+    ``private_root`` is the counterpart's root person in a private chat, ``None``
+    elsewhere. A direct chat event of any group is shown everywhere; a direct event of
+    the private chat with ``private_root`` is shown there too. Tool receipts are never
+    shown, only counted.
+    """
+    return group_direct_evidence(item) or (item.direct and own_private_evidence(item, private_root))
 
 
 def private_evidence_visible(evidence: Sequence[EvidenceOrigin], person_root: str | None) -> bool:
     """Evidence rule for the private chat with ``person_root`` (shared with the episode index).
 
-    Never another person's private chat. Facts without evidence rows are allowed; an
-    evidence row whose conversation cannot be traced counts as someone else's private
-    chat.
+    Never another person's private chat. Facts without evidence rows are allowed.
     """
-    return not any(
-        item.conversation_kind is None
-        or (item.conversation_kind == "private" and item.person_root != person_root)
-        for item in evidence
-    )
+    return not any(foreign_private_evidence(item, person_root) for item in evidence)
 
 
 def space_evidence_visible(evidence: Sequence[EvidenceOrigin], space_id: str | None) -> bool:
@@ -542,6 +581,7 @@ async def evidence_origins(
             conversation.kind,
             func.coalesce(person.merged_into_person_id, person.id),
             conversation.space_id,
+            evidence.excerpt,
         )
         .select_from(evidence)
         .outerjoin(receipt, receipt.id == evidence.tool_receipt_id)
@@ -551,8 +591,29 @@ async def evidence_origins(
         .where(evidence.fact_id.in_(wanted))
     )
     origins: dict[int, list[EvidenceOrigin]] = {}
-    for fact_id, event_id, kind, person_root, space_id in rows:
+    for fact_id, event_id, kind, person_root, space_id, excerpt in rows:
         origins.setdefault(fact_id, []).append(
-            EvidenceOrigin(event_id is not None, kind, person_root, space_id)
+            EvidenceOrigin(event_id, kind, person_root, space_id, excerpt)
         )
     return origins
+
+
+async def conversation_evidence(
+    session: AsyncSession, fact_id: int, conversation_id: str | None
+) -> tuple[list[EvidenceOrigin], int]:
+    """Evidence of ``fact_id`` shown in ``conversation_id`` and the count of hidden rows.
+
+    Shown rows ascend by event ID. Outside a private chat only group events are shown.
+    """
+    conversation = CanonicalConversationModel
+    private_root = await session.scalar(
+        select(person_root_id(conversation.person_id)).where(
+            conversation.id == conversation_id, conversation.kind == "private"
+        )
+    )
+    evidence = (await evidence_origins(session, (fact_id,))).get(fact_id, [])
+    shown = sorted(
+        (item for item in evidence if evidence_shown_in(item, private_root)),
+        key=lambda item: item.event_id or 0,
+    )
+    return shown, len(evidence) - len(shown)

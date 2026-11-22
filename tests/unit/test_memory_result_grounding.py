@@ -81,7 +81,12 @@ async def test_memory_read_result_keeps_complete_fact_and_evidence_without_polic
     assert not {"memory_ref", "evidence_state", "memory_grounding_policy"} & {*wire, *memory}
     assert not {key for key, value in memory.items() if value is None}
     single = await tools.execute("search_memory", json.dumps({"fact_id": fact.id}), runtime)
-    assert single.model_payload() == {"memories": [memory]}
+    # A fact_id read adds the evidence visible in this (the subject's own private) chat.
+    assert single.model_payload() == {
+        "memories": [
+            {**memory, "evidence": [{"event_id": event.id, "excerpt": "observatory history"}]}
+        ]
+    }
     mixed = await tools.execute(
         "search_memory", json.dumps({"fact_id": fact.id, "query": "x"}), runtime
     )
