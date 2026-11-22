@@ -17,16 +17,17 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Any, Literal
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from yuki.identity.db_models import CanonicalPersonModel, CanonicalSpaceModel
-from yuki.identity.person_identity import person_family_condition, person_root_id
+from yuki.identity.person_identity import person_root_id
 from yuki.memory.resident import (
     evidence_origins,
     load_facts,
@@ -207,31 +208,102 @@ async def person_root(session: AsyncSession, person_id: str) -> str:
     return str(root)
 
 
+async def profile_fact_sets(
+    session: AsyncSession, roots: Collection[str]
+) -> dict[tuple[str, ProfileAudience], tuple[int, ...]]:
+    """Facts each root's two profiles may cite (§6), ascending, for many roots at once.
+
+    Two queries whatever the number of roots: the roots' person facts (through the
+    subject index, merged persons included) and their evidence origins. Person scope
+    only; the common resident conditions. Public: ``public_profile_evidence``.
+    Private: not an explicit fact (those render on their own) and
+    ``private_profile_evidence``.
+    """
+    wanted = set(roots)
+    audiences: tuple[ProfileAudience, ...] = ("public", "private")
+    result: dict[tuple[str, ProfileAudience], list[int]] = {
+        (root, audience): [] for root in wanted for audience in audiences
+    }
+    if not wanted:
+        return {}
+    fact, person = MemoryFactModel, aliased(CanonicalPersonModel)
+    family = select(person.id).where(
+        or_(person.id.in_(wanted), person.merged_into_person_id.in_(wanted))
+    )
+    facts = await load_facts(
+        session, fact.scope_type == "person", fact.canonical_subject_person_id.in_(family)
+    )
+    candidates = sorted(
+        (item for item in facts.values() if item.eligible and item.subject_root in wanted),
+        key=lambda item: item.id,
+    )
+    origins = await evidence_origins(session, (item.id for item in candidates))
+    for item in candidates:
+        root = str(item.subject_root)
+        evidence = origins.get(item.id, ())
+        if public_profile_evidence(evidence, root):
+            result[(root, "public")].append(item.id)
+        if not item.explicit and private_profile_evidence(evidence, root):
+            result[(root, "private")].append(item.id)
+    return {key: tuple(value) for key, value in result.items()}
+
+
 async def profile_fact_ids(
     session: AsyncSession, root: str, audience: ProfileAudience
 ) -> tuple[int, ...]:
-    """Facts ``root``'s profile may cite (§6), ascending.
+    """Facts ``root``'s profile may cite (§6), ascending."""
+    return (await profile_fact_sets(session, (root,)))[(root, audience)]
 
-    Person scope only; the common resident conditions; owned by the root (merged
-    persons included). Public: ``public_profile_evidence``. Private: not an explicit
-    fact (those render on their own) and ``private_profile_evidence``.
+
+async def check_many(
+    session: AsyncSession,
+    items: Sequence[tuple[str, ProfileAudience, Sequence[ProfileEntry]]],
+) -> list[EntryCheck]:
+    """§7.4 for several profiles in one batch: every cited ID maps to its active
+    successor, which must be a fact the profile may cite now.
+
+    Reads only the cited facts, their successors and their evidence: O(cited IDs)
+    rows in a constant number of queries (one more per successor-chain step).
     """
-    fact = MemoryFactModel
-    facts = await load_facts(
-        session,
-        fact.scope_type == "person",
-        person_family_condition(fact.canonical_subject_person_id, root),
+    listed = tuple(
+        dict.fromkeys(
+            fact_id for _, _, entries in items for entry in entries for fact_id in entry.fact_ids
+        )
     )
-    candidates = [
-        item
-        for item in facts.values()
-        if item.eligible
-        and item.subject_root == root
-        and (audience == "public" or not item.explicit)
-    ]
-    origins = await evidence_origins(session, (item.id for item in candidates))
-    rule = public_profile_evidence if audience == "public" else private_profile_evidence
-    return tuple(sorted(item.id for item in candidates if rule(origins.get(item.id, ()), root)))
+    if not listed:
+        return [EntryCheck(tuple(entries), (), ()) for _, _, entries in items]
+    facts, current = await resolve_listed(session, listed)
+    origins = await evidence_origins(session, set(current.values()))
+
+    def usable(fact_id: int, root: str, audience: ProfileAudience) -> bool:
+        target = current.get(fact_id)
+        if target is None:
+            return False
+        item = facts[target]
+        if not (item.eligible and item.scope_type == "person" and item.subject_root == root):
+            return False
+        evidence = origins.get(target, ())
+        if audience == "public":
+            return public_profile_evidence(evidence, root)
+        return not item.explicit and private_profile_evidence(evidence, root)
+
+    checks: list[EntryCheck] = []
+    for root, audience, entries in items:
+        kept: list[ProfileEntry] = []
+        dropped: list[DroppedEntry] = []
+        replaced: dict[int, int] = {}
+        for entry in entries:
+            failed = tuple(item for item in entry.fact_ids if not usable(item, root, audience))
+            if failed:
+                dropped.append(DroppedEntry(entry, failed))
+                continue
+            replaced.update(
+                (item, current[item]) for item in entry.fact_ids if current[item] != item
+            )
+            mapped = tuple(dict.fromkeys(current[item] for item in entry.fact_ids))
+            kept.append(replace(entry, fact_ids=mapped))
+        checks.append(EntryCheck(tuple(kept), tuple(dropped), tuple(sorted(replaced.items()))))
+    return checks
 
 
 async def check_entries(
@@ -240,22 +312,8 @@ async def check_entries(
     audience: ProfileAudience,
     entries: Sequence[ProfileEntry],
 ) -> EntryCheck:
-    """§7.4: map every ID to its active successor and require it to be available."""
-    available = set(await profile_fact_ids(session, root, audience))
-    listed = tuple(dict.fromkeys(item for entry in entries for item in entry.fact_ids))
-    _, current = await resolve_listed(session, listed)
-    kept: list[ProfileEntry] = []
-    dropped: list[DroppedEntry] = []
-    replaced: dict[int, int] = {}
-    for entry in entries:
-        failed = tuple(item for item in entry.fact_ids if current.get(item) not in available)
-        if failed:
-            dropped.append(DroppedEntry(entry, failed))
-            continue
-        replaced.update((item, current[item]) for item in entry.fact_ids if current[item] != item)
-        mapped = tuple(dict.fromkeys(current[item] for item in entry.fact_ids))
-        kept.append(replace(entry, fact_ids=mapped))
-    return EntryCheck(tuple(kept), tuple(dropped), tuple(sorted(replaced.items())))
+    """§7.4 for one profile."""
+    return (await check_many(session, ((root, audience, entries),)))[0]
 
 
 def entry_line(entry: ProfileEntry) -> str:
@@ -265,29 +323,50 @@ def entry_line(entry: ProfileEntry) -> str:
     return f"- {section}{entry.text}（fact:{shown}）"
 
 
-async def _rendered(
-    session: AsyncSession, root: str, audience: ProfileAudience
-) -> tuple[ProfileEntry, ...]:
-    row = await session.scalar(_profile_statement(root, audience))
-    if row is None or row.current_version == 0:
-        return ()
-    entries = await _entries(session, row.id, row.current_version)
-    return (await check_entries(session, root, audience, entries)).entries if entries else ()
+async def current_entries(
+    session: AsyncSession, keys: Collection[tuple[str, ProfileAudience]]
+) -> dict[tuple[str, ProfileAudience], tuple[ProfileEntry, ...]]:
+    """The current entries of the given (root, audience) profiles in one query."""
+    if not keys:
+        return {}
+    profile, version = MemoryProfileModel, MemoryProfileVersionModel
+    rows = await session.execute(
+        select(profile.person_id, profile.audience, version.entries_json)
+        .join(
+            version,
+            (version.profile_id == profile.id) & (version.version == profile.current_version),
+        )
+        .where(
+            profile.person_id.in_({root for root, _ in keys}),
+            profile.audience.in_({audience for _, audience in keys}),
+        )
+    )
+    wanted = set(keys)
+    found: dict[tuple[str, ProfileAudience], tuple[ProfileEntry, ...]] = {}
+    for person_id, audience, entries_json in rows:
+        key = (str(person_id), "private" if audience == "private" else "public")
+        if key in wanted:
+            found[key] = _decode(entries_json)
+    return found
 
 
 async def render_private_profiles(
     session: AsyncSession, root: str
 ) -> tuple[list[str], tuple[RenderedProfile, ...]]:
     """§7.2: the counterpart's public and private profiles, every passing entry."""
+    audiences: tuple[ProfileAudience, ...] = ("public", "private")
+    stored = await current_entries(session, [(root, audience) for audience in audiences])
+    present = [audience for audience in audiences if stored.get((root, audience))]
+    checks = await check_many(
+        session, [(root, audience, stored[(root, audience)]) for audience in present]
+    )
     lines: list[str] = []
     rendered: list[RenderedProfile] = []
-    audiences: tuple[ProfileAudience, ...] = ("public", "private")
-    for audience in audiences:
-        entries = await _rendered(session, root, audience)
-        if entries:
+    for audience, checked in zip(present, checks, strict=True):
+        if checked.entries:
             lines.append(PROFILE_TITLES[audience])
-            lines.extend(entry_line(entry) for entry in entries)
-            rendered.append(RenderedProfile(root, audience, entries))
+            lines.extend(entry_line(entry) for entry in checked.entries)
+            rendered.append(RenderedProfile(root, audience, checked.entries))
     return lines, tuple(rendered)
 
 
@@ -299,39 +378,64 @@ async def render_space_profiles(
     Members resolve to their root (a member merged after the list was written shows
     once, under the root); the name line lists the root ID and every person ID merged
     into it, so history envelopes with an old ID match. Members without a passing
-    entry are left out.
+    entry are left out. A constant number of queries for any list.
     """
+    member, person = MemorySpaceMemberModel, aliased(CanonicalPersonModel)
     roots: list[str] = []
-    for person_id in await session.scalars(
-        select(MemorySpaceMemberModel.person_id)
-        .where(MemorySpaceMemberModel.space_id == space_id)
-        .order_by(MemorySpaceMemberModel.position)
+    for root in await session.scalars(
+        select(func.coalesce(person.merged_into_person_id, person.id))
+        .select_from(member)
+        .join(person, person.id == member.person_id)
+        .where(member.space_id == space_id)
+        .order_by(member.position)
     ):
-        root = await person_root(session, person_id)
         if root not in roots:
-            roots.append(root)
-    lines: list[str] = []
-    rendered: list[RenderedProfile] = []
-    for root in roots:
-        entries = (await _rendered(session, root, "public"))[:MAX_GROUP_MEMBER_ENTRIES]
-        if not entries:
-            continue
-        name = await session.scalar(
-            select(CanonicalPersonModel.display_name).where(CanonicalPersonModel.id == root)
+            roots.append(str(root))
+    if not roots:
+        return [], ()
+    stored = await current_entries(session, [(root, "public") for root in roots])
+    present = [root for root in roots if stored.get((root, "public"))]
+    checks = await check_many(
+        session, [(root, "public", stored[(root, "public")]) for root in present]
+    )
+    shown = {
+        root: checked.entries[:MAX_GROUP_MEMBER_ENTRIES]
+        for root, checked in zip(present, checks, strict=True)
+        if checked.entries
+    }
+    if not shown:
+        return [], ()
+    people = await session.execute(
+        select(
+            CanonicalPersonModel.id,
+            CanonicalPersonModel.display_name,
+            CanonicalPersonModel.merged_into_person_id,
         )
-        merged = tuple(
-            await session.scalars(
-                select(CanonicalPersonModel.id)
-                .where(CanonicalPersonModel.merged_into_person_id == root)
-                .order_by(CanonicalPersonModel.id)
+        .where(
+            or_(
+                CanonicalPersonModel.id.in_(shown),
+                CanonicalPersonModel.merged_into_person_id.in_(shown),
             )
         )
-        also = "；同一人另有 " + "、".join(f"person:{item}" for item in merged) if merged else ""
-        lines.append(f"· {' '.join(str(name or '').split())}（person:{root}{also}）")
-        lines.extend(entry_line(entry) for entry in entries)
-        rendered.append(RenderedProfile(root, "public", entries))
-    if lines:
-        lines.insert(0, GROUP_PROFILES_TITLE)
+        .order_by(CanonicalPersonModel.id)
+    )
+    names: dict[str, str] = {}
+    merged: dict[str, list[str]] = {}
+    for person_id, name, merged_into in people:
+        if merged_into is None:
+            names[str(person_id)] = " ".join(str(name or "").split())
+        else:
+            merged.setdefault(str(merged_into), []).append(str(person_id))
+    lines = [GROUP_PROFILES_TITLE]
+    rendered: list[RenderedProfile] = []
+    for root in roots:
+        if root not in shown:
+            continue
+        also = merged.get(root, [])
+        tail = "；同一人另有 " + "、".join(f"person:{item}" for item in also) if also else ""
+        lines.append(f"· {names.get(root, '')}（person:{root}{tail}）")
+        lines.extend(entry_line(entry) for entry in shown[root])
+        rendered.append(RenderedProfile(root, "public", shown[root]))
     return lines, tuple(rendered)
 
 

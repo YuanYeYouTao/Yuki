@@ -21,10 +21,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
+from sqlalchemy.orm import aliased
 
 from yuki.config import Settings
 from yuki.conversation.canonical_db_models import CanonicalConversationModel
+from yuki.identity.db_models import CanonicalPersonModel
 from yuki.memory.dream.db_models import MemoryDreamRunModel
 from yuki.memory.profile_selection import (
     FINISHED_RUN_STATUSES,
@@ -45,13 +47,13 @@ from yuki.memory.profiles import (
     ProfileStore,
     ProfileValidationError,
     RenderedProfile,
-    person_root,
     validate_entries,
 )
 from yuki.memory.resident import ResidentMemory
 from yuki.model_runtime.executor import ModelExecutor
 from yuki.model_runtime.structured import StructuredTaskRunner
 from yuki.persistence.database import Database
+from yuki.persistence.models import MemorySpaceMemberModel
 from yuki.services.concurrency import ConcurrencyManager
 
 # ---------------------------------------------------------------- window (§5)
@@ -455,32 +457,36 @@ async def render_check(database: Database) -> tuple[RenderedConversation, ...]:
     people on its stored list, at most five entries each. Conversations without a
     profile are left out."""
     resident = ResidentMemory(database)
+    conversation, person = CanonicalConversationModel, aliased(CanonicalPersonModel)
+    member, listed_person = MemorySpaceMemberModel, aliased(CanonicalPersonModel)
     async with database.read_session() as session:
         rows = (
             await session.execute(
                 select(
-                    CanonicalConversationModel.id,
-                    CanonicalConversationModel.kind,
-                    CanonicalConversationModel.person_id,
-                    CanonicalConversationModel.space_id,
-                ).order_by(CanonicalConversationModel.id)
+                    conversation.id,
+                    conversation.kind,
+                    func.coalesce(
+                        person.merged_into_person_id, person.id, conversation.space_id
+                    ).label("owner"),
+                )
+                .outerjoin(person, person.id == conversation.person_id)
+                .order_by(conversation.id)
             )
         ).all()
-        owners = {
-            row.id: (
-                await person_root(session, row.person_id)
-                if row.kind == "private"
-                else str(row.space_id)
-            )
-            for row in rows
-        }
-    lists = {item.space_id: item.person_ids for item in await ProfileStore(database).all_members()}
+        listed: dict[str, set[str]] = {}
+        for space_id, root in await session.execute(
+            select(
+                member.space_id,
+                func.coalesce(listed_person.merged_into_person_id, listed_person.id),
+            ).join(listed_person, listed_person.id == member.person_id)
+        ):
+            listed.setdefault(str(space_id), set()).add(str(root))
     rendered: list[RenderedConversation] = []
     for row in rows:
         profiles = (await resident.render_conversation(row.id)).profiles
         if not profiles:
             continue
-        owner = owners[row.id]
+        owner = str(row.owner)
         violations: list[str] = []
         for item in profiles:
             label = f"{item.person_id}/{item.audience}"
@@ -492,9 +498,7 @@ async def render_check(database: Database) -> tuple[RenderedConversation, ...]:
                 violations.append(f"private_in_group:{label}")
             if len(item.entries) > MAX_GROUP_MEMBER_ENTRIES:
                 violations.append(f"too_many_entries:{label}")
-            async with database.read_session() as session:
-                listed = {await person_root(session, person) for person in lists.get(owner, ())}
-            if item.person_id not in listed:
+            if item.person_id not in listed.get(owner, set()):
                 violations.append(f"not_listed:{label}")
         rendered.append(RenderedConversation(row.id, row.kind, owner, profiles, tuple(violations)))
     return tuple(rendered)

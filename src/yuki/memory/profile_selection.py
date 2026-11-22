@@ -47,14 +47,22 @@ from yuki.memory.profiles import (
     ProfileStore,
     ProfileValidationError,
     check_entries,
+    check_many,
     person_root,
+    profile_fact_sets,
+    profile_signature,
     validate_entries,
 )
 from yuki.memory.resident import evidence_origins, load_facts, private_evidence_visible
 from yuki.model_runtime.models import ModelTask
 from yuki.model_runtime.structured import StructuredTaskError, StructuredTaskRunner
 from yuki.persistence.database import Database
-from yuki.persistence.models import ChatEventModel, MemoryFactModel
+from yuki.persistence.models import (
+    ChatEventModel,
+    MemoryFactModel,
+    MemoryProfileModel,
+    MemorySpaceMemberModel,
+)
 from yuki.services.concurrency import ConcurrencyManager
 
 logger = logging.getLogger(__name__)
@@ -184,7 +192,8 @@ async def dream_window(database: Database, run_public_id: str | None = None) -> 
 
 
 async def window_activity(database: Database, window: ActivityWindow) -> Activity:
-    """One read query: inbound person messages per (conversation kind, space, root)."""
+    """One read query: inbound person messages per (conversation kind, space, root),
+    an index range over the window."""
     event, conversation = ChatEventModel, CanonicalConversationModel
     person = aliased(CanonicalPersonModel)
     root = aliased(CanonicalPersonModel)
@@ -198,6 +207,9 @@ async def window_activity(database: Database, window: ActivityWindow) -> Activit
                 .join(person, person.id == event.author_person_id)
                 .join(root, root.id == root_id)
                 .where(
+                    # Both scope types listed: the range is read through
+                    # ix_chat_events_scope_time (scope_type, occurred_at), never a scan.
+                    event.scope_type.in_(("private", "group")),
                     event.occurred_at >= window.start,
                     event.occurred_at < window.end,
                     event.author_kind == "person",
@@ -228,15 +240,19 @@ async def maintained_profiles(
     database: Database, activity: Activity
 ) -> dict[ProfileAudience, frozenset[str]]:
     """Public: anyone on a stored group list or with a private chat; private: the latter."""
-    listed = {
-        person_id
-        for item in await ProfileStore(database).all_members()
-        for person_id in item.person_ids
-    }
+    member, person = MemorySpaceMemberModel, aliased(CanonicalPersonModel)
     async with database.read_session() as session:
-        roots = {await person_root(session, person_id) for person_id in listed}
+        listed = {
+            str(root)
+            for root in await session.scalars(
+                select(func.coalesce(person.merged_into_person_id, person.id))
+                .select_from(member)
+                .join(person, person.id == member.person_id)
+                .distinct()
+            )
+        }
     return {
-        "public": frozenset(roots | activity.private_roots),
+        "public": frozenset(listed | activity.private_roots),
         "private": activity.private_roots,
     }
 
@@ -247,28 +263,58 @@ async def due_profiles(
 ) -> tuple[DueProfile, ...]:
     """Unlocked maintained profiles whose non-empty available set changed, in queue
     order: attempt time ascending (never attempted first), then root ID; a person's
-    private profile always right after its due public profile."""
-    store = ProfileStore(database)
+    private profile always right after its due public profile.
+
+    A constant number of queries for any number of people: stored profiles, every
+    maintained root's facts and evidence, and the creation times of available facts.
+    """
+    profile = MemoryProfileModel
+    roots = maintained["public"] | maintained["private"]
+    async with database.read_session() as session:
+        stored = {
+            (row.person_id, row.audience): row
+            for row in (
+                await session.execute(
+                    select(
+                        profile.person_id,
+                        profile.audience,
+                        profile.current_version,
+                        profile.considered_signature,
+                        profile.attempted_at,
+                        profile.locked,
+                    ).where(profile.person_id.in_(roots))
+                )
+            ).all()
+        }
+        sets = await profile_fact_sets(session, roots)
+        created = {
+            int(fact_id): _utc(at)
+            for fact_id, at in await session.execute(
+                select(MemoryFactModel.id, MemoryFactModel.created_at).where(
+                    MemoryFactModel.id.in_({item for ids in sets.values() for item in ids})
+                )
+            )
+        }
     found: list[DueProfile] = []
-    for audience in ("public", "private"):
+    audiences: tuple[ProfileAudience, ...] = ("public", "private")
+    for audience in audiences:
         for root in sorted(maintained[audience]):
-            profile = await store.load(root, audience)
-            if profile is not None and profile.locked:
+            row = stored.get((root, audience))
+            fact_ids = sets[(root, audience)]
+            if (row is not None and row.locked) or not fact_ids:
                 continue
-            available = await store.available(root, audience)
-            if not available.fact_ids:
+            signature = profile_signature(fact_ids)
+            if row is not None and row.considered_signature == signature:
                 continue
-            if profile is not None and profile.considered_signature == available.signature:
-                continue
-            attempted = profile.attempted_at if profile is not None else None
+            attempted = _utc(row.attempted_at) if row is not None and row.attempted_at else None
             found.append(
                 DueProfile(
                     person_id=root,
                     audience=audience,
                     attempted_at=attempted,
-                    current_version=profile.current_version if profile is not None else 0,
-                    signature=available.signature,
-                    pending_since=attempted or await _oldest(database, available.fact_ids),
+                    current_version=row.current_version if row is not None else 0,
+                    signature=signature,
+                    pending_since=attempted or min(created[item] for item in fact_ids),
                 )
             )
     ordered = sorted(
@@ -293,14 +339,6 @@ async def due_profiles(
                 if other.audience == "private" and other.person_id == item.person_id
             )
     return tuple(queue)
-
-
-async def _oldest(database: Database, fact_ids: Sequence[int]) -> datetime | None:
-    async with database.read_session() as session:
-        value = await session.scalar(
-            select(func.min(MemoryFactModel.created_at)).where(MemoryFactModel.id.in_(fact_ids))
-        )
-    return None if value is None else _utc(value)
 
 
 class ProfileMaintenance:
@@ -346,12 +384,17 @@ class ProfileMaintenance:
 
     # ----------------------------------------------------------------- cleanup
     async def cleanup(self, run_public_id: str) -> int:
-        """§8.5: program versions for profiles with failing or superseded IDs."""
+        """§8.5: program versions for profiles with failing or superseded IDs.
+
+        One batched check over every stored profile, then one short write per
+        changed profile."""
+        profiles = [item for item in await self.store.profiles() if item.entries]
+        async with self._database.read_session() as session:
+            checks = await check_many(
+                session, [(item.person_id, item.audience, item.entries) for item in profiles]
+            )
         written = 0
-        for profile in await self.store.profiles():
-            if not profile.entries:
-                continue
-            checked = await self.store.check(profile.person_id, profile.audience, profile.entries)
+        for profile, checked in zip(profiles, checks, strict=True):
             if not checked.changed:
                 continue
             parts = []

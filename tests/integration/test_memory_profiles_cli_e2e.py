@@ -76,6 +76,18 @@ def _who(scene: ProfileScene, person: str, audience: str = "public") -> tuple[st
     return ("--person", scene.persons[person], "--audience", audience)
 
 
+def _check_record(scene: ProfileScene, output: dict[str, Any]) -> dict[str, Any]:
+    """``check`` output with rows in fixture-label order (IDs are random)."""
+    labels = scene.labels()
+    return {
+        **output,
+        "rendered": _label_order(scene, output["rendered"]),
+        "conversations": sorted(
+            output["conversations"], key=lambda row: labels[row["conversation_id"]]
+        ),
+    }
+
+
 def _label_order(scene: ProfileScene, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     labels = scene.labels()
     return sorted(rows, key=lambda row: (labels[row["person_id"]], row["audience"]))
@@ -746,6 +758,16 @@ async def test_cli_check_reports_failed_ids_and_successors(scene):
     checked = await _cli(scene, "check", code=1)
 
     assert clean["violations"] == [] and clean["profiles"] == 3 and clean["entries"] == 5
+    # Render-level placement over every conversation: private chats show only the
+    # counterpart's profiles, groups only listed people's public profiles.
+    assert clean["placement_violations"] == [] and checked["placement_violations"] == []
+    assert clean["conversations"]
+    for row in clean["conversations"]:
+        if row["kind"] == "private":
+            assert {item["person_id"] for item in row["profiles"]} == {row["owner_id"]}
+        else:
+            assert all(item["audience"] == "public" for item in row["profiles"])
+            assert all(len(item["entries"]) <= 5 for item in row["profiles"])
     assert checked["profiles"] == 3 and checked["entries"] == 5
     assert [(row["person_id"], row["audience"]) for row in checked["violations"]] == [
         (persons["B"], "public")
@@ -762,7 +784,7 @@ async def test_cli_check_reports_failed_ids_and_successors(scene):
         "cli-check",
         {
             "facts": {**scene.facts, "successor": successor.id},
-            "clean": {**clean, "rendered": _label_order(scene, clean["rendered"])},
-            "checked": {**checked, "rendered": _label_order(scene, checked["rendered"])},
+            "clean": _check_record(scene, clean),
+            "checked": _check_record(scene, checked),
         },
     )

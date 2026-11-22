@@ -206,6 +206,14 @@ person_group 事实与经历不进画像。
    记 `memory_profile_rejected code=…`。提交事务比对调用开始时的版本号与锁，所有者在调用期间改动或锁定时
    放弃写入（`memory_profile_abandoned`），保持到期。条目与当前相同只更新签名与尝试时间。
 `DreamHealth.resident_pending_owners` 与 `resident_oldest_pending_at` 同时计入到期画像。
+
+**读写代价**。每轮渲染的画像部分是常数条语句（私聊与群各约 6–9 条，与历史、画像、条目、名单人数无关）：
+名单按 `(space_id, position)` 一次取并解析到根，当前条目按 `(person_id, audience)` 与 `(profile_id, version)`
+一次取，被引编号的后继与事实按主键批量取、证据按 `fact_id` 一次取，名字与并入 ID 一次取；读的行数是
+本轮条目与编号数。名单计数按 `ix_chat_events_scope_time (scope_type, occurred_at)` 只读窗口范围；
+到期判定一次取全部被维护人的 person 事实（`ix_memory_facts_scope_status_updated`）与证据；程序清理对全部
+画像一次批量校验。写事务只按主键 / 唯一索引写画像行与版本行；整人遗忘按 `person_id` 删除画像，不读版本 JSON。
+规模实测与语句计划见 `tests/integration/test_memory_profiles_scale_e2e.py`（`YUKI_PROFILE_SCALE_E2E=1`）。
 设计依据见[记忆分层 P4 人物画像任务书](Yuki-记忆分层P4人物画像任务书-2026-11-22.md)。
 
 ## 经历目录
