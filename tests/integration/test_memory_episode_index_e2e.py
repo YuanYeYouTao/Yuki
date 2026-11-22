@@ -1019,7 +1019,7 @@ async def test_g18_execution_compact_never_writes_the_blocks(database, tmp_path,
     answer = "LONG_ANSWER " + "independent branch; " * 2400
     kinds: list[str] = []
     instructions: list[str] = []
-    state = {"sent": False}
+    state = {"sent": False, "read": False}
 
     def respond(request):
         content = str(request.messages[-1].content or "")
@@ -1034,6 +1034,11 @@ async def test_g18_execution_compact_never_writes_the_blocks(database, tmp_path,
         if not state["sent"]:
             state["sent"] = True
             return tool_call("send", {"text": answer}, "long-send")
+        if not state["read"]:
+            # A small observed round: E can then cover the large send round and
+            # bring the request below the trigger (it cannot cover the prefix).
+            state["read"] = True
+            return tool_call("read_chat", {"limit": 1, "query": "很长的回答"}, "small-read")
         return "NO_REPLY"
 
     def refuse_public(*args, **kwargs):

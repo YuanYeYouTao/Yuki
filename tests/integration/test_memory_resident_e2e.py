@@ -911,7 +911,7 @@ async def test_f23_execution_compact_keeps_the_segment_in_the_work(database, tmp
     await scene.event("private:A", "A", ("PUBLIC_OLD " + "historical decision. " * 9500).rstrip())
     answer = "LONG_ANSWER " + "independent branch; " * 2400
     kinds: list[str] = []
-    state = {"sent": False}
+    state = {"sent": False, "read": False}
 
     def respond(request):
         content = str(request.messages[-1].content or "")
@@ -926,6 +926,11 @@ async def test_f23_execution_compact_keeps_the_segment_in_the_work(database, tmp
         if not state["sent"]:
             state["sent"] = True
             return tool_call("send", {"text": answer}, "long-send")
+        if not state["read"]:
+            # A small observed round: E can then cover the large send round and
+            # bring the request below the trigger (it cannot cover the prefix).
+            state["read"] = True
+            return tool_call("read_chat", {"limit": 1, "query": "很长的回答"}, "small-read")
         return "NO_REPLY"
 
     def refuse_public(*args, **kwargs):

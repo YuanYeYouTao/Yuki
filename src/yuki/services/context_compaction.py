@@ -573,15 +573,21 @@ def execution_compact_plan(
     focus: str = "",
     checkpoint_summary: str | None = None,
     unobserved_tool_round: ChatMessage | None = None,
+    trigger_tokens: int | None = None,
 ) -> ExecutionCompactPlan:
     """Select the latest fitting paired prefix without cloning every candidate.
 
     Checkpoints replace earlier protocol state, so candidate costs can decrease.
     Scan their actual serialized character/media costs once and select by the
     original boundary order; never binary-search across checkpoint changes.
+
+    ``trigger_tokens`` is the soft watermark: the following request (initial
+    material, the current checkpoint's size for the one replacing it, and the
+    mandatory tail) must then fall below it, otherwise no summary is bought.
     """
     entries = transcript.entries()
     minimum_boundary = len(initial)
+    checkpoint_cost = InputSequenceCost()
     if checkpoint_summary is not None and len(entries) > minimum_boundary:
         first = entries[minimum_boundary]
         if isinstance(first, ChatMessage) and first.role == "user":
@@ -598,6 +604,7 @@ def execution_compact_plan(
                 # not an arbitrary user kind tag. A new prefix must cover source
                 # beyond the Host checkpoint already substituted into this chain.
                 minimum_boundary += 1
+                checkpoint_cost = message_token_cost(first)
     checkpoints = [
         index for index, entry in enumerate(entries) if isinstance(entry, ProviderContinuation)
     ]
@@ -606,22 +613,17 @@ def execution_compact_plan(
         if responses
         else {}
     )
-    counter = (
-        RequestTokenCounter(
-            prepare(replace(main_request, messages=(), continuation=None, continuation_items=()))
-        )
-        if input_budget is not None
-        else None
+    counter = RequestTokenCounter(
+        prepare(replace(main_request, messages=(), continuation=None, continuation_items=()))
     )
     instruction = ChatMessage(
         "user", EXECUTION_COMPACT_INSTRUCTION + ("\n" + focus if focus else "")
     )
-    instruction_cost = message_token_cost(instruction) if counter is not None else None
+    instruction_cost = message_token_cost(instruction)
     pending: set[str] = set()
     candidates: list[int] = []
     for index, entry in enumerate(entries):
-        if counter is not None:
-            counter.append(entry)
+        counter.append(entry)
         if index in recorded:
             pending.update(call.id for call in recorded[index].tool_calls)
         elif isinstance(entry, ChatMessage):
@@ -637,13 +639,7 @@ def execution_compact_plan(
             and not (
                 index + 1 < len(entries) and isinstance(entries[index + 1], FunctionCallOutput)
             )
-            and (
-                counter is None
-                or (
-                    instruction_cost is not None
-                    and counter.estimate(instruction_cost) <= cast(int, input_budget)
-                )
-            )
+            and (input_budget is None or counter.estimate(instruction_cost) <= input_budget)
         ):
             candidates.append(index + 1)
     if pending or not candidates:
@@ -689,73 +685,50 @@ def execution_compact_plan(
     native_from = [False] * (len(entries) + 1)
     for index in range(len(entries) - 1, -1, -1):
         native_from[index] = native_from[index + 1] or not isinstance(entries[index], ChatMessage)
-    if counter is None:
-        boundary = candidates[-1]
+    first_candidate = min(candidates[0], keep_from)
+    raw = tuple(
+        _RetainedItem(
+            index,
+            item,
+            keep_from if index >= keep_from else None,
+        )
+        for index, item in enumerate(entries)
+        if index >= first_candidate and isinstance(item, ChatMessage)
+    )
+    raw_index = _TailIndex(raw, len(entries), initial, retained_public)
+    native_index = (
+        _TailIndex(
+            _native_tail_items(
+                entries[first_candidate:],
+                recorded,
+                last_response,
+                call_key,
+                offset=first_candidate,
+                keep_from=keep_from,
+            ),
+            len(entries),
+            initial,
+            retained_public,
+        )
+        if native_from[first_candidate]
+        else raw_index
+    )
+    initial_cost = InputSequenceCost()
+    for message in initial:
+        initial_cost += message_token_cost(message)
+    for boundary in reversed(candidates):
         keep_boundary = min(boundary, keep_from)
-        suffix = entries[keep_boundary:]
-        kept = (
-            tuple(
-                item.message
-                for item in _native_tail_items(
-                    suffix,
-                    recorded,
-                    last_response,
-                    call_key,
-                    offset=keep_boundary,
-                    keep_from=keep_from,
-                )
-            )
-            if native_from[keep_boundary]
-            else tuple(item for item in suffix if isinstance(item, ChatMessage))
-        )
-        public = tuple(
-            message for message in retained_public if message not in initial and message not in kept
-        )
-        retained = (*public, *kept)
+        selected = native_index if native_from[keep_boundary] else raw_index
+        kept = initial_cost + selected.public_cost[keep_boundary]
+        kept += selected.required_cost[keep_boundary]
+        if (input_budget is None or counter.estimate_messages(kept) <= input_budget) and (
+            trigger_tokens is None
+            or counter.estimate_messages(kept + checkpoint_cost) < trigger_tokens
+        ):
+            retained = selected.retained(keep_boundary)
+            break
     else:
-        first_candidate = min(candidates[0], keep_from)
-        raw = tuple(
-            _RetainedItem(
-                index,
-                item,
-                keep_from if index >= keep_from else None,
-            )
-            for index, item in enumerate(entries)
-            if index >= first_candidate and isinstance(item, ChatMessage)
-        )
-        raw_index = _TailIndex(raw, len(entries), initial, retained_public)
-        native_index = (
-            _TailIndex(
-                _native_tail_items(
-                    entries[first_candidate:],
-                    recorded,
-                    last_response,
-                    call_key,
-                    offset=first_candidate,
-                    keep_from=keep_from,
-                ),
-                len(entries),
-                initial,
-                retained_public,
-            )
-            if native_from[first_candidate]
-            else raw_index
-        )
-        initial_cost = InputSequenceCost()
-        for message in initial:
-            initial_cost += message_token_cost(message)
-        for boundary in reversed(candidates):
-            keep_boundary = min(boundary, keep_from)
-            selected = native_index if native_from[keep_boundary] else raw_index
-            if counter.estimate_messages(
-                initial_cost
-                + selected.public_cost[keep_boundary]
-                + selected.required_cost[keep_boundary]
-            ) <= cast(int, input_budget):
-                retained = selected.retained(keep_boundary)
-                break
-        else:
-            raise WorkCapacityError("model_request_capacity")
+        raise WorkCapacityError("model_request_capacity")
     prefix = transcript.prefix(boundary)
     prefix.append(instruction)
     sequence = prefix.request()

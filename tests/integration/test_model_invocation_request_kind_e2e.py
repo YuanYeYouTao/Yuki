@@ -358,9 +358,10 @@ async def test_execution_compact_in_a_responses_work_is_recorded_on_its_original
             sent = True
             return tool("send", {"text": answer}, "work-long-send")
         if reads < 2:
-            # A later round leaves the large delivered round compactable.
+            # A later small round leaves the large delivered round compactable
+            # below the trigger.
             reads += 1
-            return tool("read_chat", {"limit": 1}, f"work-followup-read-{reads}")
+            return tool("read_chat", {"limit": 1, "query": "review"}, f"work-followup-read-{reads}")
         return tool("wait", {"for": [{"seconds": 3600}]}, "work-wait")
 
     env = await social_env(database, tmp_path)

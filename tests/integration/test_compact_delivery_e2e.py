@@ -246,20 +246,28 @@ async def test_real_ordinary_send_keeps_receipt_and_replaces_public_prefix(
         )
         assert normal[0]["estimated_tokens"] < settings.context_compact_trigger_tokens
         assert old_public in "\n".join(item.content or "" for item in provider.requests[0].messages)
-        assert compact, "The successful send must cross the shared trigger in this fixture"
-        originals = [decode_transcript(item).request() for item in compact_inputs]
-        assert originals
-        original = originals[0]
-        original_tokens = estimate_request_tokens(
-            replace(
-                provider.requests[0],
-                messages=original.messages,
-                continuation=original.continuation,
-                continuation_items=original.items,
+        if next_step == "p_refused":
+            # P is refused and E cannot cover the public prefix: no execution
+            # summary could bring this request below the trigger, so none is
+            # bought; the request fits and the round continues (#646).
+            assert compact == []
+            assert compact_inputs == []
+            assert normal[-1]["estimated_tokens"] >= settings.context_compact_trigger_tokens
+        else:
+            assert compact, "The successful send must cross the shared trigger in this fixture"
+            originals = [decode_transcript(item).request() for item in compact_inputs]
+            assert originals
+            original = originals[0]
+            original_tokens = estimate_request_tokens(
+                replace(
+                    provider.requests[0],
+                    messages=original.messages,
+                    continuation=original.continuation,
+                    continuation_items=original.items,
+                )
             )
-        )
-        evidence["precompact_original_tokens"] = original_tokens
-        assert original_tokens >= settings.context_compact_trigger_tokens
+            evidence["precompact_original_tokens"] = original_tokens
+            assert original_tokens >= settings.context_compact_trigger_tokens
         assert normal_after_send, "Capture the real normal Main following compact"
         following = normal_after_send[0]
         receipts = [item for item in following.messages if item.tool_call_id == call_id]
@@ -289,9 +297,8 @@ async def test_real_ordinary_send_keeps_receipt_and_replaces_public_prefix(
         assert question in str(following.messages)
         if next_step == "p_refused":
             assert evidence["refused_public_plans"]
-            assert any(item["kind"] == "execution_compact" for item in compact)
             assert old_public in str(following.messages), "E does not cover the public prefix"
-            assert "PRIVATE_CHECKPOINT" in str(following.messages)
+            assert private_fact in str(following.messages)
         else:
             assert old_public not in str(following.messages), (
                 "Covered public text stayed in the next normal Main"
@@ -397,7 +404,11 @@ async def test_ordinary_compact_keeps_its_goal_beside_real_waiting_work(
             evidence["observed_original_send"] = original_receipt
             assert original_receipt["status"] == "succeeded"
             read_requested = True
-            return _tool("read_chat", {"limit": 1}, "ordinary-followup-read")
+            # A small read: E can then bring the request below the trigger by
+            # covering the large send round the normal Main has observed.
+            return _tool(
+                "read_chat", {"limit": 1, "query": "explain fanout"}, "ordinary-followup-read"
+            )
         latest_read = next(
             item for item in request.messages if item.tool_call_id == "ordinary-followup-read"
         )
