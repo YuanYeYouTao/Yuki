@@ -12,9 +12,11 @@ resident selection step (``ResidentSelection.run``) calls, in order:
    resolve to an available fact and maps IDs to active successors, as a ``program``
    version. No model call, the signature is not touched.
 3. ``due`` / ``maintain``: a maintained profile whose available fact set signature
-   changed gets at most one structured ``MEMORY_DREAM`` call that rewrites the whole
-   profile. Public profiles are maintained for members of any group list and for
-   people with a private chat in the window; private profiles for the latter only.
+   changed gets one structured ``MEMORY_DREAM`` call that rewrites the whole profile;
+   like the Dream cluster call, a schema-invalid output gets one repair request
+   carrying the validation error, and every request counts as a model call. Public
+   profiles are maintained for members of any group list and for people with a private
+   chat in the window; private profiles for the latter only.
 
 A void output stores only the attempt time; an owner change during the call (version
 or lock) abandons the write and the profile stays due.
@@ -56,6 +58,7 @@ from yuki.memory.profiles import (
 )
 from yuki.memory.resident import evidence_origins, load_facts, private_evidence_visible
 from yuki.model_runtime.models import ModelTask
+from yuki.model_runtime.request_accounting import before_provider_request
 from yuki.model_runtime.structured import StructuredTaskError, StructuredTaskRunner
 from yuki.persistence.database import Database
 from yuki.persistence.models import (
@@ -474,11 +477,19 @@ class ProfileMaintenance:
         instruction = _INSTRUCTION.format(label=_LABELS[audience]) + (
             _PRIVATE_NOTE if audience == "private" else ""
         )
+        calls = 0
+
+        async def count() -> None:
+            nonlocal calls
+            calls += 1
+
+        token = before_provider_request.set(count)
         try:
             output = await self._decide(instruction, payload)
-            calls = 1
         except StructuredTaskError as exc:
-            raise ProfileRejected(exc.reason_code, model_calls=1) from exc
+            raise ProfileRejected(exc.reason_code, model_calls=calls) from exc
+        finally:
+            before_provider_request.reset(token)
         try:
             entries = validate_entries(
                 _resolve(output, {alias: fact_id for fact_id, alias in aliases.items()})
@@ -565,7 +576,7 @@ class ProfileMaintenance:
         return ProfileOutcome(due.person_id, due.audience, False, calls, code)
 
     async def _decide(self, instruction: str, payload: dict[str, Any]) -> ProfileOutput:
-        """One structured request (no validation retries), so one paid model call."""
+        """One structured call; a schema-invalid output is retried once with the error."""
         return await self._concurrency.run_llm(
             "memory-dream",
             lambda: self._structured.run(
@@ -575,6 +586,7 @@ class ProfileMaintenance:
                 output_model=ProfileOutput,
                 temperature=0.1,
                 max_output_tokens=self._settings.memory_dream_max_output_tokens,
+                validation_retries=1,
             ),
             translate_cancellation=False,
         )

@@ -365,7 +365,8 @@ class ResidentSelection:
         Group core sets go first (P1 order: watermark, then space ID), then the episode
         indexes (P2.1 §6: audiences that need their one comparison call take a slot),
         then profiles (P4 §8.2 order); at most ``memory_resident_max_selections_per_run``
-        owners are attempted, each with at most one model call.
+        owners are attempted, each with one structured call (a schema-invalid output is
+        retried once with the error, like the Dream cluster call).
         """
 
         activity = await self.profiles.activity(await self.profiles.window(run_public_id))
@@ -437,7 +438,7 @@ class ResidentSelection:
     async def select(
         self, owner: ResidentOwner, *, dry_run: bool = False
     ) -> ResidentSelectionOutcome:
-        """One owner's selection: at most one model call, then one short write."""
+        """One owner's selection: one structured call, then one short write."""
 
         if owner.kind == "self":
             raise ValueError("SELF principles are owner-written only")
@@ -535,6 +536,7 @@ class ResidentSelection:
                     output_model=ResidentSelectionOutput,
                     temperature=0.1,
                     max_output_tokens=self._settings.memory_dream_max_output_tokens,
+                    validation_retries=1,
                 ),
                 translate_cancellation=False,
             )

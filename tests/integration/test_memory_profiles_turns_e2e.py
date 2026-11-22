@@ -32,7 +32,9 @@ Failure cases are the §13 list, written before the implementation:
   H9     a superseded ID breaks the entry instead of mapping to the successor;
   H10/H11 eleven entries, 41 characters, an unknown alias, empty facts, a duplicate alias,
          a ``ref_N`` citation, an unknown section, a newline or an empty reason is stored
-         (or not recorded as an attempt with its code);
+         (or not recorded as an attempt with its code); a schema-invalid output is voided
+         without one repair request carrying the validation error, or a compliant repair
+         is not written, or the repair request is not counted as a model call;
   H12    an unchanged output writes a version, or a reorder does not;
   H13/H15/H16/H21/H26 member lists count Yuki, disabled or merged people wrongly, break
          ties by anything but root ID, clear a quiet group, overwrite a pinned list, or
@@ -450,6 +452,86 @@ async def test_h10_h11_h12_void_outputs_unchanged_and_reordered(scene, caplog):
         {
             "facts": scene.facts,
             "codes": list(cases),
+            "tables": await scene.profile_tables(tie_free=True),
+        },
+    )
+
+
+# ------------------------------------------------------------------------ H10 retry
+async def test_h10_schema_failure_is_retried_once_with_the_error(scene, caplog):
+    """A schema-invalid output (41 characters) gets one repair request carrying the
+    validation error, like the Dream cluster call: a compliant second output writes a
+    version (two paid calls); two invalid outputs void the profile, keep the old
+    version and still move the attempt time. Entries are never truncated."""
+    g1 = await scene.event("space:G", "B", "我周末爬山，平时写代码，喜欢猫", key="g1")
+    p1 = await scene.fact("p1", "B", "周末常去爬山", evidence=(g1,))
+    store, person = scene.profiles, scene.persons["B"]
+    scene.profile_responder = lambda payload, request: profile_reply(
+        [("兴趣", "周末常去爬山", [scene.offered(payload)[p1]])]
+    )
+    await scene.dream_run()
+    first = await store.load(person, "public")
+    assert first.current_version == 1
+
+    def selection_calls() -> list[int]:
+        return [
+            int(record.getMessage().split("model_calls=", 1)[1].split()[0])
+            for record in caplog.records
+            if "memory_resident_selection_finished" in record.getMessage()
+        ]
+
+    caplog.set_level(logging.INFO)
+    p2 = await scene.fact("p2", "B", "平时写代码", evidence=(g1,))
+    replies = iter(
+        [
+            lambda o: profile_reply([("兴趣", "长" * 41, [o[p1]])]),
+            lambda o: profile_reply(
+                [("兴趣", "周末常去爬山", [o[p1]]), (None, "平时写代码", [o[p2]])]
+            ),
+        ]
+    )
+    scene.profile_responder = lambda payload, request: next(replies)(scene.offered(payload))
+    start = len(scene.profile_requests)
+    caplog.clear()
+    await scene.dream_run()
+    recovered = await store.load(person, "public")
+    recovered_requests = scene.profile_requests[start:]
+    recovered_calls = selection_calls()
+    recovered_logs = [record.getMessage() for record in caplog.records]
+
+    await scene.fact("p3", "B", "喜欢猫", evidence=(g1,))
+    scene.profile_responder = lambda payload, request: profile_reply(
+        [("兴趣", "猫" * 41, [scene.offered(payload)[p1]])]
+    )
+    start = len(scene.profile_requests)
+    caplog.clear()
+    await scene.dream_run()
+    voided = await store.load(person, "public")
+    voided_requests = scene.profile_requests[start:]
+    voided_calls = selection_calls()
+    voided_logs = [record.getMessage() for record in caplog.records]
+
+    assert len(recovered_requests) == 2 and recovered_calls == [2]
+    repair = json.loads(recovered_requests[-1].messages[-1].content)["repair_request"]
+    assert repair["reason_code"] == "schema_validation"
+    assert "string_too_long" in repair["detail"] and "max_length=40" in repair["detail"]
+    assert any("structured_task_validation_recovered" in text for text in recovered_logs)
+    assert not any("memory_profile_rejected" in text for text in recovered_logs)
+    assert recovered.current_version == 2
+    assert [entry.text for entry in recovered.entries] == ["周末常去爬山", "平时写代码"]
+    assert recovered.attempted_at > first.attempted_at
+    assert len(voided_requests) == 2 and voided_calls == [2]
+    assert any("memory_profile_rejected" in text for text in voided_logs)
+    assert voided.current_version == 2 and voided.entries == recovered.entries
+    assert voided.considered_signature == recovered.considered_signature
+    assert voided.attempted_at > recovered.attempted_at
+    scene.write(
+        "H10-retry",
+        {
+            "facts": scene.facts,
+            "repair_reason": repair["reason_code"],
+            "recovered_calls": recovered_calls,
+            "voided_calls": voided_calls,
             "tables": await scene.profile_tables(tie_free=True),
         },
     )
