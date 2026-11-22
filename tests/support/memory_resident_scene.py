@@ -138,9 +138,7 @@ class ResidentScene:
         self._sequence = 0
 
     # ------------------------------------------------------------------ setup
-    async def build(
-        self, *, resident_enabled: bool = True, work_enabled: bool = False, **settings: Any
-    ) -> ResidentScene:
+    async def build(self, *, work_enabled: bool = False, **settings: Any) -> ResidentScene:
         from tests.integration.test_execution_continuity_e2e import ScriptedProvider
 
         self.provider = ScriptedProvider(self._respond)
@@ -189,7 +187,6 @@ class ResidentScene:
         )
         assert await self.env.router.cas_takeover_person(self.persons["A"]) == "taken"
         install_resident(self.chat, self.database)
-        await self.set_resident_enabled(resident_enabled)
         # Every fixture conversation exists before facts point at its events.
         for name, scope, sender in (
             ("private:A", ConversationScope.private(BOT, QQ["A"]), "A"),
@@ -214,19 +211,6 @@ class ResidentScene:
             self.dream_requests.append(request)
             return self.dream_responder(request)
         return self.responder(request)
-
-    async def set_resident_enabled(self, enabled: bool) -> None:
-        """Toggle ``runtime.memory.resident_enabled`` through the real config owner."""
-        change = await self.chat._runtime_config.set_override(
-            "memory.resident_enabled",
-            enabled,
-            scope_type="global",
-            scope_id="",
-            actor_user_id=QQ["A"],
-            trigger_message_id=f"resident-e2e-{enabled}-{self._next()}",
-        )
-        assert change.success, change
-        assert (await self.runtime()).memory.resident_enabled is enabled
 
     async def runtime(self):
         return await self.chat._runtime_config.snapshot()
@@ -716,27 +700,6 @@ class ResidentScene:
         await dream.worker._drain_active()
         return await dream.repository.get_run(run.public_id)
 
-    async def dream_selection_ran(self) -> bool:
-        """One Dream run; True when its selection step looked at a fresh candidate."""
-        c1 = await self.event("private:C", "C", f"我最近在学画画 {self._next()}")
-        fresh = await self.fact(f"fresh_{c1}", "C", f"最近在学画画 {c1}", evidence=(c1,))
-        self.selection_responder = lambda request: selection_reply(
-            [
-                alias
-                for alias, fact_id in selection_aliases(request, self.contents).items()
-                if fact_id == fresh
-            ]
-        )
-        before = len(self.selection_requests)
-        try:
-            await self.dream_run()
-        finally:
-            self.selection_responder = None
-        rows = [row for row in await self.table() if row["owner"] == "person:C"]
-        ran = len(self.selection_requests) > before
-        assert ran == bool(rows and rows[0]["considered_through_fact_id"] >= fresh)
-        return ran
-
     async def contents_of(self, fact_ids: list[int]) -> dict[int, str]:
         async with self.database.read_session() as reader:
             rows = await reader.execute(
@@ -846,14 +809,13 @@ def build_selection(scene: ResidentScene, models: Any):
 
 
 def build_dream_worker(scene: ResidentScene, repository: Any, service: Any, selection: Any):
-    """The Dream worker with the selection step and the runtime flag wired in (§15 #22)."""
+    """The Dream worker with the selection step wired in (§15 #22)."""
     from yuki.memory.dream.worker import DreamWorker
 
     return DreamWorker(
         settings=scene.settings,
         repository=repository,
         service=service,
-        runtime_config=scene.chat._runtime_config,
         resident=selection,
     )
 

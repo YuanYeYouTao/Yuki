@@ -4,7 +4,7 @@
 
 ```bash
 yuki memory audit --database-url <database-url>
-yuki memory stats --database-url <database-url> --hours 24
+yuki memory stats --database-url <database-url> --hours 24   # 含按周的自动提取新增与当次任务口径条数
 yuki memory hygiene scan --database-url <database-url>
 yuki memory hygiene apply <fingerprint> --database-url <database-url>
 yuki memory hygiene rebuild-fts <fingerprint> --database-url <database-url>
@@ -48,9 +48,8 @@ Rebuild 已提交事实与 proposal 回执共同核对，确认已提交不再�
 
 ## 常驻记忆核心集
 
-运行时热配置 `memory.resident_enabled`（全局，默认关闭）同时控制两件事：每轮 system 消息末尾是否渲染常驻记忆段，
-Dream 运行处理完全部簇后是否对到期主人做核心集挑选。关闭后下一轮起生效，表与事实都保留，不需要重启。
-下面的命令都不看这个开关；默认使用当前配置的数据库，也可加 `--database-url`。
+常驻记忆直接生效、无开关：每轮 system 消息末尾渲染常驻记忆段，Dream 运行处理完全部簇后对到期主人做核心集挑选。
+下面的命令默认使用当前配置的数据库，也可加 `--database-url`。
 
 ```bash
 yuki memory resident show --person <person-id> [--content]   # 或 --space <space-id> / --self
@@ -78,9 +77,8 @@ python scripts/verify_resident_check.py --database <sqlite-file> --check check.j
 
 ## 经历目录
 
-运行时热配置 `memory.episode_index_enabled`（全局，默认关闭）只控制每轮是否渲染经历目录与今日新经历；
-经历标题由写经历的模型调用照常写入。下面的命令都不看这个开关；默认使用当前配置的数据库，也可加
-`--database-url`。
+经历目录直接生效、无开关：每轮渲染经历目录与今日新经历，经历标题由写经历的模型调用写入。下面的命令
+默认使用当前配置的数据库，也可加 `--database-url`。
 
 ```bash
 yuki memory episodes render --conversation <conversation-id> [--through-fact-id N]
@@ -100,5 +98,42 @@ python scripts/verify_episode_check.py --database <sqlite-file> --check episodes
 - `--dry-run`、`render` 与 `set-title` 的输出含记忆派生内容，只在部署环境内查看，不贴进仓库或 issue。
 - `check` 只对全部会话各渲染两次，输出列出的 fact ID 和不稳定的会话；可见范围的独立复核在
   `scripts/verify_episode_check.py`，违反条数应为 0。
+
+## 提取收紧与当次任务指令清理
+
+自动提取与 Rebuild 只有一份合同 v8（`memory-v2-extraction-v8` / schema 8，直接生效、无开关）：当次任务指令
+不提取、同一批同义只出一条，提取输出不带 `category`，写入时 `category` 取 kind（fact / preference / episode），
+经历的 `title` 照常给出。Rebuild 运行在规划时把合同版本记进 `extraction_fingerprint`。合同不影响主 Agent
+提示词、恢复哈希与工具清单，存量事实的 `category` 不改。
+
+Dream 每次运行的簇上限 `MEMORY_DREAM_MAX_CLUSTERS_PER_RUN` 默认 24，与调用预算
+`MEMORY_DREAM_MAX_MODEL_CALLS_PER_RUN` 相同（每簇至少一次调用），P1 挑选步骤另计。积压看
+`DreamHealth.unreviewed_facts`：active / 争议、且没有 checkpoint 或 checkpoint 签名已变的事实数。
+需要更快消化时可临时调高这两个配置几天再改回。
+
+存量清理用同一条提取规则分类，所有者审阅计划后才失效，可撤销；不按时间、重要度或使用次数选：
+
+```bash
+yuki memory hygiene task-scoped scan --output plan.json [--limit N]
+yuki memory hygiene task-scoped show --plan plan.json [--content]   # --content 只在部署环境内使用
+yuki memory hygiene task-scoped apply --plan plan.json
+yuki memory hygiene task-scoped revert --plan plan.json
+```
+
+- `scan` 只读：候选是 active、`source_type=automatic`、非经历、Person / PersonGroup / Group、
+  `authority` 不是 explicit 的事实，按 fact ID 升序每批 40 条交给 `memory_dream` 模型路由（CLI 进程内
+  装配，与 `resident select` 相同；结构化输出只引用 `item_N` 别名）。明确事实、SELF 事实与经历不进候选。
+  计划文件只有被判为当次任务指令的 fact ID、Dream `fact_signature` 与扫描时间，没有正文；日志只有 ID 与计数。
+  每批在读会话里读完再调模型，不持有写事务。
+- 所有者可直接删掉计划里不想失效的条目；`apply` 只认文件里的 ID。任一条已不 active 或签名变了，
+  整批拒绝（退出码 1，列出变化的 fact ID），需要重新 `scan`；全部一致时逐条以
+  `administrator_invalidated` 失效，每条一个短写事务，写时再核一次签名。
+- `revert` 只恢复计划里仍以 `administrator_invalidated` 失效的事实；用户撤回等其他原因失效的不动。
+  单条也可用管理入口的 `restore_fact`。
+- 被清理的事实若在常驻核心集里，下一轮渲染自然不再出现。
+
+当前合同的离线重放（不写库，调用生产提取模型）：
+`python scripts/replay_extraction_tightening.py --source <sqlite-file> --events sets.json --self-name <角色名> --output replay.json`。
+源库只读打开并备份到临时文件，结果只有事件 ID、claim 条数、kind 与正则口径计数。
 
 当前合同见 [Memory](../architecture/memory-v2.md)与[来源审计](../architecture/memory-v2-quality.md)。

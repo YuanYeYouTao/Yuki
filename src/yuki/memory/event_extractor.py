@@ -73,8 +73,18 @@ source_event_id 绑定真实来源；正文可以记录明确的人物姓名、�
 不输出数据库状态、authority 或隐藏推理。
 """
 
-EXTRACTION_INSTRUCTION = _EXTRACTION_INSTRUCTION + _VALUE_INSTRUCTION
-BATCH_EXTRACTION_INSTRUCTION = _BATCH_EXTRACTION_INSTRUCTION + _VALUE_INSTRUCTION
+# The task-scope rule; the stock clean-up scan classifies existing facts by the same text.
+TASK_SCOPE_RULE = (
+    "只为当前这件事给出的要求、决定或安排——指向某个 PR、issue、分支、文件、任务书、"
+    "当次交付物或当次会话——是当次任务指令，不提取；它们留在会话历史与任务记录里。\n"
+    "对方表明以后都适用、或描述的是一般做事方式的，才作为长期偏好提取。\n"
+)
+_TASK_SCOPE_INSTRUCTION = TASK_SCOPE_RULE + "同一批里同一个意思只输出一条 claim。\n"
+
+EXTRACTION_INSTRUCTION = _EXTRACTION_INSTRUCTION + _VALUE_INSTRUCTION + _TASK_SCOPE_INSTRUCTION
+BATCH_EXTRACTION_INSTRUCTION = (
+    _BATCH_EXTRACTION_INSTRUCTION + _VALUE_INSTRUCTION + _TASK_SCOPE_INSTRUCTION
+)
 
 
 @dataclass(frozen=True, slots=True)

@@ -210,7 +210,7 @@ class Settings(BaseSettings):
     memory_dream_schedule_hour: int = Field(default=5, ge=0, le=23)
     memory_dream_timezone: str = "Asia/Shanghai"
     memory_dream_poll_seconds: float = Field(default=60.0, gt=0)
-    memory_dream_max_clusters_per_run: int = Field(default=12, gt=0)
+    memory_dream_max_clusters_per_run: int = Field(default=24, gt=0)
     memory_dream_max_model_calls_per_run: int = Field(default=24, gt=0)
     memory_dream_similarity_threshold: float = Field(default=0.70, ge=-1, le=1)
     memory_dream_max_cluster_size: int = Field(default=6, gt=0)
@@ -221,9 +221,7 @@ class Settings(BaseSettings):
     memory_maintenance_enabled: bool = True
     memory_maintenance_interval_seconds: float = 300.0
     memory_maintenance_batch_limit: int = 100
-    memory_resident_enabled: bool = False
     memory_resident_max_selections_per_run: int = Field(default=12, gt=0)
-    memory_episode_index_enabled: bool = False
 
     memory_embedding_enabled: bool = True
     memory_embedding_provider: str = "qwen_dashscope"

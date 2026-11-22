@@ -9,7 +9,7 @@ import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import asdict
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -44,6 +44,12 @@ from yuki.memory.episode_index import EpisodeIndex
 from yuki.memory.episode_titles import EpisodeTitleRejected, EpisodeTitles, set_episode_title
 from yuki.memory.quality.audit import MemoryProductionQualityAudit
 from yuki.memory.quality.hygiene import MemoryProvenanceHygiene
+from yuki.memory.quality.task_scoped import (
+    TaskScopedHygiene,
+    TaskScopedPlan,
+    TaskScopedScanRejected,
+    automatic_fact_weekly_stats,
+)
 from yuki.memory.repository import MemoryJobRepository
 from yuki.memory.resident import (
     ResidentMemory,
@@ -227,8 +233,37 @@ def _add_memory_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentP
     rebuild_fts = hygiene_commands.add_parser("rebuild-fts", help="在独立维护窗口全量重建 FTS 索引")
     rebuild_fts.add_argument("fingerprint")
     rebuild_fts.add_argument("--database-url", required=True)
+    _add_task_scoped_parser(hygiene_commands)
     _add_resident_parser(commands)
     _add_episodes_parser(commands)
+
+
+def _add_task_scoped_parser(
+    commands: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
+    task_scoped = commands.add_parser(
+        "task-scoped",
+        help="存量当次任务指令：scan 只读出计划（只有 ID 与签名），所有者审阅后 apply，可 revert",
+    )
+    task_commands = task_scoped.add_subparsers(dest="task_scoped_command", required=True)
+    scan = task_commands.add_parser(
+        "scan", help="用 memory_dream 模型路由按提取规则分类，写出计划文件；不写库"
+    )
+    scan.add_argument("--output", type=Path, required=True)
+    scan.add_argument("--limit", type=int, help="最多分类这么多条候选（按 fact ID 升序）")
+    scan.add_argument("--database-url", help="默认使用当前配置的数据库")
+    for name, text in (
+        ("show", "列出计划里的 fact ID、主人与 kind"),
+        ("apply", "全部事实仍 active 且签名一致才逐条失效（administrator_invalidated）"),
+        ("revert", "恢复计划里仍以 administrator_invalidated 失效的事实"),
+    ):
+        parser = task_commands.add_parser(name, help=text)
+        parser.add_argument("--plan", type=Path, required=True)
+        parser.add_argument("--database-url", help="默认使用当前配置的数据库")
+        if name == "show":
+            parser.add_argument(
+                "--content", action="store_true", help="同时打印正文；只在部署环境内使用"
+            )
 
 
 def _add_resident_parser(
@@ -452,11 +487,16 @@ async def _memory_command(settings: Settings, args: argparse.Namespace) -> int:
                     max_characters=settings.memory_batch_max_characters,
                     max_wait_seconds=settings.memory_batch_max_wait_seconds,
                 ),
+                "automatic_facts_by_week": await automatic_fact_weekly_stats(
+                    database, since=datetime.now(UTC) - timedelta(hours=float(args.hours))
+                ),
             }
             print(json.dumps(stats_report, ensure_ascii=False, indent=2))
             return 0
         finally:
             await database.close()
+    if action == "hygiene" and args.hygiene_command == "task-scoped":
+        return await _task_scoped_command(settings, args)
     if action == "hygiene":
         database = Database(str(args.database_url))
         try:
@@ -479,6 +519,40 @@ async def _memory_command(settings: Settings, args: argparse.Namespace) -> int:
     if action == "episodes":
         return await _episodes_command(settings, args)
     return 1
+
+
+async def _task_scoped_command(settings: Settings, args: argparse.Namespace) -> int:
+    action = str(args.task_scoped_command)
+    database = Database(str(args.database_url or settings.database_url))
+    hygiene = TaskScopedHygiene(database)
+    try:
+        payload: dict[str, object]
+        code = 0
+        if action == "scan":
+            try:
+                async with _cli_models(settings, database) as (_active, models):
+                    plan = await hygiene.scan(
+                        models=models, concurrency=ConcurrencyManager(), limit=args.limit
+                    )
+            except (StructuredTaskError, TaskScopedScanRejected) as exc:
+                print(json.dumps({"error": repr(exc)}, ensure_ascii=False))
+                return 1
+            plan.write(Path(args.output))
+            payload = {"output": str(args.output), "planned": len(plan.facts)}
+        else:
+            plan = TaskScopedPlan.read(Path(args.plan))
+            if action == "show":
+                payload = {"facts": await hygiene.show(plan, content=bool(args.content))}
+            elif action == "apply":
+                applied = await hygiene.apply(plan)
+                payload = applied.payload()
+                code = int(bool(applied.rejected))
+            else:
+                payload = (await hygiene.revert(plan)).payload()
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return code
+    finally:
+        await database.close()
 
 
 async def _resident_owner(database: Database, args: argparse.Namespace) -> ResidentOwner:
@@ -636,7 +710,7 @@ async def _resident_select(
 ) -> ResidentSelectionOutcome:
     """Run one selection in this process with the bot's memory_dream model route.
 
-    It needs no running bot and ignores ``memory.resident_enabled``.
+    It needs no running bot.
     """
 
     async with _cli_models(settings, database) as (active, executor):
@@ -655,8 +729,8 @@ async def _cli_models(
 ) -> AsyncIterator[tuple[Settings, ModelExecutor]]:
     """The model runtime the bot builds at startup, assembled in this CLI process.
 
-    Environment, model profile files and activated restart overrides apply;
-    invocations are recorded in the shared database.
+    Environment, model profile files and activated restart overrides apply; model
+    invocations are recorded in the shared database. No running bot is needed.
     """
 
     runtime_config = RuntimeConfigService(settings=settings, database=database)

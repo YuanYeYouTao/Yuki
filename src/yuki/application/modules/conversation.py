@@ -211,7 +211,6 @@ class ConversationModule:
                 models=models,
                 concurrency=self._concurrency,
             ),
-            runtime_config=self._runtime_config,
             resident=ResidentSelection(
                 settings=settings,
                 database=persistence.database,

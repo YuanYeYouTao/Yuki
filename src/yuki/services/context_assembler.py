@@ -302,10 +302,10 @@ class ContextAssembler:
                 turn=turn,
                 runtime=runtime,
             )
-            return await self._with_memory_segments(context, turn=turn, runtime=runtime)
+            return await self._with_memory_segments(context, turn=turn)
         if inbound is None and profile is None:
             context = await self._assemble_activation(identity=identity, turn=turn, content=content)
-            return await self._with_memory_segments(context, turn=turn, runtime=runtime)
+            return await self._with_memory_segments(context, turn=turn)
         if inbound is None or profile is None:
             raise ConversationCoverageError("message turn requires a real inbound actor")
         if turn.trigger_event_id is None:
@@ -330,14 +330,13 @@ class ContextAssembler:
             current_event=current,
         )
         await self._validate_history_source(snapshot, current)
-        return await self._with_memory_segments(context, turn=turn, runtime=runtime)
+        return await self._with_memory_segments(context, turn=turn)
 
     async def _with_memory_segments(
         self,
         context: AssembledContext,
         *,
         turn: ConversationTurnSnapshot,
-        runtime: RuntimeConfigSnapshot,
     ) -> AssembledContext:
         """Attach the resident segment and the episode index of this turn's Conversation.
 
@@ -346,7 +345,7 @@ class ContextAssembler:
         failure drops only the failing one for this turn and the turn proceeds. The
         renderers themselves have no fallback anywhere else.
         """
-        if self._resident is not None and runtime.memory.resident_enabled:
+        if self._resident is not None:
             try:
                 resident = await self._resident.render_conversation(turn.conversation_id)
             except Exception as exc:
@@ -357,7 +356,7 @@ class ContextAssembler:
                 )
             else:
                 context = replace(context, resident_text=resident.text)
-        if self._episodes is not None and runtime.memory.episode_index_enabled:
+        if self._episodes is not None:
             try:
                 episodes = await self._episodes.render_conversation(turn.conversation_id)
             except Exception as exc:

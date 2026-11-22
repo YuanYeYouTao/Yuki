@@ -173,6 +173,9 @@ jobs:
           python3 -c "import json, sys;
           d = json.load(open('test-results/watchdog-failed-work-e2e.json'));
           print(d['scenarios_passed']); sys.exit(0 if d['all_scenarios_passed'] else 1)"
+      - name: Memory extraction tightening E2E artifacts (X1, X3-X5, X8-X16)
+        if: matrix.suite == 'integration'
+        run: test "$(ls test-results/memory-extraction-tightening/X*.json | wc -l)" -eq 13
       - uses: actions/upload-artifact@v4
         if: always()
         with:

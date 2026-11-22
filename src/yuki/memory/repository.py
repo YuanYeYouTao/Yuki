@@ -769,55 +769,6 @@ class MemoryFactRepository:
         projected = await project_memory_fact_rows(session, rows)
         return projected[0] if projected else None
 
-    async def list_conflict_candidates(
-        self,
-        fact: MemoryFactCreate,
-        *,
-        normalized_content: str,
-        limit: int,
-        session: AsyncSession | None = None,
-    ) -> tuple[MemoryFact, ...]:
-        """Return bounded same-target candidates; never widens an identity scope."""
-
-        if session is None:
-            async with self._database.read_session() as owned:
-                return await self.list_conflict_candidates(
-                    fact,
-                    normalized_content=normalized_content,
-                    limit=limit,
-                    session=owned,
-                )
-        rows = await self._execute_facts_with_count(
-            session,
-            [
-                MemoryFactModel.scope_type == fact.scope_type.value,
-                *(await self._query_identity_conditions(session, fact)),
-                MemoryFactModel.status.in_(
-                    (
-                        MemoryStatus.ACTIVE.value,
-                        MemoryStatus.CONTESTED.value,
-                    )
-                ),
-                MemoryFactModel.review_state != "quarantined",
-                or_(
-                    MemoryFactModel.memory_key == fact.memory_key,
-                    MemoryFactModel.normalized_content == normalized_content,
-                    and_(
-                        MemoryFactModel.category == fact.category,
-                        MemoryFactModel.kind == fact.kind.value,
-                    ),
-                ),
-            ],
-            order_by=(
-                (MemoryFactModel.memory_key == fact.memory_key).desc(),
-                (MemoryFactModel.normalized_content == normalized_content).desc(),
-                MemoryFactModel.updated_at.desc(),
-                MemoryFactModel.id.asc(),
-            ),
-            limit=max(1, limit),
-        )
-        return await project_memory_fact_rows(session, rows)
-
     async def list_mutation_locator_candidates(
         self,
         target: MemoryFactQuery,

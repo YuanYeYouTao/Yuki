@@ -10,7 +10,6 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 
-from yuki.admin.config_service import RuntimeConfigService
 from yuki.config import Settings
 from yuki.memory.dream.db_models import (
     MemoryDreamClusterModel,
@@ -39,13 +38,11 @@ class DreamWorker:
         settings: Settings,
         repository: DreamRepository,
         service: DreamService,
-        runtime_config: RuntimeConfigService,
         resident: ResidentSelection,
     ) -> None:
         self._settings = settings
         self._repository = repository
         self._service = service
-        self._runtime_config = runtime_config
         self._resident = resident
         self._timezone = ZoneInfo(settings.memory_dream_timezone)
         self._stop = asyncio.Event()
@@ -233,8 +230,6 @@ class DreamWorker:
     async def _select_resident(self, run_public_id: str) -> None:
         """Post-batch core-set selection; it never changes this run's outcome."""
 
-        if not (await self._runtime_config.snapshot()).memory.resident_enabled:
-            return
         try:
             await self._resident.run(run_public_id)
         except Exception as exc:

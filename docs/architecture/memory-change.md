@@ -26,6 +26,7 @@ current_speaker、named_member、member_{id}、replied_message_author、candidat
 `memory_tool_receipts.result_excerpt` 子串核验。`memory_key` 与 `category` 由 kind 生成（SELF 为
 `self_<kind>`），只作检索标签。`save_memory(kind=episode)` 不带标题（`title` 为空，经历目录显示
 “（未命名经历）”，可由所有者 `yuki memory episodes set-title` 补写）；correct 与元数据新版本沿用原标题。
+自动提取同样不让模型给 `category`，写入取 kind 的值。存量事实的 `category` 不改。
 restore、contest、merge、reassign、update_metadata、selector、
 expected_fact_state、valid_from／until、confidence、request_basis 不再提供给模型。
 

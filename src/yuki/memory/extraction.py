@@ -7,7 +7,7 @@ import json
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, computed_field
 
 from yuki.domain.conversations import ScopeType
 from yuki.memory.enums import (
@@ -18,11 +18,11 @@ from yuki.memory.enums import (
 )
 from yuki.persistence.repository_records import EventRecord
 
-EXTRACTION_PROMPT_VERSION = "memory-v2-extraction-v7"
-EXTRACTION_SCHEMA_VERSION = "7"
+# v8: task-scoped instructions are not extracted, one claim per meaning in a batch, and
+# ``category`` is generated from ``kind`` instead of asked for.
+EXTRACTION_PROMPT_VERSION = "memory-v2-extraction-v8"
+EXTRACTION_SCHEMA_VERSION = "8"
 SOURCE_ADAPTATION_VERSION = "3"
-BATCH_EXTRACTION_PROMPT_VERSION = "memory-v2-batch-extraction-v6"
-BATCH_EXTRACTION_SCHEMA_VERSION = "6"
 
 type ExtractionScope = Literal[
     MemoryScopeType.PERSON, MemoryScopeType.PERSON_GROUP, MemoryScopeType.GROUP
@@ -58,13 +58,14 @@ class MemoryExtractionInput(_ExtractionModel):
     conversation_context: tuple[ConversationContextEvent, ...] = ()
 
 
+# No docstring: it would become the schema description sent to the model. A
+# ``category`` from a model is ignored; the computed one below is the kind.
 class MemoryClaim(_ExtractionModel):
     subject_ref: str = Field(min_length=1)
     subject_name: str | None = Field(default=None, min_length=1)
     scope_type: ExtractionScope
     kind: MemoryKind = MemoryKind.FACT
     memory_key: str = Field(min_length=1)
-    category: str = Field(min_length=1)
     content: str = Field(min_length=1)
     title: str | None = Field(
         default=None,
@@ -77,6 +78,13 @@ class MemoryClaim(_ExtractionModel):
     temporal_mode: MemoryTemporalMode = MemoryTemporalMode.PERSISTENT
     valid_from: str | None = None
     valid_until: str | None = None
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def category(self) -> str:
+        """The kind, as for ``save_memory``; not part of the output schema."""
+
+        return self.kind.value
 
 
 ExtractedMemoryClaim = MemoryClaim
