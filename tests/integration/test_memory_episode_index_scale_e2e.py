@@ -508,8 +508,9 @@ async def test_scale_paths(scene):
     first_started = time.perf_counter()
     await scene.advance()
     first_run_seconds = time.perf_counter() - first_started
+    today: list[int] = []
     for index in range(40):
-        await memories.remember(
+        created = await memories.remember(
             MemoryFactCreate(
                 memory_key=f"scale-new:{index}",
                 category="scale",
@@ -523,6 +524,19 @@ async def test_scale_paths(scene):
                 authority=MemoryAuthority.GROUP_REPORT,
             )
         )
+        today.append(created.id)
+    with sqlite3.connect(path) as connection:
+        connection.executemany(
+            "INSERT OR IGNORE INTO memory_evidence (fact_id, event_id, source_speaker_user_id,"
+            " relation, confidence, authority, excerpt, created_at) VALUES (?, ?, 'scale',"
+            " 'group_statement', 1.0, 'group_report', '虚构摘录', datetime('now'))",
+            [
+                (fact_id, event_id)
+                for fact_id in today
+                for event_id in rng.sample(by_group["20001"], EVIDENCE_PER_EPISODE)
+            ],
+        )
+        connection.commit()
     from tests.support.model_executor import InjectedModelExecutor
 
     from yuki.memory.episode_selection import EpisodeSelection
@@ -558,6 +572,14 @@ async def test_scale_paths(scene):
         )
         if len(rendered.memorable_fact_ids) == 10 and len(rendered.recent_fact_ids) == 20:
             main_conversation = conversation_id
+            renders[-1]["main_group"] = True
+    # One nightly step on the same day's writes: the main group's 40 new episodes push
+    # 40 leavers into one comparison call (scripted model), then one short write.
+    requests_before = len(scene.memorable_requests)
+    nightly_started = time.perf_counter()
+    with recorded(database) as nightly_statements:
+        outcome = await selection.run("scale", slots=24)
+    nightly_ms = (time.perf_counter() - nightly_started) * 1000
     render_plans = plans(path, render_sql)
     prep_plans = plans(path, prep_sql)
     status_plans = plans(path, status_sql)
@@ -592,6 +614,13 @@ async def test_scale_paths(scene):
             "leavers": sum(len(item.leavers) for item in prepared.audiences),
         },
         "status": {"ms": round(status_ms, 2), "statements": len(status_sql)},
+        "nightly_run": {
+            "ms_including_scripted_call": round(nightly_ms, 2),
+            "statements": len(business(nightly_statements)),
+            "comparison_calls": len(scene.memorable_requests) - requests_before,
+            "written": outcome.written,
+        },
+        "main_group_render": next((item for item in renders if item.get("main_group")), None),
         "p2_control_main_group": _p2_control(path, group_space["20001"]),
         "plans": {"render": render_plans, "prepare": prep_plans, "status": status_plans},
         "month_recount_statements_not_in_render": len(month_sql),
@@ -604,3 +633,6 @@ async def test_scale_paths(scene):
     assert total_events >= EVENTS * 0.9
     assert scans == [], json.dumps(scans, ensure_ascii=False, indent=2)
     assert len(result["render"]["statements"]) <= 2  # group vs private (root lookup)
+    assert main_conversation is not None
+    assert result["nightly_run"]["comparison_calls"] == 1 and outcome.written == 1
+    assert result["prepare"]["leavers"] == 40

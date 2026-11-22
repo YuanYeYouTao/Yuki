@@ -608,12 +608,30 @@ async def test_k08_cap_leaves_unreached_rows_untouched(database, tmp_path):
         else:
             assert after[key] == before[key], key
             assert list(renders[key].recent_fact_ids) == new[key], key
+    # Ties on ``through`` fall to the owner ID (a random UUID): record what holds for
+    # whichever audience was served, so reruns stay byte-identical.
     scene.write_memorable(
         "K08",
         {
-            "processed": first,
-            "rows": after,
-            "renders": {key: render_record(value) for key, value in renders.items()},
+            "comparison_calls": calls,
+            "core_set_calls": len(scene.selection_requests) - core_requests,
+            "served": [
+                {
+                    "revision_delta": after[first]["revision"] - before[first]["revision"],
+                    "tail": len(renders[first].recent_fact_ids),
+                }
+            ],
+            "untouched": sorted(
+                [
+                    {
+                        "row_unchanged": after[key] == before[key],
+                        "tail": len(renders[key].recent_fact_ids),
+                    }
+                    for key in before
+                    if key != first
+                ],
+                key=lambda item: json.dumps(item, sort_keys=True),
+            ),
         },
     )
 
