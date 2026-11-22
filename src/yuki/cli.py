@@ -13,6 +13,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 from alembic import command
 from alembic.config import Config
@@ -86,6 +87,7 @@ from yuki.memory.resident_selection import (
     ResidentSelectionRejected,
     owner_label,
 )
+from yuki.memory.self_reflection.reporting import self_reflection_weekly_stats
 from yuki.model_runtime import (
     ModelInvocationRepository,
     ModelProfileCatalog,
@@ -571,6 +573,7 @@ async def _memory_command(settings: Settings, args: argparse.Namespace) -> int:
         if not 0 < args.hours <= 24 * 90:
             raise ValueError("hours must be within (0, 2160]")
         database = Database(str(args.database_url))
+        local_now = datetime.now(ZoneInfo(settings.memory_self_reflection_timezone))
         try:
             stats_report = {
                 "generated_at": datetime.now(UTC).isoformat(),
@@ -582,6 +585,11 @@ async def _memory_command(settings: Settings, args: argparse.Namespace) -> int:
                 ),
                 "automatic_facts_by_week": await automatic_fact_weekly_stats(
                     database, since=datetime.now(UTC) - timedelta(hours=float(args.hours))
+                ),
+                "self_reflection_by_week": await self_reflection_weekly_stats(
+                    database,
+                    since=(local_now - timedelta(hours=float(args.hours))).date(),
+                    until=local_now.date(),
                 ),
             }
             print(json.dumps(stats_report, ensure_ascii=False, indent=2))

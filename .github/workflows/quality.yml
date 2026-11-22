@@ -182,6 +182,9 @@ jobs:
       - name: Memory extraction tightening E2E artifacts (X1, X3-X5, X8-X16)
         if: matrix.suite == 'integration'
         run: test "$(ls test-results/memory-extraction-tightening/X*.json | wc -l)" -eq 13
+      - name: Self-reflection one-episode E2E artifacts (P2.1 §8, §14.1)
+        if: matrix.suite == 'integration'
+        run: test "$(ls test-results/self-reflection-one-episode/*.json | wc -l)" -eq 2
       - uses: actions/upload-artifact@v4
         if: always()
         with:
