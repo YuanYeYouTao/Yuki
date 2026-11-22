@@ -790,9 +790,19 @@ class ResidentScene:
         return write_artifact(case, payload, self.labels())
 
 
+def system_text(request: Any) -> str:
+    """The system message: the stable prefix whose last part is the resident segment."""
+    return "\n".join(
+        str(message.content or "") for message in request.messages if message.role == "system"
+    )
+
+
 def capture(requests: list[Any], result: Any = None) -> Turn:
     current = str(requests[0].messages[-1].content or "")
-    segment = resident_segment(current)
+    # The resident segment lives at the end of the system message, never in the
+    # current message (stable prefix placement).
+    assert HEADER not in current, "the resident segment must not be in the current message"
+    segment = resident_segment(system_text(requests[0]))
     return Turn(
         requests=requests,
         current=current,

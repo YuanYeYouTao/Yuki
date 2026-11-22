@@ -115,8 +115,10 @@ Embedding 请求、缓存命中、错误和已知 usage 分别记录，缺失的
 
 ## 常驻记忆段
 
-每一轮主 Agent 请求的当前消息开头可以带一段确定性渲染的“常驻记忆”，放在其余回合资料之前
-（`memory.resident`，TURN 贡献，不进 system 消息、不进恢复合同哈希、不新增缓存断点）。
+每一轮主 Agent 请求的 system 消息末尾可以带一段确定性渲染的“常驻记忆”（`memory.resident`，
+静态贡献，排在 SOUL、记忆依据规则与核心合同之后）。同一会话内它最多随每日挑选变化一次，因此进入
+会话的缓存前缀；它不在 `invariant_contributions()` 里，恢复合同哈希不含它；不新增缓存断点。
+内容变化时，该会话的历史缓存失效一次。
 渲染由 `memory/resident.py` 的 `ResidentMemory` 完成：只用一个只读会话，不调用模型，不写库；
 运行时开关 `memory.resident_enabled` 关闭时不渲染。子 Agent 与插件轮不带常驻段。
 
