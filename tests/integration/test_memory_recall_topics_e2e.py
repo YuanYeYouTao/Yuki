@@ -417,3 +417,40 @@ async def test_t6_t7_statement_count_constant_and_topic_length(scene):
         },
         scene.labels(),
     )
+
+
+# -------------------------------------------------------------------------------- T8
+async def test_t8_rollback_to_a_version_without_topics_drops_the_current_topics(scene):
+    """T8: ``rollback --to N`` restores version N's topics; a version written before
+    topics existed has none, so the rollback must not keep the newer version's topics
+    (the rollback locks the profile, so Dream would never replace them)."""
+    from yuki.memory.profile_admin import rollback
+
+    facts = await _base(scene)
+    store = scene.profiles
+    await store.commit(
+        scene.persons["B"],
+        "public",
+        (scene.entry("周末常去爬山", facts["hike"], section="兴趣"),),
+        source="dream",
+        reason="旧版本",
+        expected_version=0,
+    )
+    scene.profile_responder = _responder(scene, facts, [("塞尔达", "zelda")])
+    await scene.dream_run()
+    before = await scene.turn("A", "群里谁玩游戏", group="G")
+    result = await rollback(store, scene.persons["B"], "public", 1)
+    after = await scene.turn("A", "群里还玩吗", group="G")
+    stored = await versions(scene)
+    public = [row for row in stored if row["person"] == "person:B" and row["audience"] == "public"]
+
+    assert topic_lines(before.segment) == {MEMBERS_TITLE: [f"{TOPICS}塞尔达"]}
+    assert result.commit.written
+    assert public[-1]["source"] == "owner"
+    assert public[-1]["topics"] == [], public[-1]
+    assert topic_lines(after.segment) == {MEMBERS_TITLE: []}
+    write_artifact(
+        "T8-rollback-without-topics",
+        {"before": before.segment, "after": after.segment, "versions": stored},
+        scene.labels(),
+    )

@@ -379,16 +379,13 @@ async def rollback(
     if target is None or current is None:
         raise ProfileValidationError("unknown_version", str(version))
     check = await store.check(person_id, audience, target.entries)
-    topics = (
-        None
-        if target.topics is None
-        else (await store.check(person_id, audience, target.topics)).entries
-    )
+    # A version written before topics existed has none: restore none, not the current ones.
+    topics = await store.check(person_id, audience, target.topics or ())
     commit = await store.commit(
         person_id,
         audience,
         check.entries,
-        topics=topics,
+        topics=topics.entries,
         source="owner",
         reason=f"owner rollback to v{version}",
         expected_version=current.current_version,
