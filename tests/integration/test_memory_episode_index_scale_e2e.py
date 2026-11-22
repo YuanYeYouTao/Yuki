@@ -182,8 +182,8 @@ async def test_k22_render_statements_constant(scene):
 
 async def _prepare_statements(scene: EpisodeScene):
     from tests.support.model_executor import InjectedModelExecutor
-    from yuki.memory.episode_selection import EpisodeSelection
 
+    from yuki.memory.episode_selection import EpisodeSelection
     from yuki.model_runtime.structured import StructuredTaskRunner
     from yuki.services.concurrency import ConcurrencyManager
 
@@ -231,9 +231,8 @@ async def test_selection_prep_statements_constant(scene):
 
 async def test_month_recount_statements_constant(scene):
     """One batch for 3 audiences and for 20: the same statements."""
-    from yuki.memory.episode_selection import recount_months
-
     from yuki.memory.episode_index import IndexOwner
+    from yuki.memory.episode_selection import recount_months
 
     memories = scene.chat._memories
     persons = []
@@ -525,8 +524,8 @@ async def test_scale_paths(scene):
             )
         )
     from tests.support.model_executor import InjectedModelExecutor
-    from yuki.memory.episode_selection import EpisodeSelection
 
+    from yuki.memory.episode_selection import EpisodeSelection
     from yuki.model_runtime.structured import StructuredTaskRunner
     from yuki.services.concurrency import ConcurrencyManager
 

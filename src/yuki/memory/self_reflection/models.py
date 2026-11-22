@@ -125,7 +125,10 @@ class SelfEpisodeProposal(_Contract):
 
 class SelfReflectionOutput(_Contract):
     proposals: tuple[SelfReflectionProposal, ...] = Field(default=())
-    episodes: tuple[SelfEpisodeProposal, ...] = Field(default=())
+    episodes: tuple[SelfEpisodeProposal, ...] = Field(
+        default=(),
+        description="同一段活动只写一条；本批里互不相干的几段活动才分成几条。",
+    )
 
 
 @dataclass(frozen=True, slots=True)

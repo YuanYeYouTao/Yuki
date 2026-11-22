@@ -29,6 +29,7 @@ from yuki.llm.deepseek_responses import DeepSeekResponsesProvider
 from yuki.llm.json_http import JSONHTTPProvider
 from yuki.llm.protocol_state import checkpoint_items, integer, ordered_delta
 from yuki.llm.vendor_policy import ChatWireOptions, wire_options
+from yuki.model_runtime.models import DEFAULT_CONNECT_TIMEOUT_SECONDS
 
 
 class OpenAICompatibleProvider(JSONHTTPProvider):
@@ -40,6 +41,7 @@ class OpenAICompatibleProvider(JSONHTTPProvider):
         api_key_env: str | None = None,
         timeout_seconds: float,
         max_retries: int,
+        connect_timeout_seconds: float = DEFAULT_CONNECT_TIMEOUT_SECONDS,
         client: httpx.AsyncClient | None = None,
         provider_name: str = "openai_compatible",
         options: ChatWireOptions | None = None,
@@ -51,6 +53,7 @@ class OpenAICompatibleProvider(JSONHTTPProvider):
             api_key_env=api_key_env,
             timeout_seconds=timeout_seconds,
             max_retries=max_retries,
+            connect_timeout_seconds=connect_timeout_seconds,
             client=client,
             headers=headers,
         )

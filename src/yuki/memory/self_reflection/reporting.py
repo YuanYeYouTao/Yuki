@@ -2,10 +2,19 @@
 
 from __future__ import annotations
 
+from collections import defaultdict
+from datetime import date, timedelta
 from typing import Any
 
+from sqlalchemy import func, select
+
 from yuki.conversation.canonical_db_models import CanonicalConversationModel
-from yuki.persistence.models import ChatEventModel
+from yuki.persistence.database import Database
+from yuki.persistence.models import (
+    ChatEventModel,
+    MemorySelfReflectionResultModel,
+    MemorySelfReflectionRunModel,
+)
 from yuki.social.models import SocialError
 from yuki.social.service import SocialContext, SocialService
 
@@ -97,3 +106,55 @@ async def deliver_report(social: SocialService, cycle: dict[str, Any]) -> dict[s
         if receipt is not None and receipt.status.value != "prepared":
             return receipt.model_dump(mode="json")
         return {"status": "failed", "error_category": str(exc)}
+
+
+async def self_reflection_weekly_stats(
+    database: Database, *, since: date, until: date
+) -> list[dict[str, Any]]:
+    """Episodes per processed message for completed chat batches, per ISO week (§8.2).
+
+    Batches are bucketed by the local date that starts their ``scheduled_slot``
+    (``YYYY-MM-DD:…``, deployment timezone), ``since`` and ``until`` inclusive. The slot
+    range uses ``ix_memory_self_reflection_runs_slot``; initiative-receipt batches
+    (slot ``self:…``, no messages) fall outside it. Episodes are committed
+    ``memory_self_reflection_results`` rows with ``result_kind='episode'``.
+    """
+
+    run = MemorySelfReflectionRunModel
+    result = MemorySelfReflectionResultModel
+    episodes = (
+        select(func.count())
+        .where(result.run_id == run.id, result.result_kind == "episode")
+        .scalar_subquery()
+    )
+    weeks: defaultdict[str, list[tuple[int, int]]] = defaultdict(list)
+    async with database.read_session() as reader:
+        rows = await reader.execute(
+            select(run.scheduled_slot, run.processed_events, episodes).where(
+                run.scheduled_slot >= since.isoformat(),
+                run.scheduled_slot < (until + timedelta(days=1)).isoformat(),
+                run.status == "completed",
+            )
+        )
+        for slot, processed, written in rows:
+            year, iso_week, _day = date.fromisoformat(slot[:10]).isocalendar()
+            weeks[f"{year}-W{iso_week:02d}"].append((int(processed), int(written)))
+    report: list[dict[str, Any]] = []
+    for week, batches in sorted(weeks.items()):
+        processed = sum(count for count, _ in batches)
+        written = sum(count for _, count in batches)
+        report.append(
+            {
+                "week": week,
+                "batches": len(batches),
+                "processed_events": processed,
+                "episodes": written,
+                # Runs recorded before processed_events existed carry 0.
+                "episodes_per_100_events": round(100 * written / processed, 2)
+                if processed
+                else None,
+                "batches_with_3_plus_episodes": sum(count >= 3 for _, count in batches),
+                "batches_without_episode": sum(count == 0 for _, count in batches),
+            }
+        )
+    return report
