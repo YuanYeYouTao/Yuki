@@ -23,20 +23,26 @@ T9  Responses re-sends a request whose reply was cut (outcome unknown);
 T10 in a Work, the cut reply leaves the journal or recovery outside the existing
     transport-unknown path: a plain request must close ``paired`` with the retryable
     provider failure, a provider-native request must keep ``dispatched`` and fail with
-    ``LLMNativeToolError`` (no automatic replay, cold resume refuses to re-buy).
+    ``LLMNativeToolError`` (no automatic replay, cold resume refuses to re-buy);
+T11 Responses does not retry a proxy that refuses CONNECT (502/403): the request never
+    reached the provider, so it must be re-sent under the transport rule and either
+    succeed through a later tunnel or fail as ``LLMUnavailableError`` once exhausted.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import json
+import ssl
 import time
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
+import trustme
 from sqlalchemy import select
 from tests.conftest import build_harness, make_settings
 from tests.support.agent_backend import StubAgentBackend
@@ -83,6 +89,8 @@ EXPECTED = (
     *(f"S7_cut_reply_unknown[{name}]" for name in PROTOCOLS),
     "S8_work_cut_reply[plain]",
     "S8_work_cut_reply[native]",
+    "S9_proxy_refusal_retried[recovers]",
+    "S9_proxy_refusal_retried[exhausted]",
 )
 KEY_ENV = "MODEL_TRANSPORT_E2E_KEY"
 PROVIDERS = {
@@ -579,4 +587,85 @@ async def test_work_cut_reply_follows_transport_unknown_receipts(
         "journal_phase": phase,
         "upstream_requests": upstream.requests,
         "model_requests": persisted["model_requests"],
+    }
+
+
+# --------------------------------------------------------------------------- S9
+
+
+class _RefusingProxy:
+    """CONNECT proxy answering ``refusals`` statuses first, then tunnelling upstream."""
+
+    def __init__(self, refusals: list[int], upstream_port: int) -> None:
+        self.refusals = list(refusals)
+        self.upstream_port = upstream_port
+        self.connects: list[str] = []
+
+    async def handle(self, reader, writer):
+        try:
+            await reader.readuntil(b"\r\n\r\n")
+            if self.refusals:
+                status = self.refusals.pop(0)
+                self.connects.append(str(status))
+                writer.write(f"HTTP/1.1 {status} Refused\r\nContent-Length: 0\r\n\r\n".encode())
+                await writer.drain()
+                return
+            self.connects.append("tunnel")
+            writer.write(b"HTTP/1.1 200 Connection established\r\n\r\n")
+            await writer.drain()
+            upstream_reader, upstream_writer = await asyncio.open_connection(
+                "127.0.0.1", self.upstream_port
+            )
+
+            async def pipe(source, target):
+                with contextlib.suppress(ConnectionError):
+                    while data := await source.read(65536):
+                        target.write(data)
+                        await target.drain()
+                target.close()
+
+            await asyncio.gather(pipe(reader, upstream_writer), pipe(upstream_reader, writer))
+        except (asyncio.IncompleteReadError, ConnectionError):
+            pass
+        finally:
+            writer.close()
+
+
+@pytest.mark.parametrize(
+    "case,refusals",
+    [("recovers", [502, 403]), ("exhausted", [502, 403, 502])],
+    ids=["recovers", "exhausted"],
+)
+async def test_responses_retries_a_refused_proxy_connect(monkeypatch, tmp_path, case, refusals):
+    ca = trustme.CA()
+    ca_path = tmp_path / "ca.pem"
+    ca.cert_pem.write_to_path(str(ca_path))
+    context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+    ca.issue_cert("model.test").configure_cert(context)
+    upstream = _Upstream("slow", REPLIES["responses"])
+    upstream_server = await asyncio.start_server(upstream.handle, "127.0.0.1", 0, ssl=context)
+    proxy = _RefusingProxy(refusals, upstream_server.sockets[0].getsockname()[1])
+    proxy_server, proxy_port = await _serve(proxy.handle)
+    monkeypatch.setenv("HTTPS_PROXY", f"http://127.0.0.1:{proxy_port}")
+    monkeypatch.setenv("SSL_CERT_FILE", str(ca_path))
+    load_http_environment(tmp_path / "missing.env")
+    try:
+        # T11: two transport retries; each refusal is a request that never left the proxy.
+        outcome, cause, _elapsed = await _complete(
+            _profile("responses", "https://model.test/v1", max_retries=2)
+        )
+    finally:
+        proxy_server.close()
+        upstream_server.close()
+    if case == "recovers":
+        assert outcome == "ok:ok", (outcome, cause)
+        assert proxy.connects == ["502", "403", "tunnel"] and upstream.requests == 1
+    else:
+        assert (outcome, cause) == ("LLMUnavailableError", "ProxyError")
+        assert proxy.connects == ["502", "403", "502"] and upstream.requests == 0
+    RESULTS[f"S9_proxy_refusal_retried[{case}]"] = {
+        "outcome": outcome,
+        "cause": cause,
+        "proxy_connects": proxy.connects,
+        "upstream_requests": upstream.requests,
     }
