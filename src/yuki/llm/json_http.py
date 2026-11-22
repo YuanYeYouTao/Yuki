@@ -35,6 +35,7 @@ from yuki.llm.base import (
 from yuki.llm.http_errors import check_provider_response
 from yuki.llm.protocol_state import integer
 from yuki.model_runtime.dispatch_guard import check_model_dispatch
+from yuki.model_runtime.models import DEFAULT_CONNECT_TIMEOUT_SECONDS
 from yuki.model_runtime.request_accounting import (
     after_provider_request,
     before_provider_request,
@@ -90,6 +91,7 @@ class JSONHTTPProvider(LLMProvider):
         api_key_env: str | None = None,
         timeout_seconds: float,
         max_retries: int,
+        connect_timeout_seconds: float = DEFAULT_CONNECT_TIMEOUT_SECONDS,
         client: httpx.AsyncClient | None = None,
         headers: dict[str, str] | None = None,
         provider_name: str | None = None,
@@ -101,7 +103,11 @@ class JSONHTTPProvider(LLMProvider):
         self._max_retries = max_retries
         self._headers = dict(headers or {})
         self._owns_client = client is None
-        self._timeout = httpx.Timeout(timeout_seconds)
+        # Only establishing the connection is shortened; reading the reply, writing the
+        # body and waiting for a pool slot keep the Profile's full timeout.
+        self._timeout = httpx.Timeout(
+            timeout_seconds, connect=min(connect_timeout_seconds, timeout_seconds)
+        )
         self._client = client or httpx.AsyncClient(base_url=base_url.rstrip("/") + "/")
 
     @abstractmethod
@@ -321,7 +327,9 @@ class JSONHTTPProvider(LLMProvider):
                     response, raw_body = await self._post(prepared, retry=retried)
         except httpx.TimeoutException as exc:
             raise LLMTimeoutError("LLM request timed out") from exc
-        except retry_errors as exc:
+        except (httpx.TransportError, RetryableProviderError) as exc:
+            # Errors outside this adapter's retry set (a reply cut mid-body: the outcome is
+            # unknown) get the same transport category after their single attempt.
             raise LLMUnavailableError(
                 "LLM is temporarily unavailable",
                 diagnostics=getattr(exc, "diagnostics", {}),

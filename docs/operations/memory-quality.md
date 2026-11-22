@@ -4,7 +4,7 @@
 
 ```bash
 yuki memory audit --database-url <database-url>
-yuki memory stats --database-url <database-url> --hours 24   # 含按周的自动提取新增与当次任务口径条数
+yuki memory stats --database-url <database-url> --hours 24   # 含按周的自动提取新增与当次任务口径条数、自省每 100 条消息经历数
 yuki memory hygiene scan --database-url <database-url>
 yuki memory hygiene apply <fingerprint> --database-url <database-url>
 yuki memory hygiene rebuild-fts <fingerprint> --database-url <database-url>

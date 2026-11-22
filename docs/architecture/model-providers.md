@@ -297,6 +297,27 @@ DeepSeek Responses 与其他协议保留各自的声明方式。
   原 `ok`、进程状态、部分修改与未知事实完整保留；不按外部正文关键词猜错误，不据错误位
   授权重发。Gemini 继续使用 GenerateContent，不套用 Responses 专属字段。
 
+## 传输超时与断连
+
+Profile 的 `timeout_seconds` 限制单次物理请求等待回复、写请求体和等连接池名额；可选的
+`connect_timeout_seconds` 只限制建立连接：TCP 连接、TLS 握手，以及经 HTTP 代理时 CONNECT
+成功后隧道内的 TLS 握手。未设置时取 10 秒（`DEFAULT_CONNECT_TIMEOUT_SECONDS`），任何取值
+都不超过 `timeout_seconds`。四种协议共用同一传输层，连接池按端点共享，超时随每个请求携带。
+连接阶段失败（连接失败、连接超时、代理以非 2xx 拒绝 CONNECT 的 `ProxyError`）时请求还没到达
+上游，按传输重试规则重发（`max_retries`，退避上限 2 秒，第 2 次起计入 Work 辅助请求预算），最坏约等 `connect_timeout_seconds ×
+(max_retries + 1)` 加退避。该字段不进入 Profile revision，调整它不会让持久 Work 换链。
+httpcore 读代理 CONNECT 回复时用的是读超时：代理接受 TCP 后一直不回 CONNECT 的情况仍按
+`timeout_seconds` 等待。
+
+已发出请求后连接中途断开（`RemoteProtocolError`、`ReadError` 等）时，上游可能已受理并计费，
+结果未知。httpcore 在请求体写失败时会继续读回复，断开同样表现为 `RemoteProtocolError`，
+所以异常类型不能证明请求体没写完，不另分发送阶段。适配器把它们统一包装为
+`LLMUnavailableError`（原异常留在 `__cause__`），不新增重试：Responses 只重发连接失败、代理拒绝和超时，
+Chat Completions、Claude Messages、Gemini 沿用原有的全部传输错误有界重试。Runner 走现有传输
+失败路径：带原生服务端工具且已有物理派发时改为 `LLMNativeToolError`，journal 停在
+`dispatched`，不自动重放；普通请求与读超时相同，journal 存 `paired`，Work 进入可重试的
+provider 失败，沿原 Work 与累计预算继续。
+
 ## 用量与 HTTP 请求口径
 
 适配器先准备完整 httpx Request，包括路径、Header 和 JSON 编码，再沿原派发核验与预算登记进入 send。准备失败不登记实际请求，也不调用上一条请求的失败收尾；登记后 HTTP 段的异常仍按原请求收尾。

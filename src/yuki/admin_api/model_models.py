@@ -34,6 +34,7 @@ class ModelProfileDocument(TypedDict, total=False):
     model: str
     model_env: str
     timeout_seconds: float
+    connect_timeout_seconds: float
     max_retries: int
     default_temperature: float
     default_max_output_tokens: int
