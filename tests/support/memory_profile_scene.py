@@ -36,7 +36,6 @@ from yuki.persistence.models import MemoryEvidenceModel, MemoryToolReceiptModel
 RESULTS = Path(__file__).resolve().parents[2] / "test-results" / "memory-profiles"
 BOT = "80001"
 PROFILE_MARK = "你在为一个人物维护"
-LABELS = {"public": "公共画像", "private": "私人画像"}
 PUBLIC_TITLE = "[对方·公共画像]"
 PRIVATE_TITLE = "[对方·私聊画像]"
 MEMBERS_TITLE = "[群成员画像]"
@@ -49,7 +48,7 @@ def profile_payload(request) -> dict[str, Any]:
             value = json.loads(message.content or "")
         except (TypeError, ValueError):
             continue
-        if isinstance(value, dict) and "facts" in value and "profile" in value:
+        if isinstance(value, dict) and "facts" in value and "audience" in value:
             return value
     raise AssertionError("profile call without its structured input")
 
@@ -100,7 +99,8 @@ class ProfileScene(ResidentScene):
     def _respond(self, request):
         if any(PROFILE_MARK in str(message.content or "") for message in request.messages):
             self.profile_requests.append(request)
-            assert self.profile_responder is not None, "unexpected profile call"
+            if self.profile_responder is None:
+                return "NO_PROFILE_SCRIPT"  # an unscripted profile call voids (json_decode)
             return self.profile_responder(profile_payload(request), request)
         return super()._respond(request)
 
@@ -128,7 +128,7 @@ class ProfileScene(ResidentScene):
         return [
             payload
             for payload in (profile_payload(request) for request in self.profile_requests)
-            if payload["profile"] == LABELS[audience] and fact_id in self.offered(payload)
+            if payload["audience"] == audience and fact_id in self.offered(payload)
         ]
 
     def offered(self, payload: dict[str, Any]) -> dict[int, str]:

@@ -212,11 +212,11 @@ async def test_h01_h06_h31_inputs_rendering_and_where_profiles_show(scene):
 
     def respond(payload, request):
         offered = scene.offered(payload)
-        seen.append(payload["profile"])
-        if payload["profile"] == "公共画像" and seen.count("公共画像") == 1:
+        seen.append(payload["audience"])
+        if payload["audience"] == "public" and seen.count("public") == 1:
             # H1: the double cites the private-only fact by an alias it was never given.
             return profile_reply([("兴趣", "周末爬山，在学大提琴", [offered[group], "f_99"])])
-        if payload["profile"] == "公共画像":
+        if payload["audience"] == "public":
             return profile_reply(
                 [
                     ("兴趣", "周末常去爬山", [offered[group]]),
@@ -243,13 +243,13 @@ async def test_h01_h06_h31_inputs_rendering_and_where_profiles_show(scene):
     public_requests = [
         request_text(request)
         for request in scene.profile_requests
-        if profile_payload(request)["profile"] == "公共画像"
+        if profile_payload(request)["audience"] == "public"
     ]
     contents = scene.contents
 
     assert first.status.value == second.status.value == "completed"
-    public_inputs = [item for item in inputs if item["profile"] == "公共画像"]
-    private_inputs = [item for item in inputs if item["profile"] == "私人画像"]
+    public_inputs = [item for item in inputs if item["audience"] == "public"]
+    private_inputs = [item for item in inputs if item["audience"] == "private"]
     assert len(public_inputs) == 2 and len(private_inputs) == 1
     assert {row["content"] for row in public_inputs[0]["facts"]} == {
         contents[group],
@@ -517,10 +517,10 @@ async def test_h17_h18_inactive_kept_private_only_maintained_in_order(scene):
     def first_run(payload, request):
         offered = scene.offered(payload)
         owner = "D" if d_public in offered or d_private in offered else "E"
-        order.append((owner, payload["profile"]))
+        order.append((owner, payload["audience"]))
         if owner == "E":
             return profile_reply([(None, "喜欢喝乌龙茶", [offered[e_private]])])
-        if payload["profile"] == "公共画像":
+        if payload["audience"] == "public":
             return profile_reply([("兴趣", "在学吉他", [offered[d_public]])])
         # H11: a reference alias cited as a fact voids the private profile.
         return profile_reply([(None, "在准备搬家", [offered[d_private], "ref_1"])])
@@ -545,16 +545,16 @@ async def test_h17_h18_inactive_kept_private_only_maintained_in_order(scene):
     e_profile = await scene.profiles.load(scene.persons["E"], "private")
 
     d_order = [item for item in order if item[0] == "D"]
-    assert d_order == [("D", "公共画像"), ("D", "私人画像")]
+    assert d_order == [("D", "public"), ("D", "private")]
     d_private_input = next(
         item
         for item in first_inputs
-        if item["profile"] == "私人画像"
+        if item["audience"] == "private"
         and "reference" in item
         and any(row["content"] == scene.contents[d_private] for row in item["facts"])
     )
     assert "在学吉他" in [row["content"] for row in d_private_input["reference"]]
-    assert [item["profile"] for item in second_inputs] == ["私人画像"]
+    assert [item["audience"] for item in second_inputs] == ["private"]
     assert e_profile.current_version == 1
     assert profile_blocks(e_turn.segment) == {
         PRIVATE_TITLE: [f"- 喜欢喝乌龙茶（fact:{e_private}）"]
@@ -824,7 +824,7 @@ async def test_h32_h34_eligibility_changes_follow_render_cleanup_and_input(scene
     assert [item.source for item in public] == ["dream", "program", "dream"]
     assert [item.source for item in private] == ["dream", "program"]
     assert private[-1].entries == ()
-    assert [item["profile"] for item in second_inputs] == ["公共画像"]
+    assert [item["audience"] for item in second_inputs] == ["public"]
     assert [row["content"] for row in second_inputs[0]["facts"]] == [scene.contents[w]]
     contract = await scene.contract()
     scene.write(

@@ -380,7 +380,13 @@ async def test_cli_h28_h12_generate_writes_nothing_and_apply_checks_each_profile
     status_after = await _cli(scene, "status")
 
     assert code == 0 and empty == after_generate
-    assert empty["memory_profiles"] == [] and empty["memory_profile_versions"] == []
+    # The Dream run's own profile calls are unscripted here and void: they leave only
+    # attempt rows (no version, no signature).
+    assert empty["memory_profile_versions"] == []
+    assert all(
+        row["current_version"] == 0 and row["considered_signature"] is None
+        for row in empty["memory_profiles"]
+    )
     assert set(planned) == {
         (persons["B"], "public"),
         (persons["B"], "private"),
@@ -427,7 +433,7 @@ async def test_cli_h28_h12_generate_writes_nothing_and_apply_checks_each_profile
         ("person:D", "private", "version_changed"),
     ]
     profiles = {(row["person_id"], row["audience"]): row for row in after_apply["memory_profiles"]}
-    assert (persons["C"], "public") not in profiles
+    assert profiles.get((persons["C"], "public"), {"current_version": 0})["current_version"] == 0
     assert profiles[(persons["B"], "private")]["locked"] == 1
     assert profiles[(persons["B"], "public")]["locked"] == 0
     assert (

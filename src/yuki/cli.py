@@ -52,6 +52,7 @@ from yuki.memory.profile_admin import (
     dropped_positions,
     latest_window,
     profile_status,
+    render_check,
     rollback,
 )
 from yuki.memory.profiles import (
@@ -415,7 +416,8 @@ def _add_profile_parser(
     pin.add_argument("--pin", help="逗号分隔的 Person ID，最多 5 个，按根解析")
     pin.add_argument("--unpin", action="store_true", help="交还 Dream，下次收尾重算")
     check = profile_commands.add_parser(
-        "check", help="对全部画像做渲染时校验，输出条目编号与违规；有违规时退出码 1"
+        "check",
+        help="对全部画像做渲染时校验，并只读渲染全部会话核对画像出现位置；有违规时退出码 1",
     )
     status = profile_commands.add_parser(
         "status", help="最近一次名单窗口、维护集合、到期画像与各画像版本"
@@ -965,7 +967,7 @@ async def _profile_action(
             members = await store.members(space_id)
         return {"space_id": space_id, "members": _members_payload(members)}, 0
     if action == "check":
-        return await _profile_check(store)
+        return await _profile_check(database, store)
     if action == "status":
         return await _profile_status(database, store), 0
     audience: ProfileAudience = "private" if args.audience == "private" else "public"
@@ -1104,10 +1106,21 @@ async def _profile_generate(
     }, int(bool(result.rejected))
 
 
-async def _profile_check(store: ProfileStore) -> tuple[dict[str, object], int]:
-    """§7.4 on every stored profile; the render-level check joins once rendering lands."""
+async def _profile_check(database: Database, store: ProfileStore) -> tuple[dict[str, object], int]:
+    """§7.4 on every stored profile, then every conversation rendered read-only."""
 
     checks = await check_profiles(store)
+    conversations = await render_check(database)
+    placement = [
+        {
+            "conversation_id": item.conversation_id,
+            "kind": item.kind,
+            "owner_id": item.owner_id,
+            "violations": list(item.violations),
+        }
+        for item in conversations
+        if item.violations
+    ]
     violations = [
         {
             "person_id": item.profile.person_id,
@@ -1131,6 +1144,23 @@ async def _profile_check(store: ProfileStore) -> tuple[dict[str, object], int]:
         "profiles": len(checks),
         "entries": sum(len(item.profile.entries) for item in checks),
         "violations": violations,
+        "conversations": [
+            {
+                "conversation_id": item.conversation_id,
+                "kind": item.kind,
+                "owner_id": item.owner_id,
+                "profiles": [
+                    {
+                        "person_id": profile.person_id,
+                        "audience": profile.audience,
+                        "entries": [list(entry.fact_ids) for entry in profile.entries],
+                    }
+                    for profile in item.profiles
+                ],
+            }
+            for item in conversations
+        ],
+        "placement_violations": placement,
         "rendered": [
             {
                 "person_id": item.profile.person_id,
@@ -1139,7 +1169,7 @@ async def _profile_check(store: ProfileStore) -> tuple[dict[str, object], int]:
             }
             for item in checks
         ],
-    }, int(bool(violations))
+    }, int(bool(violations or placement))
 
 
 async def _profile_status(database: Database, store: ProfileStore) -> dict[str, object]:
