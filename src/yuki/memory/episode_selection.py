@@ -12,15 +12,17 @@ only when a listed ID is no longer active, its successors. Cost: O(facts written
 the oldest row's ``through`` + active episodes and their evidence), with a constant
 number of statements whatever the number of audiences or leavers.
 
-Per audience: ``S`` = the recent list (successors by root, invisible entries dropped)
-plus the new visible episodes, both without IDs already in the impressions, sorted by
-(local date, ID). The last 15 stay; the rest are leavers. An unlocked audience with
-leavers gets one structured call over a mixed pool (current impressions and leavers,
-sorted by date, four keys each, no old/new mark); the output is a set of at most ten
-aliases. Everything in the pool that is not selected is archived and never offered
-again. A locked audience archives its leavers without a call. A void output leaves the
-row untouched. Each write is one short transaction that compares the revision and the
-lock read before the call.
+Per audience: ``S`` = the recent list (successors by root; entries whose evidence no
+longer fits, expired or without an active successor dropped) plus the new episodes,
+both without IDs already in the impressions, sorted by (local date, ID). The last 15
+stay; the rest are leavers. Entries hidden only reversibly (conflict, quarantine, owner
+switch) stay listed but are never offered. An unlocked audience with visible leavers
+gets one structured call over a mixed pool (visible impressions and leavers, sorted by
+date, four keys each, no old/new mark); the output is a set of at most ten aliases.
+Everything in the pool that is not selected is archived and never offered again. A
+locked audience archives its leavers without a call. A void output leaves the row
+untouched. Each write is one short transaction that compares the revision and the lock
+read before the call.
 """
 
 from __future__ import annotations
@@ -113,10 +115,16 @@ class AudiencePlan:
     memorable: tuple[MemorableEntry, ...]  # successors applied, invisible dropped
     recent: tuple[int, ...]  # S: recent list plus new episodes, sorted
     new: tuple[int, ...]
+    hidden: frozenset[int]  # listed but hidden reversibly: kept, never offered
 
     @property
     def leavers(self) -> tuple[int, ...]:
         return self.recent[: max(0, len(self.recent) - MAX_EPISODE_RECENT)]
+
+    @property
+    def offerable(self) -> tuple[int, ...]:
+        """Leavers that may enter the pool; hidden ones wait in front of the list."""
+        return tuple(fact_id for fact_id in self.leavers if fact_id not in self.hidden)
 
     @property
     def window(self) -> tuple[int, ...]:
@@ -171,14 +179,20 @@ def plan_audience(
     current: Mapping[int, Any],
     is_new: Any,
 ) -> AudiencePlan:
-    """§5.2 and §6.1 step 6 for one audience; pure, no I/O."""
+    """§5.2 and §6.1 step 6 for one audience; pure, no I/O.
+
+    An entry is dropped when it has no active successor (by the root rule), its
+    evidence no longer fits the audience, or it expired. One hidden only reversibly
+    (conflict, quarantine, owner switch) stays where it is, as do new ones: not
+    rendered, counted or offered until the hiding ends (K25).
+    """
     facts = visible.facts
-    shown = set(visible.by_owner.get(owner, ()))
+    kept = set(visible.kept_by_owner.get(owner, ()))
     memorable: list[MemorableEntry] = []
     for entry in row.memorable if row is not None else ():
         item = current.get(entry.fact_id)
         # An impression follows its successor whatever the root: the same event.
-        if item is None or item.fact_id not in shown:
+        if item is None or item.fact_id not in kept:
             continue
         if item.fact_id not in {kept.fact_id for kept in memorable}:
             memorable.append(MemorableEntry(item.fact_id, entry.since, entry.source))
@@ -188,13 +202,13 @@ def plan_audience(
         item = current.get(listed)
         # A window entry is replaced only by a rewrite of itself; merged into or
         # combined with another episode, it leaves without a comparison.
-        if item is None or not item.same_root or item.fact_id not in shown:
+        if item is None or not item.same_root or item.fact_id not in kept:
             continue
         if item.fact_id not in impressions and item.fact_id not in recent:
             recent.append(item.fact_id)
     new = tuple(
         fact_id
-        for fact_id in visible.by_owner.get(owner, ())
+        for fact_id in visible.kept_by_owner.get(owner, ())
         if is_new(fact_id, through_before) and fact_id not in impressions and fact_id not in recent
     )
     ordered = sorted({*recent, *new}, key=lambda fact_id: facts[fact_id].sort_key)
@@ -205,6 +219,7 @@ def plan_audience(
         memorable=tuple(sorted(memorable, key=lambda entry: facts[entry.fact_id].sort_key)),
         recent=tuple(ordered),
         new=new,
+        hidden=frozenset({*impressions, *ordered} - set(visible.by_owner.get(owner, ()))),
     )
 
 
@@ -435,7 +450,7 @@ class EpisodeSelection:
         """
         prepared = await self.prepare()
         needing = sorted(
-            (plan for plan in prepared.audiences if plan.leavers and not plan.locked),
+            (plan for plan in prepared.audiences if plan.offerable and not plan.locked),
             key=lambda plan: (plan.through_before, plan.owner.owner_id),
         )
         chosen = {plan.owner for plan in needing[: max(0, slots)]}
@@ -450,9 +465,12 @@ class EpisodeSelection:
             offered: tuple[int, ...] = ()
             reason = ""
             if plan.owner in chosen:
+                held = tuple(entry for entry in plan.memorable if entry.fact_id in plan.hidden)
                 try:
                     comparison = await self.comparator.compare(
-                        prepared.visible.facts, plan.memorable, plan.leavers
+                        prepared.visible.facts,
+                        [entry for entry in plan.memorable if entry not in held],
+                        plan.offerable,
                     )
                 except (EpisodeSelectionRejected, StructuredTaskError) as exc:
                     calls += getattr(exc, "model_calls", 1)
@@ -468,7 +486,13 @@ class EpisodeSelection:
                     )
                     continue
                 calls += comparison.model_calls
-                memorable, offered = comparison.memorable, comparison.offered
+                memorable = tuple(
+                    sorted(
+                        (*held, *comparison.memorable),
+                        key=lambda entry: prepared.visible.facts[entry.fact_id].sort_key,
+                    )
+                )
+                offered = comparison.offered
                 reason = comparison.reason
                 recent = tuple(fact_id for fact_id in plan.recent if fact_id not in offered)
             elif plan.leavers:  # locked: leavers are archived without a call

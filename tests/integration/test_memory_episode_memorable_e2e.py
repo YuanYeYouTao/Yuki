@@ -45,7 +45,8 @@ Failure cases, written before the implementation:
   K22 (statement counts, test_memory_episode_index_scale_e2e.py);
   K23 forgetting leaves residue;
   K24 person merge duplicates or picks the wrong row;
-  K25 a disabled person's episodes stay listed;
+  K25 a disabled person's episodes stay listed, or a reversible hiding (owner switch,
+      contest) archives them for good;
   K26 order depends on insertion order or on the model's output order;
   K27 a selection-step failure breaks Dream or writes half a row;
   K28 index changes move the recovery hash (plus P2 cases 16-19, G16-G19);
@@ -1386,7 +1387,9 @@ async def test_k24_merged_person_renders_the_root_row(scene):
 
 # ----------------------------------------------------------------------- K25
 async def test_k25_disabled_person_hidden_and_not_offered(scene):
-    """K25: disabling B hides B's episodes and keeps them out of the comparison."""
+    """K25: disabling B hides B's episodes and keeps them out of the comparison; a run
+    while B is disabled keeps them listed (hidden), and after B is enabled again they
+    render as before; a hidden leaver waits and is compared once when visible again."""
     pg = await scene.episode(
         "pg",
         "B@G",
@@ -1406,7 +1409,7 @@ async def test_k25_disabled_person_hidden_and_not_offered(scene):
     await scene.harness.private_users.set_enabled(scene.persons["B"], True)
     restored_group = await scene.render("space:G")
     restored_private = await scene.render("private:B")
-    # A run while B is disabled: B's episodes are not offered.
+    # A run while B is disabled: B's episodes are not offered and stay listed.
     await scene.harness.private_users.set_enabled(scene.persons["B"], False)
     pg_new = await scene.episode(
         "pg_new",
@@ -1419,7 +1422,12 @@ async def test_k25_disabled_person_hidden_and_not_offered(scene):
     more = await _fill(scene, "space:G", 2, start="2026-10-01", prefix="n")
     scene.memorable_responder = scene.choose(lambda pool: [])
     calls, pools = await _run(scene)
+    held_group = await scene.index_row("space:G")
+    held_private = await scene.index_row("private:B")
+    hidden_private = await scene.render("private:B")
     await scene.harness.private_users.set_enabled(scene.persons["B"], True)
+    back_group = await scene.render("space:G")
+    back_private = await scene.render("private:B")
     later = await scene.episode(
         "pg_later",
         "B@G",
@@ -1427,7 +1435,7 @@ async def test_k25_disabled_person_hidden_and_not_offered(scene):
         title="B 回来了",
         evidence=(await _source(scene, "space:G"),),
     )
-    await _run(scene)
+    later_calls, later_pools = await _run(scene)
     final = await scene.index_row("space:G")
 
     assert pg in enabled_group.window_fact_ids and set(b_ids) <= set(
@@ -1436,17 +1444,56 @@ async def test_k25_disabled_person_hidden_and_not_offered(scene):
     assert pg not in disabled_group.index_ids + disabled_group.recent_ids
     assert disabled_private.index_text == ""
     assert restored_group == enabled_group and restored_private == enabled_private
-    assert calls == 1 and pg not in pools[0] and pg_new not in pools[0]
-    assert pools == [[g_ids[0]]]
+    # pg_new (the oldest) leaves the window hidden: not offered, it waits in front.
+    assert calls == 1 and pools == [[g_ids[0], g_ids[1]]]
+    assert held_group["recent"] == [pg_new, *g_ids[2:], pg, *more]
+    assert held_private["recent"] == [pg_new, *b_ids, pg]
+    assert hidden_private.index_text == "" and hidden_private.recent_text == ""
+    assert list(back_group.window_fact_ids) == [*g_ids[2:], pg, *more]
+    assert list(back_private.window_fact_ids) == [pg_new, *b_ids, pg]
+    # Visible again, the waiting leaver gets its one comparison.
+    assert later_calls == 1 and later_pools == [[pg_new, g_ids[2]]]
     assert later in final["recent"] and set(more) <= set(final["recent"])
+    assert pg_new not in final["recent"]
     scene.write_memorable(
         "K25",
         {
             "enabled": render_record(enabled_group),
             "disabled": turn_record(disabled_group, await scene.contract()),
+            "held": held_group,
+            "back": render_record(back_group),
             "pools": _pools(scene),
             "final": final,
         },
+    )
+
+
+async def test_k25_contested_impression_returns_after_resolution(scene):
+    """K25: a contested impression is hidden and not offered; resolved, it is back."""
+    ids = await _seeded(scene, "space:G", 16, keep=(0,))
+    m = ids[0]
+    memories = scene.chat._memories
+    assert await memories.contest_fact(m, reason_code="episode_e2e", actor_user_id="10001")
+    hidden = await scene.render("space:G")
+    quiet_calls, _ = await _run(scene)
+    kept = await scene.index_row("space:G")
+    (n,) = await _fill(scene, "space:G", 1, start="2026-10-01", prefix="n")
+    scene.memorable_responder = scene.choose(lambda pool: pool)
+    calls, pools = await _run(scene)
+    contested = await scene.index_row("space:G")
+    await memories.resolve_conflicts(m, (), actor_user_id="10001")
+    resolved = await scene.render("space:G")
+
+    assert m not in _shown(hidden)
+    assert quiet_calls == 0 and [item["fact_id"] for item in kept["memorable"]] == [m]
+    assert calls == 1 and pools == [[ids[1]]]
+    assert [item["fact_id"] for item in contested["memorable"]] == [m, ids[1]]
+    assert contested["memorable"][0] == kept["memorable"][0]
+    assert list(resolved.memorable_fact_ids) == [m, ids[1]]
+    assert list(resolved.window_fact_ids) == [*ids[2:], n]
+    scene.write_memorable(
+        "K25-contested",
+        {"kept": kept, "contested": contested, "resolved": render_record(resolved)},
     )
 
 

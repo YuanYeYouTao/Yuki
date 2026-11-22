@@ -132,7 +132,10 @@ class Episode:
     content: str
     day: date  # local date of coalesce(valid_from, created_at)
     active: bool
-    eligible: bool  # kind, status, conflict, review, expiry, authority, owner enabled
+    # Kind, status, expiry, authority: what an index row may keep listing. A conflict,
+    # a quarantine or the owner's switch hides an episode reversibly (``eligible``).
+    listable: bool
+    eligible: bool  # listable, conflict clear, not quarantined, owner enabled
     supersedes_id: int | None
     scope_type: str
     subject_root: str | None
@@ -219,11 +222,17 @@ class EpisodeWatermark:
 
 @dataclass(slots=True)
 class VisibleEpisodes:
-    """Every active episode and, per audience, the visible ones in sort-key order."""
+    """Every active episode and, per audience, its episodes in sort-key order.
+
+    ``by_owner``: the visible ones (rendered, counted, offered). ``kept_by_owner``: also
+    those hidden only reversibly (conflict, quarantine, owner switch), which a row keeps
+    listing so they come back when the hiding ends.
+    """
 
     facts: dict[int, Episode]
     origins: dict[int, list[EvidenceOrigin]]
     by_owner: dict[IndexOwner, list[int]] = field(default_factory=dict)
+    kept_by_owner: dict[IndexOwner, list[int]] = field(default_factory=dict)
 
 
 class EpisodeIndex:
@@ -441,13 +450,16 @@ async def load_episodes(
     subject_root = aliased(CanonicalPersonModel)
     visible = aliased(CanonicalPersonModel)
     subject_root_id = func.coalesce(subject.merged_into_person_id, subject.id)
-    eligible = and_(
+    listable = and_(
         fact.kind == "episode",
         fact.status == "active",
-        fact.conflict_state == "clear",
-        fact.review_state != "quarantined",
         or_(fact.valid_until.is_(None), fact.valid_until > datetime.now(UTC)),
         fact.authority != "third_party",
+    )
+    eligible = and_(
+        listable,
+        fact.conflict_state == "clear",
+        fact.review_state != "quarantined",
         or_(
             fact.scope_type.in_(("group", "self")),
             and_(subject.enabled.is_(True), subject_root.enabled.is_(True)),
@@ -461,6 +473,7 @@ async def load_episodes(
             fact.valid_from,
             fact.created_at,
             (fact.status == "active").label("active"),
+            case((listable, True), else_=False).label("listable"),
             case((eligible, True), else_=False).label("eligible"),
             fact.supersedes_id,
             fact.scope_type,
@@ -483,6 +496,7 @@ async def load_episodes(
             content=row.content,
             day=local_datetime(row.valid_from or row.created_at, timezone).date(),
             active=bool(row.active),
+            listable=bool(row.listable),
             eligible=bool(row.eligible),
             supersedes_id=row.supersedes_id,
             scope_type=row.scope_type,
@@ -566,11 +580,13 @@ async def visible_episodes(session: AsyncSession, timezone: str) -> VisibleEpiso
     )
     result = VisibleEpisodes(facts=facts, origins=origins)
     for episode in sorted(facts.values(), key=lambda item: item.sort_key):
-        if not episode.eligible:
+        if not episode.listable:
             continue
         for owner in episode.owners():
             if evidence_visible(owner, origins.get(episode.id, ())):
-                result.by_owner.setdefault(owner, []).append(episode.id)
+                result.kept_by_owner.setdefault(owner, []).append(episode.id)
+                if episode.eligible:
+                    result.by_owner.setdefault(owner, []).append(episode.id)
     return result
 
 
