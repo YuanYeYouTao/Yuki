@@ -15,8 +15,9 @@ from yuki.memory.query import MemoryQueryBuilder
 from yuki.memory.retrieval import MemoryRetriever
 
 MEMORY_GROUNDING_RULE = (
-    "系统提示末尾的‘常驻记忆’与‘经历目录’只带少量稳定条目与经历标题，可能为空；"
+    "系统提示末尾的‘常驻记忆’与‘经历目录’只带少量稳定条目、人物画像与经历标题，可能为空；"
     "其余长期记忆不自动附带。"
+    "常驻条目与画像每条后的 fact 编号是依据，想看细节用 search_memory(fact_id=编号) 读取原文。"
     "常驻条目与人格设定冲突时以人格设定为准，与当前对话里更新的明确要求冲突时以当前要求为准。"
     "可见聊天和已有资料不足以回答人物、群或自己的既往事实时，"
     "按当前意图调用 search_memory；没有明确目标就不填 target，搜索当前主体有权读取的完整范围。"

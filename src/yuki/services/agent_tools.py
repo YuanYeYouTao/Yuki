@@ -46,6 +46,7 @@ from yuki.memory.mutation.models import (
 from yuki.memory.mutation.service import MemoryMutationService
 from yuki.memory.query import MemoryQueryBuilder
 from yuki.memory.read_scope import MemoryReadScopeResolver
+from yuki.memory.resident import conversation_evidence
 from yuki.memory.retrieval import MemoryRetriever
 from yuki.memory.runtime.query_plane import (
     MemoryQueryPlane,
@@ -1212,7 +1213,21 @@ class AgentToolService:
         fact = await self._authorized_memory_fact(fact_id, runtime)
         if fact is None:
             return self._result(error="memory_not_found", detail="没有这条记忆，或你无权读取它")
-        return self._result(data={"memories": [self._memory_json(fact)]})
+        # Evidence visible in this conversation, same predicates as the resident layer.
+        conversation_id = (
+            runtime.turn_snapshot.conversation_id
+            if runtime.turn_snapshot is not None
+            else runtime.effective_conversation_id
+        )
+        async with self._memories.repository.database.read_session() as session:
+            shown, hidden = await conversation_evidence(session, fact.id, conversation_id)
+        payload = self._memory_json(fact)
+        payload["evidence"] = [
+            {"event_id": item.event_id, "excerpt": item.excerpt} for item in shown
+        ]
+        if hidden:
+            payload["evidence_hidden"] = hidden
+        return self._result(data={"memories": [payload]})
 
     @staticmethod
     def _memory_evidence(arguments: dict[str, Any]) -> dict[str, Any] | _ToolFailure:

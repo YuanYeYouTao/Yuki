@@ -538,6 +538,7 @@ class ResidentScene:
         calls: list[tuple[str, dict[str, Any]]],
         *,
         group: str | None = None,
+        person: str | None = None,
     ) -> tuple[list[Any], Turn]:
         """One real turn whose scripted model issues ``calls`` one per request."""
         identities = [f"resident-call-{self._next()}" for _ in calls]
@@ -556,7 +557,7 @@ class ResidentScene:
 
         previous, self.responder = self.responder, respond
         try:
-            turn = await self.turn(who, text, group=group)
+            turn = await self.turn(who, text, group=group, person=person)
         finally:
             self.responder = previous
         assert len(replies) == len(calls), replies

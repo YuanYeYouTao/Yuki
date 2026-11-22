@@ -12,7 +12,7 @@
 有权读取的 Person、PersonGroup、Group 和当前可见 SELF。历史 owner 没有活跃平台 Binding 仍可检索。
 模型工具的 target 只接受单键 `{person_id}`、`{space_id}` 或 `{"self": true}`，按内部 ID 查找，
 不承担授权证明；名称选择器已从模型工具删除。`since`／`until` 须带时区，until 不含。
-原始私聊、完整 evidence、他人的 private SELF 继续使用各自真实权限边界。
+原始私聊、本会话不可见的 evidence、他人的 private SELF 继续使用各自真实权限边界。
 已知主体沿调用链传内部 Person/Space；账号换绑不改写原事实与历史 membership 的 owner。
 同一人归并集合用于本人、subject、private SELF 和共同群 SQL 判断，无 Binding 的来源人物也纳入；
 同 Space 与同人名称命中去重。结果按当前 root 组织人物块，原 fact/evidence owner 和来源 ID 保持原件。
@@ -38,6 +38,27 @@ Vec1 在同一 SQLite 读取快照内按 metadata fact_id IN 接收原授权子�
 
 用户指定的严格日期在 SQL 候选阶段应用，采用 start-inclusive/end-exclusive；不重复在应用层过滤，
 不自动放宽日期。实际事件时间与事实更新时间不同，不能用 updated_at 声称事情发生日期。
+
+## 按编号读取的证据
+
+`search_memory(fact_id=…)` 先按上面的同一 SQL 授权读取事实，授权不变；读到后结果另附
+`evidence`：本会话可见的证据，每条 `{event_id, excerpt}`（存储的证据摘录），按 event_id 升序；
+存在但这里不可见的证据只给 `evidence_hidden: N`（为 0 时省略）。没有证据行的事实 `evidence` 为空列表。
+其他检索结果不带证据；工具声明不变。
+
+可见范围按当前会话（`canonical_conversations`，私聊对方取人物根），与常驻层共用
+`memory/resident.py` 的 `evidence_origins` 和逐条判定 `evidence_shown_in`：
+
+| 证据 | 群会话 | 与 P 的私聊 |
+|---|---|---|
+| 任一群里的聊天事件（所有群视作一个公共空间） | 显示 | 显示 |
+| P 本人私聊里的聊天事件（含并入 P 的旧人物的私聊） | 隐藏 | 显示 |
+| 别人私聊里的聊天事件、无法追溯会话的证据 | 隐藏 | 隐藏 |
+| 工具回执证据（无论触发事件在哪） | 隐藏 | 隐藏 |
+
+证据事件被删除时证据行随之级联删除，不再显示或计数。模型要更多上下文时用
+`read_chat(around=event_id)`，其授权不改；别的群的事件 ID 交到当前群后可读到那个群的邻文，
+这是“所有群视作一个公共空间”的直接后果。依据规则写明常驻条目与画像后的 fact 编号可这样回查。
 
 ## 结果含义
 
