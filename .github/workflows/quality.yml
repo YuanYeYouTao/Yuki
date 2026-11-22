@@ -185,6 +185,9 @@ jobs:
       - name: Self-reflection one-episode E2E artifacts (P2.1 §8, §14.1)
         if: matrix.suite == 'integration'
         run: test "$(ls test-results/self-reflection-one-episode/*.json | wc -l)" -eq 2
+      - name: ACP connector delegation E2E artifact (steer, resume cwd)
+        if: matrix.suite == 'integration'
+        run: test -s test-results/acp-connector-delegation/run.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:

@@ -3,6 +3,11 @@
 Each prompt's text is a JSON script. ``during`` steps run while the prompt is in
 flight, ``after`` steps run after its response (an agent-initiated turn, task book
 §15 E5). Every outcome is appended to FAKE_ACP_TRACE as one JSON line.
+
+FAKE_ACP_STEERING advertises the ``_session/steering`` extension (top-level
+``_meta.steering.supported``, as codex-acp 2.9 and claude-agent-acp 0.109 do);
+FAKE_ACP_NO_LIST leaves out session/list and session/resume (Gemini CLI declares
+only loadSession).
 """
 
 import json
@@ -37,9 +42,37 @@ def update(session, value):
     send({"method": "session/update", "params": {"sessionId": session, "update": value}})
 
 
+def say(session, text):
+    content = {"type": "text", "text": text}
+    update(session, {"sessionUpdate": "agent_message_chunk", "content": content})
+
+
+def steering(message):
+    """Answer one _session/steering request; the outcome follows the script."""
+    params = message["params"]
+    text = params["prompt"][0]["text"]
+    record(method="_session/steering", text=text, meta=params.get("_meta"))
+    return text
+
+
 def run(session, steps):
+    """Run the steps; a returned stop reason ends the prompt early."""
     for step in steps:
-        if "tool" in step:
+        if "say" in step:
+            say(session, step["say"])
+        elif "steer" in step:
+            # Wait for the client's steer while this prompt is in flight.
+            message = json.loads(sys.stdin.readline())
+            assert message["method"] == "_session/steering", message
+            text = steering(message)
+            if step["steer"] == "promptRequired":
+                # This turn already settled at the agent: the steer is not consumed.
+                outcome = {"outcome": "promptRequired", "reason": "noRunningTurn"}
+                send({"id": message["id"], "result": outcome})
+                continue
+            send({"id": message["id"], "result": {"outcome": "injected"}})
+            say(session, f"steered:{text}")
+        elif "tool" in step:
             update(session, {"sessionUpdate": "tool_call", **step["tool"]})
         elif "update" in step:
             update(session, step["update"])
@@ -47,11 +80,31 @@ def run(session, steps):
             response = request(
                 "session/request_permission", {"sessionId": session, **step["permission"]}
             )
+            outcome = response.get("result", {}).get("outcome")
             record(
                 method="session/request_permission",
                 tool=step["permission"]["toolCall"]["toolCallId"],
-                outcome=response.get("result", {}).get("outcome"),
+                outcome=outcome,
             )
+            rejects = {
+                item["optionId"]
+                for item in step["permission"]["options"]
+                if item["kind"].startswith("reject")
+            }
+            rejected = outcome["outcome"] == "cancelled" or outcome.get("optionId") in rejects
+            if rejected and step.get("rejected") == "cancel_turn":
+                # codex-acp: this reject ends the whole prompt.
+                return "cancelled"
+            if rejected and step.get("rejected") == "fail_tool":
+                # Gemini CLI: only this tool call fails; the turn goes on.
+                update(
+                    session,
+                    {
+                        "sessionUpdate": "tool_call_update",
+                        "toolCallId": step["permission"]["toolCall"]["toolCallId"],
+                        "status": "failed",
+                    },
+                )
         elif "write" in step:
             response = request(
                 "fs/write_text_file",
@@ -64,6 +117,7 @@ def run(session, steps):
                 {"sessionId": session, "command": step["terminal"], "args": []},
             )
             record(method="terminal/create", error="error" in response)
+    return None
 
 
 record(method="started", pid=os.getpid())
@@ -74,7 +128,9 @@ for line in sys.stdin:
     result = {}
     after = []
     if method == "initialize":
-        session_capabilities = {"list": {}, "resume": {}}
+        session_capabilities = {}
+        if not os.environ.get("FAKE_ACP_NO_LIST"):
+            session_capabilities.update(list={}, resume={})
         if not os.environ.get("FAKE_ACP_NO_CLOSE"):
             session_capabilities["close"] = {}
         result = {
@@ -84,9 +140,18 @@ for line in sys.stdin:
                 "sessionCapabilities": session_capabilities,
             },
         }
-    elif method == "session/new":
-        result = {"sessionId": f"session-{sequence}"}
-        sequence += 1
+        if os.environ.get("FAKE_ACP_STEERING"):
+            result["_meta"] = {"steering": {"supported": True}}
+    elif method == "_session/steering":
+        # No prompt of this session is in flight here.
+        steering(message)
+        result = {"outcome": "promptRequired", "reason": "noRunningTurn"}
+    elif method in {"session/new", "session/load"}:
+        if method == "session/new":
+            result = {"sessionId": f"session-{sequence}"}
+            sequence += 1
+        session = parameters.get("sessionId") or result["sessionId"]
+        record(method=method, cwd=parameters["cwd"], session=session)
         if modes:
             result["modes"] = {
                 "currentModeId": os.environ.get("FAKE_ACP_CURRENT_MODE", modes[-1]),
@@ -100,8 +165,7 @@ for line in sys.stdin:
         session = parameters["sessionId"]
         script = json.loads(parameters["prompt"][0]["text"])
         record(method=method, session=session)
-        run(session, script.get("during", []))
-        result = {"stopReason": "end_turn"}
+        result = {"stopReason": run(session, script.get("during", [])) or "end_turn"}
         after = script.get("after", [])
     if "id" in message:
         send({"id": message["id"], "result": result})

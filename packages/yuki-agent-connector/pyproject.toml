@@ -1,6 +1,6 @@
 [project]
 name = "yuki-agent-connector"
-version = "0.9.3"
+version = "0.9.4"
 description = "Connect local native coding agents to Yuki"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
@@ -10,7 +10,7 @@ dependencies = [
   "platformdirs>=4,<5",
   "python-socks[asyncio]>=2.7,<3",
   "httpx[socks]>=0.28.1,<1",
-  "agent-client-protocol==0.12.1",
+  "agent-client-protocol==1.0.0",
   "claude-agent-sdk==0.2.172",
   "pyobjc-core>=13,<14 ; sys_platform == 'darwin'",
   "pyobjc-framework-quartz>=13,<14 ; sys_platform == 'darwin'",

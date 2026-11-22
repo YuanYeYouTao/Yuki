@@ -475,6 +475,7 @@ async def test_acp_process_exit_updates_native_status_and_clears_old_questions(m
             return SimpleNamespace(
                 protocol_version=1,
                 agent_capabilities=SimpleNamespace(model_dump=lambda **kwargs: {}),
+                field_meta=None,
             )
 
     @asynccontextmanager

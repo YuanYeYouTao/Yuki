@@ -583,6 +583,19 @@ class Connector:
                     )
                 self.operations[key] = driver
                 self.dispatching.add(key)
+                if (
+                    command["action"] == "prompt"
+                    and arguments.get("resume")
+                    and command.get("session_id")
+                ):
+                    # The session's cwd as recorded when it was created here; an
+                    # agent without a session directory has no other source of it.
+                    command = {
+                        **command,
+                        "recorded_cwd": self.journal.session_cwd(
+                            command["instance_id"], command["session_id"]
+                        ),
+                    }
                 result = await driver.execute(command)
             response = {"type": "response", "id": key, "result": result}
         except DriverError as exc:
