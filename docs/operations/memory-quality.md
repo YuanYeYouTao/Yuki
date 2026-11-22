@@ -81,27 +81,50 @@ python scripts/verify_resident_check.py --database <sqlite-file> --check check.j
 
 ## 经历目录
 
-经历目录直接生效、无开关：每轮渲染经历目录与今日新经历，经历标题由写经历的模型调用写入。下面的命令
-默认使用当前配置的数据库，也可加 `--database-url`。
+经历目录直接生效、无开关：每轮按会话受众的 `memory_episode_indexes` 行渲染长期印象、最近 15 条与按月计数，
+上次整理之后写入的经历放在当前消息里；行只在 Dream 收尾与下面的所有者命令时写入（合同见
+[经历目录](../architecture/memory-v2.md#经历目录)）。`<会话>` 指 `--conversation <conversation-id>`，由它解析出受众
+（私聊按对方人物根，群按 space）。命令默认使用当前配置的数据库，也可加 `--database-url`。
 
 ```bash
-yuki memory episodes render --conversation <conversation-id> [--through-fact-id N]
-yuki memory episodes status                  # 水位所属运行、运行中的 Dream、有／无标题经历数、各会话条数
+yuki memory episodes render <会话>              # 此刻的目录、今日新经历、各部分 fact ID 与 through
+yuki memory episodes show <会话> [--content]    # 长期印象：编号、经历日期、进入时间、来源；锁定与修订号
+yuki memory episodes set <会话> --facts 1203,4012   # 改写长期印象并锁定（source=owner），至多 10 条
+yuki memory episodes lock <会话>                # 不调模型，离开者直接归档，窗口照常前进
+yuki memory episodes unlock <会话>              # 交还 Dream 比较
+yuki memory episodes generate --all --out plan.json   # 从全部历史折叠首版（调 memory_dream 模型），不写库
+yuki memory episodes generate <会话> --out plan.json
+yuki memory episodes apply plan.json            # 修订号仍一致的受众写入；改过长期印象的自动锁定
+yuki memory episodes status                     # 每个受众：落后、待比较、近 7 天换入、最早印象月份
 yuki memory episodes backfill-titles --dry-run --limit 50
-yuki memory episodes backfill-titles         # 只写 title IS NULL 的 active 经历
+yuki memory episodes backfill-titles            # 只写 title IS NULL 的 active 经历
 yuki memory episodes set-title --fact <fact-id> --text <标题>
 yuki memory episodes check > episodes.json
 python scripts/verify_episode_check.py --database <sqlite-file> --check episodes.json
 ```
 
-- 水位是最近一次已收尾 Dream 运行的快照；`status` 的 `active_run` 长时间停在 running 说明 Dream 停住，
-  目录沿用上一次水位，新经历都留在当前消息里（至多 20 条）。
+- **首版播种**（部署 `0165` 之后）：`generate --all --out plan.json` 对每个有可见经历的受众，取全部可见经历按
+  `(日期, fact_id)` 排序，最后 15 条作“最近”，其余按输入预算分批走同一个比较调用，折叠成至多 10 条长期印象；
+  计划文件每个受众一项：`owner_kind`、`owner_id`、`base_revision`、`through_fact_id`、`recent_fact_ids`、
+  `generated`、`memorable`、`reasons`。在部署环境内过目，不合适的直接改 `memorable`（fact ID 列表），再
+  `apply plan.json`：行的修订号变了的受众拒绝（`revision_changed`，重新 generate），列出的 ID 此刻不可见的拒绝
+  （`unavailable_fact`）；改过 `memorable` 的受众写入后自动锁定（想交还 Dream 就 `unlock`），未改的保持原锁定状态。
+  部署到 `apply` 之间目录为空、只有今日新经历；不播种时首次 Dream 收尾会自动建行，按每天一次调用逐日折叠。
+- `status` 每个受众一行：`through_fact_id` 与 `behind_watermark`（落后最近一次已收尾 Dream 快照多少，作废或没轮到的
+  行会落后）、`recent`／`pending`（待比较：超出输入预算留到下次的离开者）、`memorable` 与 `locked`、`swapped_in_7d`
+  （此刻仍在列表里、7 天内进入的条数；一周内换入又换出的不计，后继接替不计，是下界，精确值看日志
+  `memory_episode_memorable_selected` 的 `added`／`removed`）、`earliest_memorable_month` 与其进入时间。
+  某个受众连续几周换入 0 条、每天又有离开者（日志 `offered` 不为 0）、最早印象月份不动，说明现有印象在霸占。
+- 连续作废（日志 `memory_episode_memorable_rejected` 的 `code`）时先 `lock` 解卡（不调模型、离开者直接归档），
+  查明后 `unlock`。不加自动降级。
+- `render`、`show --content`、`--dry-run` 与计划文件含记忆派生内容，只在部署环境内查看，不贴进仓库或 issue。
 - `backfill-titles`：Dream recompose 产生的经历直接取 focus，不调模型；其余按 fact ID 升序、按
   `MEMORY_DREAM_MAX_INPUT_CHARACTERS` 分批走 `memory_dream` 模型路由，模型只能引用本批别名。只更新 `title`，
   不改 `updated_at` 与正文，所以不会把这些事实重新排进 Dream。`--dry-run` 也会真实调用模型。
-- `--dry-run`、`render` 与 `set-title` 的输出含记忆派生内容，只在部署环境内查看，不贴进仓库或 issue。
 - `check` 只对全部会话各渲染两次，输出列出的 fact ID 和不稳定的会话；可见范围的独立复核在
   `scripts/verify_episode_check.py`，违反条数应为 0。
+- 比较指令的离线重放（调用生产 `memory_dream` 模型，不写库）：`scripts/replay_episode_memorable.py`，三组虚构
+  输入各跑正序、倒序，输出写 `test-results/memory-episode-memorable/replay/`（见 P2.1 任务书 §14.1）。
 
 ## 人物画像
 

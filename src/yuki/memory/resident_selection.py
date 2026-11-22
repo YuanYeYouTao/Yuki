@@ -1,5 +1,9 @@
 """Dream post-batch selection of resident core sets (layered memory P1, #681).
 
+The same step also keeps the episode indexes (layered memory P2.1,
+``memory.episode_selection``) between the core sets and the person profiles; the three
+share ``memory_resident_max_selections_per_run``.
+
 After a Dream run has processed its clusters, each due space owner gets at most
 one structured model call that keeps or replaces entries of its core set (at most
 ten fact IDs). The step only writes ``memory_resident_sets`` through
@@ -25,6 +29,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func, or_, select, update
 
 from yuki.config import Settings
+from yuki.memory.episode_selection import EpisodeSelection
 from yuki.memory.profile_selection import DueProfile, ProfileMaintenance, profile_label
 from yuki.memory.profiles import ProfileStore
 from yuki.memory.resident import (
@@ -333,6 +338,12 @@ class ResidentSelection:
             structured=self._structured,
             concurrency=concurrency,
         )
+        self.episodes = EpisodeSelection(
+            settings=settings,
+            database=database,
+            structured=self._structured,
+            concurrency=concurrency,
+        )
 
     async def pending(self) -> ResidentPending:
         """Due core sets and profiles as if a Dream run started now (DreamHealth)."""
@@ -351,9 +362,10 @@ class ResidentSelection:
     async def run(self, run_public_id: str) -> int:
         """Member lists, program cleanup, then due owners in queue order.
 
-        Group core sets go first (P1 order: watermark, then space ID), then profiles
-        (P4 §8.2 order); at most ``memory_resident_max_selections_per_run`` owners are
-        attempted, each with at most one model call.
+        Group core sets go first (P1 order: watermark, then space ID), then the episode
+        indexes (P2.1 §6: audiences that need their one comparison call take a slot),
+        then profiles (P4 §8.2 order); at most ``memory_resident_max_selections_per_run``
+        owners are attempted, each with at most one model call.
         """
 
         activity = await self.profiles.activity(await self.profiles.window(run_public_id))
@@ -363,7 +375,6 @@ class ResidentSelection:
         profiles = await self.profiles.due(await self.profiles.maintained(activity))
         cap = self._settings.memory_resident_max_selections_per_run
         batch = pending.owners[:cap]
-        profile_batch = profiles[: cap - len(batch)]
         processed = calls = 0
         for due in batch:
             try:
@@ -386,6 +397,9 @@ class ResidentSelection:
                 continue
             processed += 1
             calls += outcome.model_calls
+        episodes = await self.episodes.run(run_public_id, slots=cap - len(batch))
+        calls += episodes.model_calls
+        profile_batch = profiles[: max(0, cap - len(batch) - episodes.attempted)]
         rejected: dict[str, int] = {}
         for item in profile_batch:
             result = await self.profiles.maintain(item, run_public_id)
@@ -397,19 +411,23 @@ class ResidentSelection:
         logger.info(
             "memory_resident_selection_finished run_id=%s due=%d attempted=%d "
             "processed=%d model_calls=%d listed_spaces=%d window_start=%s cleaned=%d "
+            "episode_indexes_attempted=%d episode_indexes_written=%d "
             "profiles_due=%d profiles_attempted=%d profiles_void=%s deferred=%s",
             run_public_id,
             len(pending.owners) + len(profiles),
-            len(batch) + len(profile_batch),
+            len(batch) + episodes.attempted + len(profile_batch),
             processed,
             calls,
             len(listed),
             activity.window.start.isoformat(),
             cleaned,
+            episodes.attempted,
+            episodes.written,
             len(profiles),
             len(profile_batch),
             json.dumps(rejected, sort_keys=True),
-            [
+            [owner.label for owner in episodes.deferred]
+            + [
                 profile_label(item.person_id, item.audience)
                 for item in profiles[len(profile_batch) :]
             ],

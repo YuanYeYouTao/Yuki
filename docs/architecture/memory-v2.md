@@ -232,7 +232,7 @@ person_group 事实与经历不进画像。
 标题不进 FTS、embedding 文档或 Dream 的事实签名。
 
 **可见范围**与常驻段同一套证据规则（`memory/resident.py` 的 `evidence_origins`、`private_evidence_visible`、
-`space_evidence_visible`）：
+`space_evidence_visible`）；长期印象的候选、比较输入与渲染三处都先过这套判定：
 - 共同条件：kind=episode、active、`conflict_state=clear`、未隔离、未过期、authority 不是 third_party，
   person／person_group 经历的主人人物（原人物与根）enabled。
 - 与 P 的私聊：P（按根）的 person／person_group 经历与 visibility 为 private、可见人物根为 P 的 SELF 经历；
@@ -240,16 +240,51 @@ person_group 事实与经历不进画像。
 - 群 G：G 的 group 经历、主题群为 G 的 person_group 经历、visibility 为 group 且可见群为 G 的 SELF 经历；
   至少一条证据，且每条都直接指向 G 的聊天事件（工具回执证据不算）。群里不列 person 范围的经历。
 
-**水位**取最近一次已收尾（`completed_at` 不为空、终态 completed 或 partial_failed）的 Dream 运行的
-`snapshot_max_fact_id`；没有时为 0。`fact_id ≤ 水位` 的可见经历进目录，之后的进“今天新记下的经历”，
-因此目录每个 Dream 批次最多变一次（失效、取代、删除与人物停用合并仍立即生效）。
+**存储**：`memory_episode_indexes`（schema `0165`）每个会话受众一行（私聊按对方人物根，群按 space；两条部分唯一索引），
+存“最近”列表（按排序键升序）、至多 10 条长期印象（`fact_id`、进入时间 `since`、来源 `dream`／`owner`）、
+按月计数、`through_fact_id`（这一行整理到的最大 fact ID）、`locked` 与每次写入加一的 `revision`。
+行是派生数据，只存 fact ID；删掉整张表不丢事实，下一次 Dream 收尾或 `generate` 可重建。
+私聊行随人物遗忘级联删除；人物合并后按根取行，被并入者的旧行不再读到，其早于 `through` 的经历只计入月份。
 
-**格式**：日期取 `coalesce(valid_from, created_at)` 的部署时区（`memory_dream_timezone`）日期，按
-`(日期, fact_id)` 升序；目录逐条列出最后 120 条（`- MM-DD 标题（fact:ID）`），更早的按 `YYYY-MM` 只给条数；
-今日新经历列最后 20 条，超出时第二行写“另有 N 条”。标题折叠连续空白、不截断，为空时显示“（未命名经历）”。
-所有者通过 `yuki memory episodes` 子命令渲染、检查、回填与改写标题、查看水位（见
-[Memory 质量运维](../operations/memory-quality.md)）。设计依据与验收见
-[记忆分层 P2 经历目录任务书](Yuki-记忆分层P2经历目录任务书-2026-11-22.md)。
+**格式**：日期取 `coalesce(valid_from, created_at)` 的部署时区（`memory_dream_timezone`）日期，排序键为
+`(日期, fact_id)`。目录首行写“截至 MM-DD 的每日整理”（行的 `as_of`），其后三节：`[长期印象]`（按排序键）、
+`[最近的经历]`（“最近”列表的最后 15 条，按排序键）、`[其余]`（行里存的按 `YYYY-MM` 计数，即本受众可见、
+不在前两节的经历）；某节为空不输出，三节都空时没有目录。与 `as_of` 同年的日期显示 `MM-DD`，否则 `YYYY-MM-DD`。
+同一条经历只出现一次，长期印象优先。今天新记下的经历是 `fact_id > through` 且目录没列的可见经历，列最后 20 条，
+超出时第二行写“另有 N 条”。没有行的受众目录为空，今天新记下的经历从最近一次已收尾 Dream 运行的
+`snapshot_max_fact_id` 之后算。标题折叠连续空白、不截断，为空时显示“（未命名经历）”。
+
+**每轮渲染**的语句数是常数：受众（私聊再取人物根）、本受众那一行、一条
+`id IN (已列 ID) OR id > through` 的主键查询（资格条件作为列取回，在 Python 里判断，否则规划器改走 status 索引）、
+一条证据查询；已列 ID 不再 active 时才沿后继查（`ix_memory_facts_supersedes_id`）。读的行数只与已列 ID 和
+上次整理以来写入的事实有关，与历史长度无关。渲染时重新校验每一条：已列经历失效、被取代、证据变化或主人停用，
+下一次激活起不显示；长期印象被改写或合并时显示后继，“最近”里的条目只由它自身的改写接替。
+
+**Dream 收尾**（`memory/episode_selection.py`，在 `ResidentSelection.run` 里群核心集之后、画像之前，三者共用
+`memory_resident_max_selections_per_run`）：
+- 只读准备：全部行、最大 fact ID、`id > min(through) AND kind='episode'` 的主键范围（判断新经历：沿 `supersedes_id`
+  回到根，根大于这一行 `through` 才是新经历，改写出来的新版本不是）、全部 active 经历及其证据（两条语句，
+  按受众分组判定可见并重算月份）。语句数与受众数、离开者数无关。
+- 每个受众：`S` = “最近”列表（后继按根处理：自身改写接替原位；并入或与别条合成的直接删除；不可见的删除）∪
+  新的可见经历，两者都去掉已在长期印象里的 ID，按排序键排；最后 15 条留下，其余是离开者。
+- 有离开者且未锁定：一次 `memory_dream` 结构化调用（温度 0.1）。候选池 `c_N` = 现有长期印象 ∪ 离开者，
+  按排序键编号，每条只有 `ref`、`title`、`content`、`date`，不标新旧、不给 importance、进入时间或任何次数；
+  超过 `memory_dream_max_input_characters` 时离开者只给放得下的前缀（至少一条），其余留在列表前部、不渲染、计入月份，
+  下次再比。输出 `selected`（至多 10 个别名）与 `reason`；别名未知、重复、超过 10 个或 reason 为空即整次作废，
+  这一行完全不动（记 `memory_episode_memorable_rejected`）。池里没选上的都归档，以后不再进任何比较输入；
+  新选上的 `since` 为本次，留任的不变。空位不从归档回填。
+- 锁定的受众不调模型，离开者直接归档；没有离开者的不调模型。需要调用而没轮到的受众这一轮完全不变。
+- 写入：每个受众一个短写事务，按主人取行、比对读到的 `revision` 与 `locked`（所有者在调用期间改过即放弃），
+  写入两个列表、月份计数、`through`（本次读到的最大 fact ID）、`as_of`、`revision+1`；内容没变的行只把 `through`
+  推进（按主键的 UPDATE，不加 `revision`，目录字节不变）。事务内不等模型、不查证据、不扫描历史。
+- 被想起不等于更重要：聊天提到、`search_memory` 读到都不写任何东西；归档的经历不会回到窗口；Dream 把重提
+  合并回原条时原条 ID 不变（merge、synthesize 的锚点是来源里 ID 最小的一条），合并出的新版本按根判断不算新经历。
+  Dream 指令写明“后来重提、回忆或复述一件已有记忆的经历……merge 到原条”，比较指令写明重提不因此更值得记得。
+
+所有者通过 `yuki memory episodes` 子命令渲染、检查、查看／改写／锁定长期印象、生成与写入首版、回填与改写标题、
+查看状态（见[Memory 质量运维](../operations/memory-quality.md)）。设计依据与验收见
+[记忆分层 P2 经历目录任务书](Yuki-记忆分层P2经历目录任务书-2026-11-22.md)与
+[P2.1 经历目录精简任务书](Yuki-记忆分层P2.1经历目录精简任务书-2026-11-23.md)。
 
 ## 维护与变更边界
 

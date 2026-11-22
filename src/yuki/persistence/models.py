@@ -514,6 +514,12 @@ class MemoryFactModel(Base):
             "canonical_visibility_person_id",
         ),
         Index("ix_memory_facts_canonical_visibility_space_id", "canonical_visibility_space_id"),
+        # Successor lookups ``supersedes_id IN (...)`` (P2.1 §11.1, migration 0165).
+        Index(
+            "ix_memory_facts_supersedes_id",
+            "supersedes_id",
+            sqlite_where=text("supersedes_id IS NOT NULL"),
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -547,9 +553,6 @@ class MemoryFactModel(Base):
         DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP")
     )
     invalidated_reason: Mapped[str | None] = mapped_column(String(40), nullable=True)
-    last_injected_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
     validation_version: Mapped[str] = mapped_column(
         String(32), nullable=False, default="memory-v2-quality-v1", server_default="legacy"
     )
@@ -626,6 +629,56 @@ class MemoryResidentSetModel(Base):
     )
     revision: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     selected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class MemoryEpisodeIndexModel(Base):
+    """One conversation audience's episode index: recent list, impressions, month counts.
+
+    A private chat's audience is the counterpart's person root, a group's is its space.
+    Fact IDs only, never memory text; a derived view (layered memory P2.1 task book §4):
+    rendering re-applies every filter, the nightly Dream step and the owner CLI write it.
+    ``memorable_json`` holds ``[{"fact_id", "since", "source"}]``.
+    """
+
+    __tablename__ = "memory_episode_indexes"
+    __table_args__ = (
+        CheckConstraint(
+            "(owner_kind = 'private' AND owner_person_id IS NOT NULL AND owner_space_id IS NULL)"
+            " OR (owner_kind = 'space' AND owner_space_id IS NOT NULL"
+            " AND owner_person_id IS NULL)",
+            name="ck_memory_episode_indexes_owner",
+        ),
+        Index(
+            "uq_memory_episode_indexes_private",
+            "owner_person_id",
+            unique=True,
+            sqlite_where=text("owner_kind = 'private'"),
+        ),
+        Index(
+            "uq_memory_episode_indexes_space",
+            "owner_space_id",
+            unique=True,
+            sqlite_where=text("owner_kind = 'space'"),
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    owner_kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    owner_person_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("persons.id", ondelete="CASCADE")
+    )
+    owner_space_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("spaces.id", ondelete="CASCADE")
+    )
+    recent_fact_ids_json: Mapped[str] = mapped_column(Text, nullable=False, server_default="[]")
+    memorable_json: Mapped[str] = mapped_column(Text, nullable=False, server_default="[]")
+    month_counts_json: Mapped[str] = mapped_column(Text, nullable=False, server_default="{}")
+    through_fact_id: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    locked: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="0")
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    as_of: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 

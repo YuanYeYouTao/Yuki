@@ -111,9 +111,6 @@ class MemoryAuditService:
                 for row in evidence[-20:]
             ],
             "last_confirmed_at": fact.last_confirmed_at.isoformat(),
-            "last_injected_at": (
-                fact.last_injected_at.isoformat() if fact.last_injected_at is not None else None
-            ),
             "supersession_chain": [row.id for row in chain],
             "relations": [
                 {

@@ -1,4 +1,8 @@
-"""Acceptance check for episode index visibility (layered memory P2 task book §11.2).
+"""Acceptance check for episode index visibility (layered memory P2 §11.2, P2.1 §14.1).
+
+``index_fact_ids`` of the check report holds every listed ID of the index (P2.1: the
+long-term impressions and the recent window), ``recent_fact_ids`` today's new
+episodes; all of them must satisfy the same rules.
 
 Independent of the renderer on purpose: it re-checks every fact ID reported by
 ``yuki memory episodes check`` against the task book §5.3 conditions with its own

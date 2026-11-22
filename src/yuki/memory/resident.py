@@ -537,7 +537,10 @@ async def resolve_listed(
             frontier[fact_id] = fact_id
             walked[fact_id] = {fact_id}
     while frontier:
-        following = await _successors(session, set(frontier.values()))
+        following = {
+            fact_id: step[0]
+            for fact_id, step in (await successor_steps(session, set(frontier.values()))).items()
+        }
         unseen = set(following.values()) - facts.keys()
         if unseen:
             facts.update(await load_facts(session, MemoryFactModel.id.in_(unseen)))
@@ -555,10 +558,16 @@ async def resolve_listed(
     return facts, resolved
 
 
-async def _successors(session: AsyncSession, fact_ids: set[int]) -> dict[int, int]:
+async def successor_steps(session: AsyncSession, fact_ids: set[int]) -> dict[int, tuple[int, bool]]:
+    """One step along each chain: ``fact_id -> (next ID, found through supersedes_id)``.
+
+    The newest fact whose ``supersedes_id`` names it (a rewrite of the same episode or
+    fact, served by ``ix_memory_facts_supersedes_id``), else the newest committed Dream
+    operation output that consumed it (merged into or combined with another fact).
+    """
     fact = MemoryFactModel
-    found: dict[int, int] = {
-        row[0]: row[1]
+    found: dict[int, tuple[int, bool]] = {
+        row[0]: (row[1], True)
         for row in await session.execute(
             select(fact.supersedes_id, func.max(fact.id))
             .where(fact.supersedes_id.in_(fact_ids))
@@ -580,7 +589,7 @@ async def _successors(session: AsyncSession, fact_ids: set[int]) -> dict[int, in
             .order_by(operation.id)
         )
         for fact_id, output_id in rows:
-            found[fact_id] = output_id  # ascending operation ID: the newest wins
+            found[fact_id] = (output_id, False)  # ascending operation ID: the newest wins
     return found
 
 
@@ -607,6 +616,18 @@ async def evidence_origins(
     wanted = set(fact_ids)
     if not wanted:
         return {}
+    return await evidence_origins_where(session, MemoryEvidenceModel.fact_id.in_(wanted))
+
+
+async def evidence_origins_where(
+    session: AsyncSession, condition: Any
+) -> dict[int, list[EvidenceOrigin]]:
+    """Evidence origins of the rows matching ``condition`` on ``memory_evidence``.
+
+    ``condition`` may be an ID list or a subquery of fact IDs (``fact_id IN (SELECT
+    ...)``), which keeps a batch over many facts to one statement without a bound
+    parameter per ID.
+    """
     evidence, receipt = MemoryEvidenceModel, MemoryToolReceiptModel
     event, conversation = ChatEventModel, CanonicalConversationModel
     person = aliased(CanonicalPersonModel)
@@ -624,7 +645,7 @@ async def evidence_origins(
         .outerjoin(event, event.id == func.coalesce(evidence.event_id, receipt.trigger_event_id))
         .outerjoin(conversation, conversation.id == event.canonical_conversation_id)
         .outerjoin(person, person.id == conversation.person_id)
-        .where(evidence.fact_id.in_(wanted))
+        .where(condition)
     )
     origins: dict[int, list[EvidenceOrigin]] = {}
     for fact_id, event_id, kind, person_root, space_id, excerpt in rows:

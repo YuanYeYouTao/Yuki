@@ -119,21 +119,28 @@ async def test_upgrade_preserves_rows_and_allows_independent_same_key(tmp_path, 
         f"INSERT INTO memory_facts ({','.join(columns)}) VALUES ({','.join('?' for _ in columns)})"
     )
     with sqlite3.connect(path) as db:
+        db.row_factory = sqlite3.Row
         db.execute(sql, values)
         db.commit()
-        before = db.execute("SELECT * FROM memory_facts").fetchall()
+        before = [dict(row) for row in db.execute("SELECT * FROM memory_facts")]
     await asyncio.to_thread(command.upgrade, config, "head")
     with sqlite3.connect(path) as db:
-        assert db.execute("SELECT version_num FROM alembic_version").fetchone() == (
+        db.row_factory = sqlite3.Row
+        assert tuple(db.execute("SELECT version_num FROM alembic_version").fetchone()) == (
             canonical_schema_revision(),
         )
-        # Later migrations may append columns (0163 title); original values stay.
-        after = db.execute("SELECT * FROM memory_facts").fetchall()
-        assert [row[: len(before[0])] for row in after] == before
+        # Later migrations may append columns (0163 title) or drop unused ones (0165
+        # last_injected_at); every remaining original value stays.
+        after = [dict(row) for row in db.execute("SELECT * FROM memory_facts")]
+        assert set(before[0]) - set(after[0]) == {"last_injected_at"}
+        assert [{key: row[key] for key in before[0] if key in row} for row in after] == [
+            {key: value for key, value in row.items() if key != "last_injected_at"}
+            for row in before
+        ]
         db.execute(sql, values)
-        assert db.execute(
-            "SELECT COUNT(*) FROM memory_facts WHERE memory_key='same-key'"
-        ).fetchone() == (2,)
+        assert tuple(
+            db.execute("SELECT COUNT(*) FROM memory_facts WHERE memory_key='same-key'").fetchone()
+        ) == (2,)
 
 
 async def test_delete_preference_checks_new_same_key_without_loading_evidence(

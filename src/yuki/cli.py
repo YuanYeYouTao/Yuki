@@ -16,7 +16,7 @@ from uuid import uuid4
 
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import func, select
+from sqlalchemy import select
 
 from yuki import __version__
 from yuki.acp_adapter.cli import add_acp_parser, run_acp_command
@@ -38,8 +38,21 @@ from yuki.gateway.providers.snowluma import SNOWLUMA_PROVIDER_ID
 from yuki.gateway.registry import GatewayConnectionRegistry
 from yuki.http_environment import load_http_environment
 from yuki.identity.routing import PresenceRouter
-from yuki.memory.dream.db_models import MemoryDreamRunModel
-from yuki.memory.episode_index import EpisodeIndex
+from yuki.memory.episode_index import (
+    EpisodeIndex,
+    conversation_owner,
+    load_episodes,
+    load_index_row,
+)
+from yuki.memory.episode_index import set_locked as set_index_locked
+from yuki.memory.episode_selection import (
+    EpisodeGeneration,
+    EpisodeIndexRejected,
+    EpisodePlan,
+    index_status,
+    set_memorable,
+)
+from yuki.memory.episode_selection import apply_plan as apply_episode_plan
 from yuki.memory.episode_titles import EpisodeTitleRejected, EpisodeTitles, set_episode_title
 from yuki.memory.profile_admin import (
     ProfileGeneration,
@@ -342,15 +355,40 @@ def _add_episodes_parser(
     commands: argparse._SubParsersAction[argparse.ArgumentParser],
 ) -> None:
     episodes = commands.add_parser(
-        "episodes", help="经历目录：渲染、检查、标题回填与改写、水位状态；不看运行时开关"
+        "episodes",
+        help="经历目录：渲染、检查、长期印象查看/改写/锁定、首版生成与写入、标题、状态",
     )
     episode_commands = episodes.add_subparsers(dest="episodes_command", required=True)
     render = episode_commands.add_parser("render", help="打印该会话此刻的经历目录与今日新经历")
     render.add_argument("--conversation", required=True)
-    render.add_argument("--through-fact-id", type=int, help="用给定水位代替当前水位，供离线核对")
     check = episode_commands.add_parser(
         "check", help="对全部会话做两次只读渲染，输出列出的 fact ID 与不稳定的会话"
     )
+    show = episode_commands.add_parser(
+        "show", help="该会话受众的长期印象（编号、日期、进入时间、来源）、锁定与修订号"
+    )
+    show.add_argument("--conversation", required=True)
+    show.add_argument("--content", action="store_true", help="同时打印标题；只在部署环境内使用")
+    set_command = episode_commands.add_parser(
+        "set", help="改写长期印象并锁定（source=owner），至多 10 条、须本受众此刻可见"
+    )
+    set_command.add_argument("--conversation", required=True)
+    set_command.add_argument("--facts", required=True, help="逗号分隔的 fact ID；空串清空")
+    lock = episode_commands.add_parser("lock", help="锁定：不调模型，离开者直接归档")
+    lock.add_argument("--conversation", required=True)
+    unlock = episode_commands.add_parser("unlock", help="解锁：交还 Dream 比较")
+    unlock.add_argument("--conversation", required=True)
+    generate = episode_commands.add_parser(
+        "generate", help="用 memory_dream 模型路由从全部历史折叠出首版，写计划文件；不写库"
+    )
+    which = generate.add_mutually_exclusive_group(required=True)
+    which.add_argument("--conversation")
+    which.add_argument("--all", action="store_true", help="全部有可见经历的受众")
+    generate.add_argument("--out", type=Path, required=True)
+    apply = episode_commands.add_parser(
+        "apply", help="修订号仍一致的受众写入计划；改过长期印象的自动锁定"
+    )
+    apply.add_argument("plan", type=Path)
     backfill = episode_commands.add_parser(
         "backfill-titles",
         help="为无标题的 active 经历补标题（recompose 取 focus，其余走 memory_dream）",
@@ -361,9 +399,22 @@ def _add_episodes_parser(
     set_title.add_argument("--fact", type=int, required=True)
     set_title.add_argument("--text", required=True)
     status = episode_commands.add_parser(
-        "status", help="水位、运行中的 Dream、标题覆盖与各会话条数"
+        "status",
+        help="水位、运行中的 Dream、标题覆盖与每个受众的落后、待比较、近 7 天换入与最早印象",
     )
-    for parser in (render, check, backfill, set_title, status):
+    for parser in (
+        render,
+        check,
+        show,
+        set_command,
+        lock,
+        unlock,
+        generate,
+        apply,
+        backfill,
+        set_title,
+        status,
+    ):
         parser.add_argument("--database-url", help="默认使用当前配置的数据库")
 
 
@@ -845,17 +896,19 @@ async def _cli_models(
 async def _episodes_command(settings: Settings, args: argparse.Namespace) -> int:
     action = str(args.episodes_command)
     database = Database(str(args.database_url or settings.database_url))
-    episodes = EpisodeIndex(database, timezone=settings.memory_dream_timezone)
+    timezone = settings.memory_dream_timezone
+    episodes = EpisodeIndex(database, timezone=timezone)
     try:
         payload: dict[str, object]
+        code = 0
         if action == "render":
-            rendered = await episodes.render_conversation(
-                str(args.conversation), through_fact_id=args.through_fact_id
-            )
+            rendered = await episodes.render_conversation(str(args.conversation))
             print(rendered.index_text)
             print()
             print(rendered.recent_text)
             payload = {
+                "memorable_fact_ids": list(rendered.memorable_fact_ids),
+                "window_fact_ids": list(rendered.window_fact_ids),
                 "index_fact_ids": list(rendered.index_fact_ids),
                 "recent_fact_ids": list(rendered.recent_fact_ids),
                 "through_fact_id": rendered.through_fact_id,
@@ -863,7 +916,68 @@ async def _episodes_command(settings: Settings, args: argparse.Namespace) -> int
         elif action == "check":
             payload = await _episodes_check(database, episodes)
         elif action == "status":
-            payload = await _episodes_status(database, episodes)
+            payload = await _episodes_status(database, timezone)
+        elif action == "show":
+            payload = await _episodes_show(
+                database, str(args.conversation), timezone, content=bool(args.content)
+            )
+        elif action == "set":
+            facts = [int(item) for item in str(args.facts).split(",") if item.strip()]
+            try:
+                owner, revision = await set_memorable(
+                    database, str(args.conversation), facts, timezone
+                )
+            except EpisodeIndexRejected as exc:
+                print(json.dumps({"error": exc.code, "fact_ids": list(exc.fact_ids)}))
+                return 1
+            payload = {"owner": owner.label, "memorable": facts, "revision": revision}
+        elif action in ("lock", "unlock"):
+            async with database.read_session() as session:
+                owner = await conversation_owner(session, str(args.conversation))
+            try:
+                row = await set_index_locked(database, owner, action == "lock")
+            except LookupError:
+                print(json.dumps({"error": "no_index_row", "owner": owner.label}))
+                return 1
+            payload = {"owner": owner.label, "locked": row.locked, "revision": row.revision}
+        elif action == "generate":
+            async with _cli_models(settings, database) as (active, executor):
+                result = await EpisodeGeneration(
+                    settings=active,
+                    database=database,
+                    models=executor,
+                    concurrency=ConcurrencyManager(),
+                ).generate(None if args.all else [str(args.conversation)])
+            result.plan.write(Path(args.out))
+            payload = {
+                "output": str(args.out),
+                "planned": len(result.plan.indexes),
+                "model_calls": result.model_calls,
+                "rejected": [
+                    {"owner": item.owner.label, "code": item.code} for item in result.rejected
+                ],
+            }
+            code = int(bool(result.rejected))
+        elif action == "apply":
+            applied, rejected = await apply_episode_plan(
+                database, EpisodePlan.read(Path(args.plan)), timezone
+            )
+            payload = {
+                "applied": [
+                    {
+                        "owner": item.owner.label,
+                        "revision": item.revision,
+                        "edited": item.edited,
+                        "locked": item.locked,
+                    }
+                    for item in applied
+                ],
+                "rejected": [
+                    {"owner": item.owner.label, "code": item.code, "fact_ids": list(item.fact_ids)}
+                    for item in rejected
+                ],
+            }
+            code = int(bool(rejected))
         elif action == "set-title":
             try:
                 await set_episode_title(database, int(args.fact), str(args.text))
@@ -889,9 +1003,40 @@ async def _episodes_command(settings: Settings, args: argparse.Namespace) -> int
                 "items": [asdict(item) for item in outcome.items],
             }
         print(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
-        return 0
+        return code
     finally:
         await database.close()
+
+
+async def _episodes_show(
+    database: Database, conversation_id: str, timezone: str, *, content: bool
+) -> dict[str, object]:
+    async with database.read_session() as session:
+        owner = await conversation_owner(session, conversation_id)
+        row = await load_index_row(session, owner)
+        ids = row.memorable_ids if row is not None else ()
+        facts = await load_episodes(session, timezone, MemoryFactModel.id.in_(ids)) if ids else {}
+    entries: list[dict[str, object]] = []
+    for entry in row.memorable if row is not None else ():
+        item: dict[str, object] = {
+            "fact_id": entry.fact_id,
+            "date": facts[entry.fact_id].day.isoformat() if entry.fact_id in facts else None,
+            "since": entry.since.isoformat(),
+            "source": entry.source,
+        }
+        if content and entry.fact_id in facts:
+            item["title"] = facts[entry.fact_id].title
+        entries.append(item)
+    return {
+        "owner": owner.label,
+        "exists": row is not None,
+        "locked": row.locked if row is not None else False,
+        "revision": row.revision if row is not None else 0,
+        "through_fact_id": row.through_fact_id if row is not None else None,
+        "recent": len(row.window) if row is not None else 0,
+        "pending": len(row.pending) if row is not None else 0,
+        "memorable": entries,
+    }
 
 
 def _entry_payload(entry: ProfileEntry, *, content: bool) -> dict[str, object]:
@@ -1254,52 +1399,8 @@ async def _episodes_check(database: Database, episodes: EpisodeIndex) -> dict[st
     }
 
 
-async def _episodes_status(database: Database, episodes: EpisodeIndex) -> dict[str, object]:
-    mark = await episodes.watermark()
-    run = MemoryDreamRunModel
-    fact = MemoryFactModel
-    async with database.read_session() as session:
-        active = await session.scalar(
-            select(run).where(run.status.in_(("planned", "running"))).order_by(run.id.desc())
-        )
-        titled: dict[bool, int] = {
-            bool(has_title): int(count)
-            for has_title, count in await session.execute(
-                select(fact.title.is_not(None), func.count())
-                .where(fact.kind == "episode", fact.status == "active")
-                .group_by(fact.title.is_not(None))
-            )
-        }
-    conversations = []
-    for conversation_id, *_identity in await _conversation_rows(database):
-        rendered = await episodes.render_conversation(conversation_id)
-        if rendered.index_fact_ids or rendered.recent_fact_ids:
-            conversations.append(
-                {
-                    "conversation_id": conversation_id,
-                    "index": len(rendered.index_fact_ids),
-                    "recent": len(rendered.recent_fact_ids),
-                }
-            )
-    return {
-        "watermark": {
-            "through_fact_id": mark.through_fact_id,
-            "run_id": mark.run_public_id,
-            "status": mark.status,
-            "completed_at": mark.completed_at.isoformat() if mark.completed_at else None,
-        },
-        "active_run": None
-        if active is None
-        else {
-            "run_id": active.public_id,
-            "status": active.status,
-            "snapshot_max_fact_id": active.snapshot_max_fact_id,
-            "started_at": active.started_at.isoformat() if active.started_at else None,
-        },
-        "episodes_with_title": titled.get(True, 0),
-        "episodes_without_title": titled.get(False, 0),
-        "conversations": conversations,
-    }
+async def _episodes_status(database: Database, timezone: str) -> dict[str, object]:
+    return await index_status(database, timezone)
 
 
 def main() -> None:

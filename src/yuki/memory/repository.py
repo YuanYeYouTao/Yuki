@@ -924,7 +924,6 @@ class MemoryFactRepository:
             invalidated_reason=(
                 fact.invalidated_reason.value if fact.invalidated_reason is not None else None
             ),
-            last_injected_at=None,
             validation_version=fact.validation_version,
             last_audited_at=fact.last_audited_at,
             review_state=fact.review_state.value,

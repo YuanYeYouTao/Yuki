@@ -66,7 +66,6 @@ class MemoryFact(_MemoryModel):
     updated_at: datetime
     last_confirmed_at: datetime = Field(default_factory=lambda: datetime.min.replace(tzinfo=UTC))
     invalidated_reason: MemoryInvalidationReason | None = None
-    last_injected_at: datetime | None = None
     evidence_count: int = Field(default=0, ge=0)
     validation_version: str = "memory-v2-quality-v1"
     last_audited_at: datetime | None = None
@@ -82,7 +81,6 @@ class MemoryFact(_MemoryModel):
         "created_at",
         "updated_at",
         "last_confirmed_at",
-        "last_injected_at",
         "last_audited_at",
         mode="after",
     )
