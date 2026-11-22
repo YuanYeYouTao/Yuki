@@ -37,6 +37,7 @@ from yuki.conversation.canonical_db_models import CanonicalConversationModel
 from yuki.identity.db_models import CanonicalPersonModel
 from yuki.identity.person_identity import person_family_condition
 from yuki.memory.dream.db_models import MemoryDreamRunModel
+from yuki.memory.episode_index import FINISHED_RUN_STATUSES
 from yuki.memory.profiles import (
     MAX_PROFILE_ENTRIES,
     MAX_PROFILE_ENTRY_CHARS,
@@ -64,10 +65,10 @@ from yuki.persistence.models import (
     MemorySpaceMemberModel,
 )
 from yuki.services.concurrency import ConcurrencyManager
+from yuki.time.formatting import stored_utc
 
 logger = logging.getLogger(__name__)
 
-FINISHED_RUN_STATUSES = ("completed", "partial_failed")  # as the P2 episode index watermark
 _DEFAULT_WINDOW = timedelta(hours=24)
 
 _INSTRUCTION = """\
@@ -123,7 +124,6 @@ class ProfileProposal:
     reason: str
     signature: str  # the available set the call saw
     base_version: int  # current_version when the call started
-    current_entries: tuple[ProfileEntry, ...]  # the entries the call was given as cur_N
     model_calls: int
 
 
@@ -131,7 +131,6 @@ class ProfileProposal:
 class ActivityWindow:
     start: datetime
     end: datetime
-    previous_run_public_id: str | None  # the finished run the window starts at
 
 
 @dataclass(frozen=True, slots=True)
@@ -146,8 +145,6 @@ class DueProfile:
     person_id: str  # root
     audience: ProfileAudience
     attempted_at: datetime | None
-    current_version: int
-    signature: str  # the available set's signature now
     pending_since: datetime | None  # attempt time, else the oldest available fact
 
 
@@ -172,23 +169,21 @@ async def dream_window(database: Database, run_public_id: str | None = None) -> 
         end = None
         if run_public_id is not None:
             end = await session.scalar(select(run.started_at).where(run.public_id == run_public_id))
-        end = _utc(end) if end is not None else datetime.now(UTC)
-        previous = (
-            await session.execute(
-                select(run.public_id, run.started_at)
-                .where(
-                    run.status.in_(FINISHED_RUN_STATUSES),
-                    run.started_at.is_not(None),
-                    run.started_at < end,
-                    run.public_id != (run_public_id or ""),
-                )
-                .order_by(run.started_at.desc(), run.id.desc())
-                .limit(1)
+        end = stored_utc(end) if end is not None else datetime.now(UTC)
+        previous = await session.scalar(
+            select(run.started_at)
+            .where(
+                run.status.in_(FINISHED_RUN_STATUSES),
+                run.started_at.is_not(None),
+                run.started_at < end,
+                run.public_id != (run_public_id or ""),
             )
-        ).first()
+            .order_by(run.started_at.desc(), run.id.desc())
+            .limit(1)
+        )
     if previous is None:
-        return ActivityWindow(end - _DEFAULT_WINDOW, end, None)
-    return ActivityWindow(_utc(previous.started_at), end, previous.public_id)
+        return ActivityWindow(end - _DEFAULT_WINDOW, end)
+    return ActivityWindow(stored_utc(previous), end)
 
 
 async def window_activity(database: Database, window: ActivityWindow) -> Activity:
@@ -278,7 +273,6 @@ async def due_profiles(
                     select(
                         profile.person_id,
                         profile.audience,
-                        profile.current_version,
                         profile.considered_signature,
                         profile.attempted_at,
                         profile.locked,
@@ -288,7 +282,7 @@ async def due_profiles(
         }
         sets = await profile_fact_sets(session, roots)
         created = {
-            int(fact_id): _utc(at)
+            int(fact_id): stored_utc(at)
             for fact_id, at in await session.execute(
                 select(MemoryFactModel.id, MemoryFactModel.created_at).where(
                     MemoryFactModel.id.in_({item for ids in sets.values() for item in ids})
@@ -306,14 +300,14 @@ async def due_profiles(
             signature = profile_signature(fact_ids)
             if row is not None and row.considered_signature == signature:
                 continue
-            attempted = _utc(row.attempted_at) if row is not None and row.attempted_at else None
+            attempted = (
+                stored_utc(row.attempted_at) if row is not None and row.attempted_at else None
+            )
             found.append(
                 DueProfile(
                     person_id=root,
                     audience=audience,
                     attempted_at=attempted,
-                    current_version=row.current_version if row is not None else 0,
-                    signature=signature,
                     pending_since=attempted or min(created[item] for item in fact_ids),
                 )
             )
@@ -504,7 +498,6 @@ class ProfileMaintenance:
             reason=output.reason.strip(),
             signature=available.signature,
             base_version=version,
-            current_entries=current,
             model_calls=calls,
         )
 
@@ -645,7 +638,3 @@ def _resolve(output: ProfileOutput, aliases: dict[str, int]) -> tuple[ProfileEnt
             ProfileEntry(item.section, item.text, tuple(aliases[ref] for ref in item.facts))
         )
     return tuple(entries)
-
-
-def _utc(value: datetime) -> datetime:
-    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)

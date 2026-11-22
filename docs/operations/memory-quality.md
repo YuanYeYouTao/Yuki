@@ -140,7 +140,7 @@ yuki memory profile status
 - `apply` 逐份校验：当前版本号变了拒绝 `version_changed`，可用事实签名变了拒绝 `signature_changed`，结构或
   编号校验不过拒绝（列出失效编号）；其余照常写入，一份被拒不影响其他份。写入是 `source=owner` 的新版本并记下签名；
   `entries` 与 `generated` 不同的那份自动锁定，相同的不改锁定状态；与当前条目相同的不加版本。有拒绝时退出码 1，
-  重新 `generate` 后再 `apply`。同一份计划不能应用两次（第二次全部 `version_changed` 或 `signature_changed`）。
+  重新 `generate` 后再 `apply`。同一份计划再次应用时，上次写了新版本的那份拒绝 `version_changed`，与当前条目相同的那份仍是空操作。
 - `members --pin` 写所有者名单（`source=owner`，最多 5 人，按根去重），Dream 收尾不再重算该群；`--unpin`
   改回 `dream`，名单不变，下一次 Dream 收尾重算。
 - `check` 对全部有条目的画像做渲染时校验，输出每份画像的条目编号（`rendered`）与违规（失效条目的位置与编号、

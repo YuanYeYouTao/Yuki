@@ -28,8 +28,8 @@ from yuki.config import Settings
 from yuki.conversation.canonical_db_models import CanonicalConversationModel
 from yuki.identity.db_models import CanonicalPersonModel
 from yuki.memory.dream.db_models import MemoryDreamRunModel
+from yuki.memory.episode_index import FINISHED_RUN_STATUSES
 from yuki.memory.profile_selection import (
-    FINISHED_RUN_STATUSES,
     ProfileMaintenance,
     ProfileRejected,
     dream_window,
