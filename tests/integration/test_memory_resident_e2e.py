@@ -85,6 +85,7 @@ from tests.support.memory_resident_scene import (
     resident_segment,
     run_cli,
     sections,
+    system_text,
     tool_call,
     tool_result,
     turn_record,
@@ -121,15 +122,17 @@ async def _render(scene: ResidentScene, key: str) -> ResidentRender:
 
 
 async def _assert_matches_render(scene: ResidentScene, key: str, turn) -> None:
-    """The request carries exactly the renderer's text, before the scene line."""
+    """The system message ends with exactly the renderer's text; the current message has none."""
     rendered = await _render(scene, key)
     assert turn.segment == rendered.text
     assert turn.fact_ids == list(rendered.fact_ids)
+    system = system_text(turn.requests[0])
+    assert HEADER not in turn.current
     if rendered.text:
-        assert turn.current.count(rendered.text) == 1
-        assert turn.current.index(rendered.text) < turn.current.index("当前是")
+        assert system.count(rendered.text) == 1
+        assert system.rstrip().endswith(rendered.text)
     else:
-        assert HEADER not in turn.current
+        assert HEADER not in system
 
 
 # --------------------------------------------------------------------------- F1
@@ -791,16 +794,16 @@ async def test_f10_merge_renders_once_by_root(scene):
 
 # --------------------------------------------------------------------------- F17
 async def test_f17_work_keeps_its_first_current_message(database, tmp_path):
-    """Case 17: inside one Work activation the first current message never changes.
+    """Case 17: inside one Work activation the system prefix (resident segment) never changes.
 
     The first activation is interrupted by a retryable provider outage before its
     third dispatch (no request bought); WorkScheduler continues the same Work.
 
     Observed and asserted (task book §6.3 left this as an assumption for case 17):
-    a continuation is a new activation whose ``work_resume`` wakeup is composed like
-    every other wakeup (§6.5 "Work 续接唤醒: 按该轮所在会话"), so it carries the resident
-    segment rendered at that moment, once, and keeps it verbatim for the rest of that
-    activation. The original first request is never re-sent or re-paid.
+    a continuation is a new activation composed like every other wakeup (§6.5 "Work 续接
+    唤醒: 按该轮所在会话"), so its system prefix carries the resident segment rendered at
+    that moment, and keeps it verbatim for the rest of that activation. The original
+    first request is never re-sent or re-paid.
     """
     import asyncio
 
@@ -866,18 +869,22 @@ async def test_f17_work_keeps_its_first_current_message(database, tmp_path):
     assert f"fact:{table_rule}" not in first.segment
     assert len(phase["work"]) > 2 and len(scene.provider.requests) > paid_before_resume
 
-    def resident_messages(request):
-        return [m.content for m in request.messages if (m.content or "").startswith(HEADER)]
+    def segment_of(request):
+        assert all(
+            HEADER not in str(m.content or "") for m in request.messages if m.role != "system"
+        )
+        return resident_segment(system_text(request))
 
-    for request in phase["work"][:2]:
-        assert resident_messages(request) == [original]
-    resumed = phase["work"][2:]
-    wakeup = resident_messages(resumed[0])
-    assert len(wakeup) == 1 and "work_resume" in wakeup[0]
-    assert wakeup[0].startswith((await _render(scene, "A")).text + "\n")
-    assert f"fact:{table_rule}" in wakeup[0]
-    for request in resumed:
-        assert resident_messages(request) == wakeup
+    observed = [segment_of(request) for request in phase["work"]]
+    # The first activation keeps its original system prefix for every request.
+    for segment in observed[:2]:
+        assert segment == first.segment
+    # The continuation is a new activation: its prefix is rendered at resume time
+    # (it now carries the newly added rule) and then stays fixed for that activation.
+    resumed_segment = observed[2]
+    assert resumed_segment == (await _render(scene, "A")).text
+    assert f"fact:{table_rule}" in resumed_segment
+    assert set(observed[2:]) == {resumed_segment}
     # No request was composed fresh around the original message after the first one.
     assert (
         sum(1 for request in scene.provider.requests if request.messages[-1].content == original)
@@ -891,7 +898,7 @@ async def test_f17_work_keeps_its_first_current_message(database, tmp_path):
         {
             "facts": scene.facts,
             "work_first_current_segment": first.segment,
-            "resumed_wakeup_segment": resident_segment(wakeup[0]),
+            "resumed_activation_segment": resumed_segment,
             "work_requests": len(phase["work"]),
             "work_state": final["state"],
             "later": turn_record(later, contract),
@@ -983,11 +990,14 @@ async def test_f23_public_compact_checkpoint_never_holds_the_segment(database, t
     assert compact_requests, replies
     assert before.segment
     for request in compact_requests:
-        text = request_text(request)
-        assert HEADER not in text and "（fact:" not in text
+        # The system prefix (SOUL, contract, resident segment) is context for the
+        # compaction request; the conversation it compacts never carries the segment.
+        compacted = "\n".join(str(m.content or "") for m in request.messages if m.role != "system")
+        assert HEADER not in compacted and "（fact:" not in compacted
     assert any("PUBLIC_CHECKPOINT" in text for text in checkpoints)
     assert all(HEADER not in text and "（fact:" not in text for text in checkpoints)
-    assert request_text(after.requests[0]).count(HEADER) == 1
+    assert system_text(after.requests[0]).count(HEADER) == 1
+    assert HEADER not in after.current
     assert after.segment == before.segment
     await _assert_matches_render(scene, "A", after)
     contract = await scene.contract()

@@ -111,14 +111,15 @@ class PromptComposer:
                 )
             )
         if context.resident_text:
-            # A TURN contribution of the current message only: never a system
-            # message, never in invariant_contributions(), no cache breakpoint.
+            # Last part of the system message: stable per conversation (it changes at
+            # most once per Dream batch), so it joins the cached prefix. It is kept out
+            # of invariant_contributions(), so the recovery contract hash ignores it.
             contributions.append(
-                PromptContribution(
-                    id="memory.resident",
+                static_text(
+                    "memory.resident",
+                    context.resident_text,
                     channel=PromptChannel.CONTEXT,
-                    priority=86,
-                    content=context.resident_text,
+                    priority=10,
                 )
             )
         if context.metadata_payload:
