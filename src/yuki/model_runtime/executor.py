@@ -853,9 +853,9 @@ class TaskModelExecutor:
     def profile_revision(self, task: ModelTask) -> str:
         """Fingerprint routing/serialization settings without exposing configuration."""
         route, profile = self._runtime()[0].route(task)
-        # Capacity policy is not serialized to the provider and must not split
-        # a previously submitted prefix when operators tune numeric limits.
-        excluded = {"max_input_tokens", "context_window_tokens"}
+        # Capacity policy and connect timing are not serialized to the provider and
+        # must not split a previously submitted prefix when operators tune them.
+        excluded = {"max_input_tokens", "context_window_tokens", "connect_timeout_seconds"}
         if profile.max_output_tokens_limit is None:
             excluded.add("max_output_tokens_limit")
         if profile.wire_options is None:

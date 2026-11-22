@@ -81,6 +81,15 @@ class StructuredOutputMode(StrEnum):
     TEXT_JSON = "text_json"
 
 
+# Connect phase only (TCP, TLS, and TLS through a proxy tunnel): no request byte has
+# reached the provider yet, so a failure here is retried under the transport rule without
+# a possible duplicate charge. Healthy connects finish within a few RTTs; the official
+# OpenAI/Anthropic SDKs use 5 s with a 600 s total. 10 s leaves room for a local proxy hop
+# and a lost SYN/handshake packet, and caps a dead proxy at seconds instead of
+# ``timeout_seconds`` per attempt. The reply wait stays ``timeout_seconds``.
+DEFAULT_CONNECT_TIMEOUT_SECONDS = 10.0
+
+
 class _FrozenModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -95,6 +104,8 @@ class ModelProfile(_FrozenModel):
     api_key_env: str = ""
     model: str = Field(min_length=1)
     timeout_seconds: float = Field(gt=0)
+    # Never longer than ``timeout_seconds``; see DEFAULT_CONNECT_TIMEOUT_SECONDS.
+    connect_timeout_seconds: float = Field(default=DEFAULT_CONNECT_TIMEOUT_SECONDS, gt=0)
     max_retries: int = Field(ge=0)
     default_temperature: float = Field(ge=0, le=2)
     default_max_output_tokens: int = Field(gt=0)

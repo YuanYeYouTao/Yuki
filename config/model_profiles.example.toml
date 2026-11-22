@@ -16,6 +16,9 @@ base_url_env = "LLM_BASE_URL"
 api_key_env = "LLM_API_KEY"
 model_env = "LLM_MODEL"
 timeout_seconds = 120.0
+# Optional: connect phase only (TCP, TLS, proxy tunnel TLS); default 10, capped by
+# timeout_seconds. Reply waits keep timeout_seconds.
+# connect_timeout_seconds = 10.0
 max_retries = 2
 default_temperature = 0.7
 default_max_output_tokens = 8192
