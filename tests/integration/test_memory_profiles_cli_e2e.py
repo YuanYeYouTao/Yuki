@@ -288,7 +288,7 @@ class _ProfileModel:
 async def _generate(scene: ProfileScene, model, out: Path, capsys, **target):
     """Run ``generate`` in process with the scripted model runtime."""
     from tests.integration.test_execution_continuity_e2e import ScriptedProvider
-    from tests.support.model_executor import InjectedModelExecutor
+    from tests.support.model_executor import HttpBoundaryModelExecutor
 
     import yuki.cli as cli
 
@@ -296,7 +296,7 @@ async def _generate(scene: ProfileScene, model, out: Path, capsys, **target):
 
     @contextlib.asynccontextmanager
     async def scripted_models(settings, database):
-        yield settings, InjectedModelExecutor(provider)
+        yield settings, HttpBoundaryModelExecutor(provider)
 
     original = cli._cli_models
     cli._cli_models = scripted_models

@@ -610,7 +610,7 @@ class ResidentScene:
         """Real Dream service, repository and worker over the scene database."""
         if hasattr(self, "_dream"):
             return self._dream
-        from tests.support.model_executor import InjectedModelExecutor
+        from tests.support.model_executor import HttpBoundaryModelExecutor
 
         from yuki.memory.dream.repository import DreamRepository
         from yuki.memory.dream.service import DreamService
@@ -622,7 +622,7 @@ class ResidentScene:
 
         memories = self.chat._memories
         repository = DreamRepository(self.database)
-        models = InjectedModelExecutor(self.provider)
+        models = HttpBoundaryModelExecutor(self.provider)
         service = DreamService(
             settings=self.settings,
             repository=repository,

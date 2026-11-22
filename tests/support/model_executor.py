@@ -20,6 +20,7 @@ from yuki.model_runtime.models import (
     ModelTask,
     StructuredOutputMode,
 )
+from yuki.model_runtime.request_accounting import before_provider_request
 
 
 class InjectedModelExecutor:
@@ -88,6 +89,22 @@ class InjectedModelExecutor:
 
     async def wait_for_background_idle(self) -> None:
         return None
+
+
+class HttpBoundaryModelExecutor(InjectedModelExecutor):
+    """Run the per-request accounting hook right before each dispatch, like ``json_http``.
+
+    Dream reserves its run budget there; the selection step (core sets, episode
+    comparisons, profiles) counts its own physical requests there.
+    """
+
+    async def execute(
+        self, task: ModelTask, request: ChatRequest, **options: object
+    ) -> ChatResponse:
+        account = before_provider_request.get()
+        if account is not None:
+            await account()
+        return await super().execute(task, request, **options)  # type: ignore[arg-type]
 
 
 def require_model_executor(

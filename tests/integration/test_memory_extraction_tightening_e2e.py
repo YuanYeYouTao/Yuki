@@ -70,6 +70,7 @@ from tests.support.memory_resident_scene import (
     run_cli,
     tool_call,
 )
+from tests.support.model_executor import HttpBoundaryModelExecutor
 
 from yuki.memory.enums import (
     MemoryAuthority,
@@ -506,28 +507,6 @@ class _OrthogonalEmbedding:
         return Provider()
 
 
-class _HttpBoundaryExecutor:
-    """Injected executor that runs the per-attempt accounting hook like the HTTP client.
-
-    ``json_http`` awaits ``before_provider_request`` right before every dispatch; Dream
-    reserves its run budget there and the P1 selection step counts its own calls there.
-    """
-
-    def __new__(cls, provider):
-        from tests.support.model_executor import InjectedModelExecutor
-
-        from yuki.model_runtime.request_accounting import before_provider_request
-
-        class Executor(InjectedModelExecutor):
-            async def execute(self, task, request, **options):
-                account = before_provider_request.get()
-                if account is not None:
-                    await account()
-                return await super().execute(task, request, **options)
-
-        return Executor(provider)
-
-
 async def _scheduled_dream(scene: ResidentScene):
     """Real embeddings (fake provider) + the real incremental plan + the worker loop body."""
     from yuki.memory.dream.repository import DreamRepository
@@ -567,7 +546,7 @@ async def _scheduled_dream(scene: ResidentScene):
     )
     while await vectors.process_once():
         pass
-    models = _HttpBoundaryExecutor(scene.provider)
+    models = HttpBoundaryModelExecutor(scene.provider)
     repository = DreamRepository(scene.database)
     service = DreamService(
         settings=settings,
