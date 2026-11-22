@@ -9,7 +9,9 @@ against the group core section "[本群]". Q13 a/a: subagent and plugin turns ca
 resident segment. Q14 a: facts without evidence rows render only in the subject's own
 private chat. Q19 b does not change any case here. The segment renders on every Main
 turn with no runtime switch (owner decision 2026-11-22), so §15 #19 (F18b, switch off
-and back on) is gone.
+and back on) is gone. Person core sets ("[关于对方]") were replaced by person profiles
+(P4 task book §4.4, ``test_memory_profiles_e2e.py``); the cases that used them now
+assert the same filters on explicit facts or on the group core set.
 
 Every case runs a real SQLite database, writes facts and evidence through the real
 ``MemoryFactService`` with evidence on real fixture chat events, and drives real
@@ -24,7 +26,7 @@ artifacts. Selection-step parts of cases 6, 12, 14, 15, 19, 20, 21, 28 live in
 Failure cases, written before the implementation. A resident segment that:
   F1  shows a fact whose only evidence is a private chat in a group;
   F2  shows a group fact in the group when any one of its evidence rows is elsewhere;
-  F3  shows another person's fact in the owner's private chat (CLI or direct row);
+  F3  shows another person's explicit fact in the owner's private chat;
   F3b shows the counterpart's own fact whose evidence is someone else's private chat;
   F4  shows another group's fact, or a fact whose evidence is all in another group;
   F7  changes between turns although nothing resident changed;
@@ -35,16 +37,16 @@ Failure cases, written before the implementation. A resident segment that:
   F15 is written for SELF by anyone but the owner CLI, or with a non-SELF fact;
   F16 makes the turn fail when the renderer fails;
   F17 changes inside one Work (requests or continuation) or re-pays its first request;
-  F18 moves the recovery contract hash (core set, explicit fact);
-  F19 shows a third-party fact (CLI or direct row);
-  F20 shows a superseded fact instead of its active successor (or an ineligible one);
+  F18 moves the recovery contract hash (SELF set, explicit fact);
+  F19 shows a third-party fact;
+  F20 shows a superseded core fact instead of its active successor (or an ineligible one);
   F22 hides or reorders contradicting explicit facts, or shows a contested one;
   F23 leaks into a compact checkpoint, or is duplicated / lost after compaction;
   F24 reaches a subagent or plugin turn, or carries the wrong sections per entry;
   F25 shows a disabled person's facts, renders a merged person off-root, or a forgotten one;
   F26 differs between QQ, App and ACP private chats of the same person;
   F27 depends on row insertion order or the rendering process;
-  F28 exceeds the caps (30 explicit with one overflow line, 10 core) or accepts 11.
+  F28 exceeds the caps (30 explicit with one overflow line, 10 group core) or accepts 11.
 
 Failure baselines for the leakage cases (§15 #20). These pass on the old
 implementation that has no resident segment at all, so their red baseline is the
@@ -53,19 +55,16 @@ renderer with one filter removed; each removal below turns the named case red:
       G core fact ``x_g`` whose only evidence is B's private chat appears in "[本群]".
   F2  weaken "every evidence row is in this space" to "at least one": the G core fact
       ``y_g`` with one G event and one B-private event appears in "[本群]".
-  F3  remove the owner-match condition on core rows: B's fact ``z_shared`` (evidence
-      in G, which A and B share) written directly into A's row appears in A's private
-      chat (``z`` itself is also caught by the private-origin filter); remove the CLI
-      owner check: the ``set --person A --facts z`` call succeeds.
+  F3  remove the owner filter on explicit facts: B's explicit fact ``z_shared``
+      (evidence in G, which A and B share) appears in A's private chat.
   F3b remove "no evidence from someone else's private chat" on the private sections:
-      A's own facts ``a_core``/``a_explicit`` evidenced only in B's private chat appear
+      A's own explicit fact ``a_explicit`` evidenced only in B's private chat appears
       in A's private chat.
   F4  remove the owner-match condition: H's group fact ``h_in_g`` (evidence in G)
       written into G's row appears in G; compare evidence conversations by kind
       instead of by space ID: the G fact ``h_g`` evidenced only in H appears in G.
-  F19 remove the authority condition (explicit / self_report only): the third-party
-      facts ``t`` / ``t_pg`` written directly into B's row appear in B's private chat;
-      remove the CLI common-condition check: ``set --person B --facts t`` succeeds.
+  F19 remove the authority condition (explicit / self_report only): the explicit
+      third-party facts ``t`` / ``t_pg`` appear in B's private chat.
 """
 
 from __future__ import annotations
@@ -104,7 +103,6 @@ from yuki.persistence.models import ChatEventModel
 
 EXPLICIT = {"source_type": MemorySourceType.EXPLICIT, "authority": MemoryAuthority.EXPLICIT}
 PRIVATE_EXPLICIT = "[对方明确要求记住的]"
-PRIVATE_CORE = "[关于对方]"
 SELF_SECTION = "[我自己的原则]"
 GROUP_CORE = "[本群]"
 
@@ -141,12 +139,11 @@ async def test_f01_private_origin_never_reaches_group_core(scene):
     """Case 1: a private-chat-only fact never renders in G; B's own private chat shows it."""
     b_private = await scene.event("private:B", "B", "我其实很怕狗，别在群里说", key="b1")
     g_event = await scene.event("space:G", "A", "我们群每周五一起看电影", key="g1")
-    x_b = await scene.fact("x_b", "B", "很怕狗", evidence=(b_private,))
+    x_b = await scene.fact("x_b", "B", "很怕狗", evidence=(b_private,), **EXPLICIT)
     x_g = await scene.fact(
         "x_g", "G", "群里有人怕狗，组织活动避开宠物", foreign_evidence=(b_private,)
     )
     g_ok = await scene.fact("g_ok", "G", "每周五一起看电影", evidence=(g_event,))
-    await scene.write_set("B", [x_b])
     await scene.raw_set("G", [x_g, g_ok])
 
     group = await scene.turn("B", "大家好", group="G")
@@ -154,7 +151,7 @@ async def test_f01_private_origin_never_reaches_group_core(scene):
 
     assert sections(group.segment) == {GROUP_CORE: [g_ok]}
     assert x_b not in group.fact_ids and x_g not in group.fact_ids
-    assert x_b in sections(private.segment)[PRIVATE_CORE]
+    assert x_b in sections(private.segment)[PRIVATE_EXPLICIT]
     await _assert_matches_render(scene, "G", group)
     await _assert_matches_render(scene, "B", private)
     contract = await scene.contract()
@@ -176,10 +173,9 @@ async def test_f02_group_core_needs_every_evidence_in_this_group(scene):
     y_g = await scene.fact(
         "y_g", "G", "周末爬山由群友张罗", evidence=(g_event,), foreign_evidence=(b_private,)
     )
-    y_b = await scene.fact("y_b", "B", "张罗周末爬山", evidence=(g_event, b_private))
+    y_b = await scene.fact("y_b", "B", "张罗周末爬山", evidence=(g_event, b_private), **EXPLICIT)
     g_ok = await scene.fact("g_ok", "G", "周末常组织爬山", evidence=(g_event,))
     await scene.raw_set("G", [y_g, g_ok])
-    await scene.write_set("B", [y_b])
 
     group = await scene.turn("B", "这周爬山吗", group="G")
 
@@ -193,47 +189,24 @@ async def test_f02_group_core_needs_every_evidence_in_this_group(scene):
 
 
 # --------------------------------------------------------------------------- F3
-async def test_f03_another_persons_fact_never_enters_owner_core(scene):
-    """Case 3: CLI refuses B's fact in A's set; a direct row still does not render it."""
-    b_private = await scene.event("private:B", "B", "我在准备考研", key="b1")
-    a_private = await scene.event("private:A", "A", "我喜欢喝乌龙茶", key="a1")
-    g_event = await scene.event("space:G", "B", "我在 G 群说过我会弹琴", key="g1")
-    z = await scene.fact("z", "B", "在准备考研", evidence=(b_private,))
-    # Evidence in a group A and B share: only the owner-match condition excludes it.
-    z_shared = await scene.fact("z_shared", "B", "会弹琴", evidence=(g_event,))
-    a_ok = await scene.fact("a_ok", "A", "喜欢喝乌龙茶", evidence=(a_private,))
-    await scene.write_set("A", [a_ok])
-    before = await scene.table()
+async def test_f03_another_persons_fact_never_enters_owner_chat(scene):
+    """Case 3: B's explicit facts never render in A's private chat, even with shared evidence."""
+    b_private = await scene.event("private:B", "B", "记住我在准备考研", key="b1")
+    a_private = await scene.event("private:A", "A", "记住我喜欢喝乌龙茶", key="a1")
+    g_event = await scene.event("space:G", "B", "记住我会弹琴", key="g1")
+    z = await scene.fact("z", "B", "在准备考研", evidence=(b_private,), **EXPLICIT)
+    # Evidence in a group A and B share: only the owner filter excludes it.
+    z_shared = await scene.fact("z_shared", "B", "会弹琴", evidence=(g_event,), **EXPLICIT)
+    a_ok = await scene.fact("a_ok", "A", "喜欢喝乌龙茶", evidence=(a_private,), **EXPLICIT)
 
-    with pytest.raises(ResidentValidationError):
-        await scene.resident.write_set(scene.owner("A"), [a_ok, z], source="owner")
-    cli = await run_cli(
-        scene.database.url,
-        "memory",
-        "resident",
-        "set",
-        "--person",
-        scene.persons["A"],
-        "--facts",
-        f"{a_ok},{z}",
-    )
-    assert cli.returncode != 0, cli
-    assert await scene.table() == before
-
-    await scene.raw_set("A", [z, z_shared, a_ok], source="owner")
     turn = await scene.turn("A", "早")
 
     assert z not in turn.fact_ids and z_shared not in turn.fact_ids
-    assert sections(turn.segment)[PRIVATE_CORE] == [a_ok]
+    assert sections(turn.segment) == {PRIVATE_EXPLICIT: [a_ok]}
     await _assert_matches_render(scene, "A", turn)
     scene.write(
         "F03",
-        {
-            "facts": scene.facts,
-            "cli_returncode_nonzero": cli.returncode != 0,
-            "table_before_direct_write": before,
-            "private_A": turn_record(turn, await scene.contract()),
-        },
+        {"facts": scene.facts, "private_A": turn_record(turn, await scene.contract())},
     )
 
 
@@ -241,23 +214,17 @@ async def test_f03b_counterparts_fact_from_someone_elses_private_chat(scene):
     """§15 #18: A's own facts evidenced only in B's private chat stay out of A's chat."""
     b_private = await scene.event("private:B", "B", "A 说过他最近在换工作", key="b1")
     a_private = await scene.event("private:A", "A", "请记住我周末不处理工作", key="a1")
-    a_core = await scene.fact("a_core", "A", "最近在换工作", foreign_evidence=(b_private,))
     a_explicit = await scene.fact(
         "a_explicit", "A", "周末不想被提醒工作", foreign_evidence=(b_private,), **EXPLICIT
     )
     a_ok_explicit = await scene.fact(
         "a_ok_explicit", "A", "周末不处理工作", evidence=(a_private,), **EXPLICIT
     )
-    a_ok_core = await scene.fact("a_ok_core", "A", "习惯早起", evidence=(a_private,))
-    await scene.raw_set("A", [a_core, a_ok_core], source="owner")
 
     turn = await scene.turn("A", "周六安排一下")
 
-    assert sections(turn.segment) == {
-        PRIVATE_EXPLICIT: [a_ok_explicit],
-        PRIVATE_CORE: [a_ok_core],
-    }
-    assert a_core not in turn.fact_ids and a_explicit not in turn.fact_ids
+    assert sections(turn.segment) == {PRIVATE_EXPLICIT: [a_ok_explicit]}
+    assert a_explicit not in turn.fact_ids
     await _assert_matches_render(scene, "A", turn)
     scene.write(
         "F03b",
@@ -277,7 +244,6 @@ async def test_f04_other_group_facts_never_reach_this_group(scene):
     w = await scene.fact("w", "B", "负责聚餐订位", evidence=(h_event,))
     g_ok = await scene.fact("g_ok", "G", "发活动前先发预告", evidence=(g_event,))
     await scene.raw_set("G", [h, h_in_g, h_g, g_ok])
-    await scene.raw_set("B", [w])
 
     group = await scene.turn("B", "最近有活动吗", group="G")
 
@@ -291,7 +257,7 @@ async def test_f04_other_group_facts_never_reach_this_group(scene):
 
 
 async def _owner_private_scene(scene: ResidentScene) -> dict[str, int]:
-    """A's private chat with explicit facts, a core set and SELF principles."""
+    """A's private chat with explicit facts (one without evidence) and SELF principles."""
     a1 = await scene.event("private:A", "A", "记住：委派的任务写审最多三轮", key="a1")
     a2 = await scene.event("private:A", "A", "我平时用 Python 和 Rust", key="a2")
     g1 = await scene.event("space:G", "A", "群里先发预告再开活动", key="g1")
@@ -300,15 +266,14 @@ async def _owner_private_scene(scene: ResidentScene) -> dict[str, int]:
         "report": await scene.fact(
             "report", "A", "汇报时区分本地修改、验证与提交", evidence=(a1,), **EXPLICIT
         ),
-        "lang": await scene.fact("lang", "A", "平时用 Python 和 Rust", evidence=(a2,)),
-        "legacy": await scene.fact("legacy", "A", "  称呼他   老板  "),
+        "lang": await scene.fact("lang", "A", "平时用 Python 和 Rust", evidence=(a2,), **EXPLICIT),
+        "legacy": await scene.fact("legacy", "A", "  称呼他   老板  ", **EXPLICIT),
         "principle": await scene.fact("principle", "self", "不确定时先查证再回答"),
         "principle_g": await scene.fact(
             "principle_g", "self", "在 G 群发言前先看预告", visibility="space:G", evidence=(g1,)
         ),
         "principle_b": await scene.fact("principle_b", "self", "替 B 保密", visibility="private:B"),
     }
-    await scene.write_set("A", [ids["lang"], ids["legacy"]])
     await scene.write_set("self", [ids["principle"], ids["principle_g"], ids["principle_b"]])
     return ids
 
@@ -322,8 +287,7 @@ async def test_f07_five_turns_are_byte_identical(scene):
     assert turns[0].segment
     assert {turn.segment for turn in turns} == {turns[0].segment}
     assert sections(turns[0].segment) == {
-        PRIVATE_EXPLICIT: [ids["rule"], ids["report"]],
-        PRIVATE_CORE: [ids["lang"], ids["legacy"]],
+        PRIVATE_EXPLICIT: [ids["rule"], ids["report"], ids["lang"], ids["legacy"]],
         SELF_SECTION: [ids["principle"]],
     }
     # Whitespace is folded, never truncated or rewritten.
@@ -339,11 +303,11 @@ async def test_f07_five_turns_are_byte_identical(scene):
 # --------------------------------------------------------------------------- F8
 async def test_f08_lifecycle_changes_drop_items_and_keep_order(scene):
     """Case 8: invalidated, contested and expired core items vanish next turn."""
-    a1 = await scene.event("private:A", "A", "一些关于我的事", key="a1")
+    g1 = await scene.event("space:G", "A", "一些关于本群的事", key="g1")
     names = ("s1", "p", "s2", "q", "r", "s3")
-    ids = [await scene.fact(name, "A", f"关于 A 的事实 {name}", evidence=(a1,)) for name in names]
-    await scene.write_set("A", ids)
-    before = await scene.turn("A", "早")
+    ids = [await scene.fact(name, "G", f"关于 G 的事实 {name}", evidence=(g1,)) for name in names]
+    await scene.write_set("G", ids)
+    before = await scene.turn("B", "早", group="G")
     memories = scene.chat._memories
     assert await memories.invalidate_fact(
         scene.facts["p"],
@@ -353,14 +317,14 @@ async def test_f08_lifecycle_changes_drop_items_and_keep_order(scene):
     assert await memories.contest_fact(scene.facts["q"], reason_code="resident_e2e_contest")
     await scene.set_fact(scene.facts["r"], valid_until=datetime.now(UTC) - timedelta(minutes=1))
 
-    after = await scene.turn("A", "午")
+    after = await scene.turn("B", "午", group="G")
 
-    assert sections(before.segment)[PRIVATE_CORE] == ids
+    assert sections(before.segment)[GROUP_CORE] == ids
     expected = [scene.facts[name] for name in ("s1", "s2", "s3")]
-    assert sections(after.segment)[PRIVATE_CORE] == expected
+    assert sections(after.segment)[GROUP_CORE] == expected
     # The row itself is not synchronised; filtering happens at render time.
-    assert [row["fact_ids"] for row in await scene.table() if row["owner"] == "person:A"] == [ids]
-    await _assert_matches_render(scene, "A", after)
+    assert [row["fact_ids"] for row in await scene.table() if row["owner"] == "space:G"] == [ids]
+    await _assert_matches_render(scene, "G", after)
     contract = await scene.contract()
     scene.write(
         "F08",
@@ -504,7 +468,7 @@ async def test_f18_recovery_contract_ignores_resident_changes(scene):
     ids = await _owner_private_scene(scene)
     a3 = await scene.event("private:A", "A", "记住：周报周五交", key="a3")
     hashes = [await scene.contract()]
-    await scene.write_set("A", [ids["legacy"]])
+    await scene.write_set("self", [ids["principle"]])
     hashes.append(await scene.contract())
     await scene.fact("weekly", "A", "周报周五交", evidence=(a3,), **EXPLICIT)
     hashes.append(await scene.contract())
@@ -515,43 +479,23 @@ async def test_f18_recovery_contract_ignores_resident_changes(scene):
 
 # --------------------------------------------------------------------------- F19
 async def test_f19_third_party_facts_never_render(scene):
-    """Case 19 (CLI/render part): third-party person and person_group facts stay out."""
+    """Case 19 (render part): third-party person and person_group facts stay out."""
     g_event = await scene.event("space:G", "A", "B 好像在学吉他", key="g1")
-    b_private = await scene.event("private:B", "B", "我在学钢琴", key="b1")
-    t = await scene.fact(
-        "t", "B", "在学吉他", evidence=(g_event,), authority=MemoryAuthority.THIRD_PARTY
-    )
+    b_private = await scene.event("private:B", "B", "记住我在学钢琴", key="b1")
+    third_party = {
+        "source_type": MemorySourceType.EXPLICIT,
+        "authority": MemoryAuthority.THIRD_PARTY,
+    }
+    t = await scene.fact("t", "B", "在学吉他", evidence=(g_event,), **third_party)
     t_pg = await scene.fact(
-        "t_pg",
-        "B@G",
-        "在 G 群被说成吉他手",
-        evidence=(g_event,),
-        authority=MemoryAuthority.THIRD_PARTY,
+        "t_pg", "B@G", "在 G 群被说成吉他手", evidence=(g_event,), **third_party
     )
-    b_ok = await scene.fact("b_ok", "B", "在学钢琴", evidence=(b_private,))
-    await scene.write_set("B", [b_ok])
-    before = await scene.table()
-
-    for bad in (t, t_pg):
-        with pytest.raises(ResidentValidationError):
-            await scene.resident.write_set(scene.owner("B"), [b_ok, bad], source="owner")
-    cli = await run_cli(
-        scene.database.url,
-        "memory",
-        "resident",
-        "set",
-        "--person",
-        scene.persons["B"],
-        "--facts",
-        f"{b_ok},{t}",
-    )
-    assert cli.returncode != 0, cli
-    assert await scene.table() == before
-    await scene.raw_set("B", [t, b_ok, t_pg])
+    b_ok = await scene.fact("b_ok", "B", "在学钢琴", evidence=(b_private,), **EXPLICIT)
 
     turn = await scene.turn("B", "我在学什么")
 
-    assert sections(turn.segment) == {PRIVATE_CORE: [b_ok]}
+    assert sections(turn.segment) == {PRIVATE_EXPLICIT: [b_ok]}
+    assert t not in turn.fact_ids and t_pg not in turn.fact_ids
     await _assert_matches_render(scene, "B", turn)
     scene.write(
         "F19",
@@ -620,46 +564,46 @@ async def test_f27_insertion_order_and_process_do_not_matter(scene, tmp_path):
 async def test_f28_caps_and_overflow_line(scene):
     """Case 28 (no @-part, Q16 b): 30 explicit + overflow line; 11 refused; 15 -> 10."""
     a1 = await scene.event("private:A", "A", "记住这些规则", key="a1")
-    b1 = await scene.event("private:B", "B", "关于我的一些事", key="b1")
+    g1 = await scene.event("space:G", "B", "关于本群的一些事", key="g1")
     explicit = [
         await scene.fact(f"e{index:02d}", "A", f"规则 {index:02d}", evidence=(a1,), **EXPLICIT)
         for index in range(40)
     ]
     core = [
-        await scene.fact(f"b{index:02d}", "B", f"B 的事实 {index:02d}", evidence=(b1,))
+        await scene.fact(f"g{index:02d}", "G", f"G 的事实 {index:02d}", evidence=(g1,))
         for index in range(15)
     ]
     with pytest.raises(ResidentValidationError):
-        await scene.resident.write_set(scene.owner("B"), core[:11], source="owner")
+        await scene.resident.write_set(scene.owner("G"), core[:11], source="owner")
     cli = await run_cli(
         scene.database.url,
         "memory",
         "resident",
         "set",
-        "--person",
-        scene.persons["B"],
+        "--space",
+        scene.spaces["G"],
         "--facts",
         ",".join(str(value) for value in core[:11]),
     )
     assert cli.returncode != 0, cli
     assert await scene.table() == []
-    await scene.raw_set("B", core)
+    await scene.raw_set("G", core)
 
     owner = await scene.turn("A", "列一下规则")
-    member = await scene.turn("B", "关于我")
+    member = await scene.turn("B", "关于本群", group="G")
     rendered = await _render(scene, "A")
 
     assert sections(owner.segment)[PRIVATE_EXPLICIT] == explicit[:30]
     assert "（另有 10 条明确记忆未常驻，可用 search_memory 查）" in owner.segment.split("\n")
     assert rendered.omitted_explicit == 10
-    assert sections(member.segment)[PRIVATE_CORE] == core[:10]
+    assert sections(member.segment)[GROUP_CORE] == core[:10]
     contract = await scene.contract()
     scene.write(
         "F28",
         {
             "owner_private": turn_record(owner, contract),
             "omitted_explicit": rendered.omitted_explicit,
-            "member_private": turn_record(member, contract),
+            "member_group": turn_record(member, contract),
         },
     )
 
@@ -670,10 +614,9 @@ async def test_f09_forgetting_a_fact_and_a_person(scene):
     b1 = await scene.event("private:B", "B", "记住我对花生过敏，我也喜欢下棋", key="b1")
     g1 = await scene.event("space:G", "A", "本群周末下棋", key="g1")
     allergy = await scene.fact("allergy", "B", "对花生过敏", evidence=(b1,), **EXPLICIT)
-    chess = await scene.fact("chess", "B", "喜欢下棋", evidence=(b1,))
-    go = await scene.fact("go", "B", "也会下围棋", evidence=(b1,))
+    chess = await scene.fact("chess", "B", "喜欢下棋", evidence=(b1,), **EXPLICIT)
+    go = await scene.fact("go", "B", "也会下围棋", evidence=(b1,), **EXPLICIT)
     g_core = await scene.fact("g_core", "G", "周末组织下棋", evidence=(g1,))
-    await scene.write_set("B", [chess, go])
     await scene.write_set("G", [g_core])
     before = await scene.turn("B", "第一轮")
 
@@ -682,11 +625,10 @@ async def test_f09_forgetting_a_fact_and_a_person(scene):
     forgot = await scene.command("B", "/ai forgetme")
     group = await scene.turn("A", "群里还在吗", group="G")
 
-    assert sections(before.segment) == {PRIVATE_EXPLICIT: [allergy], PRIVATE_CORE: [chess, go]}
+    assert sections(before.segment) == {PRIVATE_EXPLICIT: [allergy, chess, go]}
     assert deleted == ["记忆已删除。"]
-    assert sections(after_fact.segment) == {PRIVATE_EXPLICIT: [allergy], PRIVATE_CORE: [go]}
+    assert sections(after_fact.segment) == {PRIVATE_EXPLICIT: [allergy, go]}
     assert forgot and "删除" in forgot[0]
-    assert [row for row in await scene.table() if row["owner_kind"] == "person"] == []
     assert sections(group.segment) == {GROUP_CORE: [g_core]}
     assert not {allergy, chess, go} & set(group.fact_ids)
     contract = await scene.contract()
@@ -711,11 +653,6 @@ async def test_f10_merge_renders_once_by_root(scene):
     b2 = await scene.event("private:B2", "B2", "记住我住在杭州", key="b2")
     b_explicit = await scene.fact("b_explicit", "B", "叫小北", evidence=(b1,), **EXPLICIT)
     b2_explicit = await scene.fact("b2_explicit", "B2", "住在杭州", evidence=(b2,), **EXPLICIT)
-    b_core = await scene.fact("b_core", "B", "喜欢骑车", evidence=(b1,))
-    b2_core = await scene.fact("b2_core", "B2", "养了一只狗", evidence=(b2,))
-    await scene.write_set("B", [b_core])
-    await scene.write_set("B2", [b2_core])
-    before = await scene.table()
 
     async with scene.database.immediate_session() as writer:
         root = await merge_persons(writer, scene.persons["B2"], scene.persons["B"])
@@ -724,23 +661,10 @@ async def test_f10_merge_renders_once_by_root(scene):
     old_account_turn = await scene.turn("B2", "合并后 B′ 的账号", person="B")
     by_root = await scene.resident.render_conversation(scene.conversations["private:B"])
     by_old = await scene.resident.render_conversation(scene.conversations["private:B2"])
-    loaded_root = await scene.resident.load_set(scene.owner("B"))
-    loaded_old = await scene.resident.load_set(scene.owner("B2"))
-    await scene.resident.write_set(scene.owner("B2"), [b_core, b2_core], source="owner")
-    after_write = await scene.table()
 
     assert by_root.text == by_old.text == root_turn.segment == old_account_turn.segment
     assert len(set(root_turn.fact_ids)) == len(root_turn.fact_ids)
-    assert sections(root_turn.segment) == {
-        PRIVATE_EXPLICIT: [b_explicit, b2_explicit],
-        PRIVATE_CORE: [b_core],
-    }
-    assert loaded_old.fact_ids == loaded_root.fact_ids
-    old_row = [row for row in before if row["owner"] == "person:B2"]
-    assert [row for row in after_write if row["owner"] == "person:B2"] == old_row
-    assert [row["fact_ids"] for row in after_write if row["owner"] == "person:B"] == [
-        [b_core, b2_core]
-    ]
+    assert sections(root_turn.segment) == {PRIVATE_EXPLICIT: [b_explicit, b2_explicit]}
     contract = await scene.contract()
     scene.write(
         "F10",
@@ -748,7 +672,6 @@ async def test_f10_merge_renders_once_by_root(scene):
             "facts": scene.facts,
             "root_chat": turn_record(root_turn, contract),
             "old_account_chat": turn_record(old_account_turn, contract),
-            "table_after_root_write": after_write,
         },
     )
 
@@ -809,7 +732,7 @@ async def test_f17_work_keeps_its_first_current_message(database, tmp_path):
     await scene.provider.wait(pause)
     a9 = await scene.event("private:A", "A", "记住：周报用表格", key="a9")
     table_rule = await scene.fact("table_rule", "A", "周报用表格", evidence=(a9,), **EXPLICIT)
-    await scene.write_set("A", [ids["legacy"]])
+    await scene.write_set("self", [ids["principle"]])
     scene.provider.release[pause].set()
     first = await asyncio.wait_for(running, 30)
     original = first.current
@@ -852,7 +775,7 @@ async def test_f17_work_keeps_its_first_current_message(database, tmp_path):
         == 1
     )
     assert table_rule in sections(later.segment)[PRIVATE_EXPLICIT]
-    assert sections(later.segment)[PRIVATE_CORE] == [ids["legacy"]]
+    assert sections(later.segment)[SELF_SECTION] == [ids["principle"]]
     contract = await scene.contract()
     scene.write(
         "F17",
@@ -870,11 +793,11 @@ async def test_f17_work_keeps_its_first_current_message(database, tmp_path):
 # --------------------------------------------------------------------------- F20
 async def test_f20_superseded_core_item_renders_its_active_successor(scene):
     """Case 20 (render part): Dream synthesis; m' renders, m never; ineligible m' hides both."""
-    a1 = await scene.event("private:A", "A", "我喜欢美式咖啡，不加糖", key="a1")
-    anchor = await scene.fact("anchor", "A", "平时喜欢喝美式咖啡", evidence=(a1,))
-    m = await scene.fact("m", "A", "喝咖啡不加糖", evidence=(a1,))
-    keep = await scene.fact("keep", "A", "早起跑步", evidence=(a1,))
-    await scene.write_set("A", [m, keep])
+    g1 = await scene.event("space:G", "A", "本群聚会喝美式咖啡，不加糖", key="g1")
+    anchor = await scene.fact("anchor", "G", "聚会常喝美式咖啡", evidence=(g1,))
+    m = await scene.fact("m", "G", "聚会的咖啡不加糖", evidence=(g1,))
+    keep = await scene.fact("keep", "G", "周末早起跑步", evidence=(g1,))
+    await scene.write_set("G", [m, keep])
     scene.dream_responder = lambda request: json.dumps(
         {
             "actions": [
@@ -882,7 +805,7 @@ async def test_f20_superseded_core_item_renders_its_active_successor(scene):
                     "operation": "synthesize",
                     "source_refs": ["memory_1", "memory_2"],
                     "anchor_ref": "memory_1",
-                    "content": "喜欢不加糖的美式咖啡",
+                    "content": "聚会喝不加糖的美式咖啡",
                     "importance": 4,
                 }
             ]
@@ -896,18 +819,18 @@ async def test_f20_superseded_core_item_renders_its_active_successor(scene):
     assert successor not in (anchor, m)
 
     replies, turn = await scene.tool_turn(
-        "A", "我喝什么咖啡", [("search_memory", {"fact_id": successor})]
+        "B", "聚会喝什么咖啡", [("search_memory", {"fact_id": successor})], group="G"
     )
     await scene.chat._memories.contest_fact(successor, reason_code="resident_e2e")
-    hidden = await scene.turn("A", "再问一次")
+    hidden = await scene.turn("B", "再问一次", group="G")
 
-    assert sections(turn.segment)[PRIVATE_CORE] == [successor, keep]
-    assert f"- 喜欢不加糖的美式咖啡（fact:{successor}）" in turn.segment
+    assert sections(turn.segment)[GROUP_CORE] == [successor, keep]
+    assert f"- 聚会喝不加糖的美式咖啡（fact:{successor}）" in turn.segment
     assert m not in turn.fact_ids
     assert [row["fact_id"] for row in replies[0]["memories"]] == [successor]
-    assert sections(hidden.segment)[PRIVATE_CORE] == [keep]
+    assert sections(hidden.segment)[GROUP_CORE] == [keep]
     # The row still holds m: successor resolution happens at render time only.
-    assert [row["fact_ids"] for row in await scene.table() if row["owner"] == "person:A"] == [
+    assert [row["fact_ids"] for row in await scene.table() if row["owner"] == "space:G"] == [
         [m, keep]
     ]
     contract = await scene.contract()
@@ -1082,8 +1005,7 @@ async def test_f24_scheduled_turns_follow_their_conversation(database, tmp_path)
     private = capture([scheduled["private"]])
     group = capture([scheduled["group"]])
     assert sections(private.segment) == {
-        PRIVATE_EXPLICIT: [ids["rule"], ids["report"]],
-        PRIVATE_CORE: [ids["lang"], ids["legacy"]],
+        PRIVATE_EXPLICIT: [ids["rule"], ids["report"], ids["lang"], ids["legacy"]],
         SELF_SECTION: [ids["principle"]],
     }
     assert sections(group.segment) == {
@@ -1298,15 +1220,12 @@ async def test_f25_disable_merge_forget_lifecycle(scene):
     """Case 25: disabled B renders nothing; merged B renders by root; forgotten renders none."""
     from tests.support.person_merge import merge_persons
 
-    b1 = await scene.event("private:B", "B", "记住我是左撇子，我喜欢游泳", key="b1")
-    c1 = await scene.event("private:C", "C", "我喜欢爬山", key="c1")
+    b1 = await scene.event("private:B", "B", "记住我是左撇子", key="b1")
+    c1 = await scene.event("private:C", "C", "记住我喜欢爬山", key="c1")
     g1 = await scene.event("space:G", "A", "本群周日游泳", key="g1")
     b_explicit = await scene.fact("b_explicit", "B", "是左撇子", evidence=(b1,), **EXPLICIT)
-    b_core = await scene.fact("b_core", "B", "喜欢游泳", evidence=(b1,))
-    c_core = await scene.fact("c_core", "C", "喜欢爬山", evidence=(c1,))
+    c_explicit = await scene.fact("c_explicit", "C", "喜欢爬山", evidence=(c1,), **EXPLICIT)
     g_core = await scene.fact("g_core", "G", "周日组织游泳", evidence=(g1,))
-    await scene.write_set("B", [b_core])
-    await scene.write_set("C", [c_core])
     await scene.write_set("G", [g_core])
     enabled = await scene.resident.render_conversation(scene.conversations["private:B"])
 
@@ -1322,13 +1241,12 @@ async def test_f25_disable_merge_forget_lifecycle(scene):
     forgot = await scene.command("C", "/ai forgetme")
     forgotten_group = await scene.turn("A", "群里还有谁", group="G")
 
-    assert sections(enabled.text) == {PRIVATE_EXPLICIT: [b_explicit], PRIVATE_CORE: [b_core]}
+    assert sections(enabled.text) == {PRIVATE_EXPLICIT: [b_explicit]}
     assert disabled_private.text == "" and disabled_private.fact_ids == ()
     assert sections(disabled_group.segment) == {GROUP_CORE: [g_core]}
     assert merged_b.text == merged_c.segment
-    assert sections(merged_c.segment) == {PRIVATE_EXPLICIT: [b_explicit], PRIVATE_CORE: [c_core]}
+    assert sections(merged_c.segment) == {PRIVATE_EXPLICIT: [b_explicit, c_explicit]}
     assert forgot and "删除" in forgot[0]
-    assert [row for row in await scene.table() if row["owner_kind"] == "person"] == []
     assert sections(forgotten_group.segment) == {GROUP_CORE: [g_core]}
     contract = await scene.contract()
     scene.write(
@@ -1389,9 +1307,6 @@ async def test_f26_qq_app_and_acp_private_chats_render_the_same(database, tmp_pa
         "canonical_subject_person_id": qq.person,
     }
     explicit = await remember("explicit", "周报周五交", **person, **EXPLICIT)
-    core = await remember(
-        "core", "喜欢简洁的回答", **person, source_type=MemorySourceType.AUTOMATIC
-    )
     principle = await remember(
         "principle",
         "先查证再回答",
@@ -1401,9 +1316,6 @@ async def test_f26_qq_app_and_acp_private_chats_render_the_same(database, tmp_pa
         authority=MemoryAuthority.AGENT_REFLECTION,
     )
     resident = ResidentMemory(database)
-    await resident.write_set(
-        ResidentOwner(kind="person", person_id=qq.person), [core], source="owner"
-    )
     await resident.write_set(ResidentOwner(kind="self"), [principle], source="owner")
 
     issued = await app.client_api.identity.issue_for_operator(qq.person, str(uuid4()), str(uuid4()))
@@ -1476,11 +1388,7 @@ async def test_f26_qq_app_and_acp_private_chats_render_the_same(database, tmp_pa
 
     texts = {key: value.segment for key, value in segments.items()}
     assert texts["qq"] and len(set(texts.values())) == 1
-    assert sections(texts["qq"]) == {
-        PRIVATE_EXPLICIT: [explicit],
-        PRIVATE_CORE: [core],
-        SELF_SECTION: [principle],
-    }
+    assert sections(texts["qq"]) == {PRIVATE_EXPLICIT: [explicit], SELF_SECTION: [principle]}
     write_artifact(
         "F26",
         {

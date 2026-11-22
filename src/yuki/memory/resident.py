@@ -1,10 +1,10 @@
 """Resident memory: a small deterministic view of active facts in every Main turn.
 
-Current contract: docs/architecture/memory-v2.md "常驻记忆段". P1 scope per the
-owner's decisions: private chats render the counterpart's explicit facts, the
-counterpart's core set and SELF principles; group chats render the group core
-set and SELF principles only (no speaker / mention sections). Private-origin
-facts never render outside the private chat they came from.
+Current contract: docs/architecture/memory-v2.md "常驻记忆段". Private chats render
+the counterpart's explicit facts and SELF principles; group chats render the group
+core set and SELF principles. Person core sets were replaced by person profiles
+(layered memory P4, ``memory.profiles``). Private-origin facts never render outside
+the private chat they came from.
 
 Rendering reads in one session, never calls a model and never writes. Every
 filter is re-applied at render time, so stored core sets never need syncing
@@ -21,7 +21,7 @@ import json
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -43,7 +43,10 @@ from yuki.persistence.models import (
     MemoryToolReceiptModel,
 )
 
-MAX_RESIDENT_SET = 10  # per owner core set and SELF principles; a prompt budget
+if TYPE_CHECKING:
+    from yuki.memory.profiles import RenderedProfile
+
+MAX_RESIDENT_SET = 10  # per group core set and SELF principles; a prompt budget
 MAX_RESIDENT_EXPLICIT = 30  # explicit facts rendered; the rest stay on demand
 
 _HEADER = (
@@ -65,12 +68,16 @@ class ResidentAudience:
 @dataclass(frozen=True, slots=True)
 class ResidentRender:
     text: str  # empty: this turn has no resident segment
-    fact_ids: tuple[int, ...]  # rendered fact IDs in order of appearance
+    fact_ids: tuple[int, ...]  # fact IDs of the fact-per-line sections, in order
     omitted_explicit: int  # explicit facts not rendered because of the cap
+    profiles: tuple[RenderedProfile, ...] = ()  # person profiles in the segment (P4)
 
 
 @dataclass(frozen=True, slots=True)
 class ResidentOwner:
+    """A resident owner. Only space and SELF owners have core sets; a person owner
+    only names whose explicit facts a private chat renders."""
+
     kind: Literal["person", "space", "self"]
     person_id: str | None = None
     space_id: str | None = None
@@ -78,7 +85,7 @@ class ResidentOwner:
 
 @dataclass(frozen=True, slots=True)
 class ResidentSet:
-    owner: ResidentOwner  # person owners always carry the root person ID
+    owner: ResidentOwner
     fact_ids: tuple[int, ...]
     source: Literal["dream", "owner"]
     considered_through_fact_id: int
@@ -105,8 +112,6 @@ class _Fact:
     visibility_space_id: str | None
 
     def owned_by(self, owner: ResidentOwner) -> bool:
-        if owner.kind == "person":
-            return self.scope_type in _PERSON_SCOPES and self.subject_root == owner.person_id
         if owner.kind == "space":
             return self.scope_type == "group" and self.subject_space_id == owner.space_id
         return self.scope_type == "self"
@@ -176,6 +181,27 @@ def space_evidence_visible(evidence: Sequence[EvidenceOrigin], space_id: str | N
     return bool(evidence) and all(item.direct and item.space_id == space_id for item in evidence)
 
 
+def public_profile_evidence(evidence: Sequence[EvidenceOrigin], person_root: str) -> bool:
+    """Profile rule (P4 §6): a fact ``person_root``'s public profile may cite.
+
+    At least one direct chat event in any group and no row from someone else's
+    private chat. Rows from the person's own private chat and group tool receipts do
+    not exclude (P4-Q2). Facts without evidence rows never qualify.
+    """
+    return any(group_direct_evidence(item) for item in evidence) and private_evidence_visible(
+        evidence, person_root
+    )
+
+
+def private_profile_evidence(evidence: Sequence[EvidenceOrigin], person_root: str) -> bool:
+    """Profile rule (P4 §6): a fact ``person_root``'s private profile may cite.
+
+    Every row is the person's own private chat (direct or a receipt triggered there);
+    facts without evidence rows qualify as well.
+    """
+    return all(own_private_evidence(item, person_root) for item in evidence)
+
+
 class ResidentMemory:
     """Render resident segments and read/write the per-owner core sets."""
 
@@ -204,7 +230,9 @@ class ResidentMemory:
         """Facts the selection step may choose for ``owner``, ascending by ID."""
         async with self._database.read_session() as session:
             owner = await _resolve_owner(session, owner)
-            facts = await _facts(session, _owner_filter(owner), MemoryFactModel.id > after_fact_id)
+            facts = await load_facts(
+                session, _owner_filter(owner), MemoryFactModel.id > after_fact_id
+            )
         return tuple(
             fact.id
             for fact in sorted(facts.values(), key=lambda item: item.id)
@@ -228,7 +256,7 @@ class ResidentMemory:
             raise ResidentValidationError("duplicate fact IDs")
         async with self._database.read_session() as session:
             owner = await _resolve_owner(session, owner)
-            facts = await _facts(session, MemoryFactModel.id.in_(wanted))
+            facts = await load_facts(session, MemoryFactModel.id.in_(wanted))
         invalid = [
             fact_id
             for fact_id in wanted
@@ -277,13 +305,13 @@ class ResidentMemory:
         else:
             owner = ResidentOwner("space", space_id=audience.space_id)
         self_owner = ResidentOwner("self")
-        lists: dict[str, tuple[int, ...]] = {}
-        for item in (owner, self_owner):
+        lists: dict[str, tuple[int, ...]] = {"person": ()}
+        for item in (owner, self_owner) if owner.kind == "space" else (self_owner,):
             row = await session.scalar(_set_statement(item))
             lists[item.kind] = () if row is None else tuple(json.loads(row.fact_ids_json))
         explicit: dict[int, _Fact] = {}
         if owner.kind == "person":
-            explicit = await _facts(
+            explicit = await load_facts(
                 session,
                 _owner_filter(owner),
                 or_(
@@ -291,7 +319,7 @@ class ResidentMemory:
                     MemoryFactModel.authority == "explicit",
                 ),
             )
-        listed, current = await _resolve_listed(session, (*lists[owner.kind], *lists["self"]))
+        listed, current = await resolve_listed(session, (*lists[owner.kind], *lists["self"]))
         facts = {**listed, **explicit}
         origins = await evidence_origins(
             session, (fact.id for fact in facts.values() if fact.eligible and fact.active)
@@ -340,15 +368,26 @@ class ResidentMemory:
             sections.append(
                 ("[对方明确要求记住的]", eligible_explicit, MAX_RESIDENT_EXPLICIT, note)
             )
-            sections.append(("[关于对方]", pick(lists["person"], owner), MAX_RESIDENT_SET, ""))
         else:
             sections.append(("[本群]", pick(lists["space"], owner), MAX_RESIDENT_SET, ""))
         sections.append(("[我自己的原则]", pick(lists["self"], self_owner), MAX_RESIDENT_SET, ""))
 
+        # Person profiles (layered memory P4 §7) sit before the SELF principles. The
+        # import is local: the profile module builds on this module's fact helpers.
+        from yuki.memory.profiles import render_private_profiles, render_space_profiles
+
+        if owner.kind == "person":
+            assert owner.person_id is not None
+            profile_lines, profiles = await render_private_profiles(session, owner.person_id)
+        else:
+            assert owner.space_id is not None
+            profile_lines, profiles = await render_space_profiles(session, owner.space_id)
         seen: set[int] = set()
         lines: list[str] = []
         rendered: list[int] = []
         for title, candidates, cap, note in sections:
+            if title == "[我自己的原则]":
+                lines.extend(profile_lines)
             entries: list[_Fact] = []
             for fact in candidates:
                 if fact.id not in seen and fact.id not in {item.id for item in entries}:
@@ -364,7 +403,7 @@ class ResidentMemory:
                 lines.append(note)
         if not lines:
             return ResidentRender("", (), omitted)
-        return ResidentRender("\n".join((_HEADER, *lines)), tuple(rendered), omitted)
+        return ResidentRender("\n".join((_HEADER, *lines)), tuple(rendered), omitted, profiles)
 
 
 def _line(fact: _Fact) -> str:
@@ -374,14 +413,11 @@ def _line(fact: _Fact) -> str:
 async def _resolve_owner(session: AsyncSession, owner: ResidentOwner) -> ResidentOwner:
     if owner.kind == "self":
         return ResidentOwner("self")
-    if owner.kind == "space":
-        if await session.get(CanonicalSpaceModel, owner.space_id) is None:
-            raise ResidentValidationError(f"unknown space {owner.space_id}")
-        return ResidentOwner("space", space_id=owner.space_id)
-    root = await session.scalar(select(person_root_id(owner.person_id)))
-    if root is None:
-        raise ResidentValidationError(f"unknown person {owner.person_id}")
-    return ResidentOwner("person", person_id=root)
+    if owner.kind == "person":
+        raise ResidentValidationError("persons have profiles, not core sets")
+    if await session.get(CanonicalSpaceModel, owner.space_id) is None:
+        raise ResidentValidationError(f"unknown space {owner.space_id}")
+    return ResidentOwner("space", space_id=owner.space_id)
 
 
 def _set_statement(owner: ResidentOwner) -> Any:
@@ -421,7 +457,7 @@ def _owner_filter(owner: ResidentOwner) -> Any:
     return fact.scope_type == "self"
 
 
-async def _facts(session: AsyncSession, *conditions: Any) -> dict[int, _Fact]:
+async def load_facts(session: AsyncSession, *conditions: Any) -> dict[int, _Fact]:
     """Fetch facts with person roots and the common resident conditions evaluated in SQL."""
     fact = MemoryFactModel
     subject = aliased(CanonicalPersonModel)
@@ -481,7 +517,7 @@ async def _facts(session: AsyncSession, *conditions: Any) -> dict[int, _Fact]:
     }
 
 
-async def _resolve_listed(
+async def resolve_listed(
     session: AsyncSession, listed: tuple[int, ...]
 ) -> tuple[dict[int, _Fact], dict[int, int]]:
     """Map each listed ID to its current active fact, walking successors set by set.
@@ -490,7 +526,7 @@ async def _resolve_listed(
     the newest committed Dream operation output that consumed it. IDs without an
     active end of chain are absent from the returned mapping.
     """
-    facts = await _facts(session, MemoryFactModel.id.in_(set(listed)))
+    facts = await load_facts(session, MemoryFactModel.id.in_(set(listed)))
     resolved: dict[int, int] = {}
     frontier: dict[int, int] = {}
     walked: dict[int, set[int]] = {}
@@ -504,7 +540,7 @@ async def _resolve_listed(
         following = await _successors(session, set(frontier.values()))
         unseen = set(following.values()) - facts.keys()
         if unseen:
-            facts.update(await _facts(session, MemoryFactModel.id.in_(unseen)))
+            facts.update(await load_facts(session, MemoryFactModel.id.in_(unseen)))
         advanced: dict[int, int] = {}
         for origin, at in frontier.items():
             nxt = following.get(at)

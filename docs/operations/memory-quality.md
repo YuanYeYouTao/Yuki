@@ -48,27 +48,31 @@ Rebuild 已提交事实与 proposal 回执共同核对，确认已提交不再�
 
 ## 常驻记忆核心集
 
-常驻记忆直接生效、无开关：每轮 system 消息末尾渲染常驻记忆段，Dream 运行处理完全部簇后对到期主人做核心集挑选。
+常驻记忆直接生效、无开关：每轮 system 消息末尾渲染常驻记忆段，Dream 运行处理完全部簇后对到期的群做核心集挑选。
+人物不再有核心集（由人物画像替代，迁移 `0164`）。
 下面的命令默认使用当前配置的数据库，也可加 `--database-url`。
 
 ```bash
-yuki memory resident show --person <person-id> [--content]   # 或 --space <space-id> / --self
+yuki memory resident show --space <space-id> [--content]     # 或 --self
 yuki memory resident render --conversation <conversation-id>
-yuki memory resident set --person <person-id> --facts 12,34    # 写入并锁定（source=owner）；--facts '' 清空
-yuki memory resident unlock --person <person-id>               # 交还挑选步骤
-yuki memory resident select --person <person-id> [--dry-run] [--content]
+yuki memory resident set --space <space-id> --facts 12,34      # 写入并锁定（source=owner）；--facts '' 清空
+yuki memory resident unlock --space <space-id>                 # 交还挑选步骤
+yuki memory resident select --space <space-id> [--dry-run] [--content]
 yuki memory resident status
 yuki memory resident check > check.json
 python scripts/verify_resident_check.py --database <sqlite-file> --check check.json
 ```
 
-- 挑选沿用 `memory_dream` 模型路由。Dream 内每个到期主人至多一次结构化调用，每次运行至多
-  `MEMORY_RESIDENT_MAX_SELECTIONS_PER_RUN` 个主人（默认 12），按已看水位、再按主人 ID 排队；
-  没轮到的留到下次。调用次数单独计数写进 `memory_resident_selection_finished` 日志，不占 Dream 簇的
-  `model_calls` 预算。每个主人的换入、换出 fact ID 写进 `memory_resident_selected` 日志。
+- 挑选沿用 `memory_dream` 模型路由。Dream 内每个到期主人（群核心集与人物画像）至多一次结构化调用，
+  每次运行至多 `MEMORY_RESIDENT_MAX_SELECTIONS_PER_RUN` 个主人（默认 24），群核心集按已看水位、再按主人 ID
+  排在前面，人物画像随后按上次尝试时间排队（规则见 [Memory 人物画像](../architecture/memory-v2.md#人物画像)）；
+  没轮到的留到下次。调用次数单独计数写进 `memory_resident_selection_finished` 日志（同时记名单窗口、
+  更新名单的群数、程序清理版本数、到期与作废画像数及按 code 的作废计数、推迟的画像），不占 Dream 簇的
+  `model_calls` 预算。每个群的换入、换出 fact ID 写进 `memory_resident_selected` 日志；画像写入、作废、
+  放弃与清理分别记 `memory_profile_maintained`、`memory_profile_rejected`、`memory_profile_abandoned`、
+  `memory_profile_cleaned`。
 - `select` 在 CLI 进程内按 bot 启动时的同一方式装配模型运行时（环境变量、模型档案与已激活的重启覆盖），
   调用记录写进同一数据库，不需要 bot 在跑；锁定的主人先 `unlock`。`--dry-run` 也会真实调用一次模型。
-- 人物合并时根人物那一行的已看水位归零，下一次挑选会重新看一遍合并后的全部候选。
 - 挑选只写 `memory_resident_sets`，不改事实，不产生 Dream 操作行，也不参与 Dream 回滚；失败记日志，
   该主人不变、留到下次，Dream 运行照常收尾。`DreamHealth.resident_pending_owners` 与
   `resident_oldest_pending_at`（`status` 同样输出）持续增长说明挑选长期没跑或一直轮不到。
@@ -98,6 +102,52 @@ python scripts/verify_episode_check.py --database <sqlite-file> --check episodes
 - `--dry-run`、`render` 与 `set-title` 的输出含记忆派生内容，只在部署环境内查看，不贴进仓库或 issue。
 - `check` 只对全部会话各渲染两次，输出列出的 fact ID 和不稳定的会话；可见范围的独立复核在
   `scripts/verify_episode_check.py`，违反条数应为 0。
+
+## 人物画像
+
+每人一份公共画像、一份私人画像（迁移 `0164`，合同见
+[P4 任务书](../architecture/Yuki-记忆分层P4人物画像任务书-2026-11-22.md) §4–§9）。版本表只追加：
+回滚与写入都生成新版本，不改写历史。`<画像>` 指 `--person <person-id> --audience public|private`，
+人物 ID 按根解析（并入的旧 ID 落到根人物的画像）。命令默认使用当前配置的数据库，也可加 `--database-url`；
+输出都是 JSON。
+
+```bash
+yuki memory profile show <画像> [--content]          # 版本号、当前版本来源与原因、锁定、签名、条目小节与编号
+yuki memory profile history <画像>                   # 全部版本：来源、原因、时间、条目数、所在 Dream 运行
+yuki memory profile diff <画像> --from N --to M [--content]   # 按条目：新增、删除、改写（共用 fact）、不变数
+yuki memory profile rollback <画像> --to N           # 以 vN 的条目生成新版本（source=owner）并锁定
+yuki memory profile lock <画像>                      # Dream 挑选跳过；程序清理照常
+yuki memory profile unlock <画像>
+yuki memory profile generate --displayed --out plan.json        # 或 --person <id> [--audience …]
+yuki memory profile apply plan.json
+yuki memory profile members --space <space-id> [--pin <id1,id2,…> | --unpin]
+yuki memory profile check                            # 有违规时退出码 1
+yuki memory profile status
+```
+
+- `rollback`：vN 的条目先按渲染时校验（§7.4）过一遍：任一编号沿后继解析后不再可引用的条目整条删除，
+  输出的 `dropped` 列出位置与失效编号；后继可引用的换成后继（`replaced`）。新版本原因写
+  `owner rollback to vN`，画像自动锁定，要交还 Dream 维护就 `unlock`。版本不存在时退出码 1，不写库。
+- `generate` 只写计划文件，不写库：对每份画像在 CLI 进程内用 `memory_dream` 模型路由跑一次结构化调用
+  （装配方式同 `resident select`）。`--displayed` 取最近一次已收尾 Dream 运行的窗口（上一次已收尾运行的
+  `started_at` 至该次 `started_at`；只有一次时取其前 24 小时）里的维护集合：各群名单（所有者固定的群用固定名单，
+  窗口内没人发言的群沿用已存名单）与窗口内私聊过的人都生成公共画像，私聊过的人另生成私人画像，同一人公共在前。
+  `--person` 省略 `--audience` 时两份都生成。可用事实为空的画像不调用，列在 `skipped`；输出违反 §8.4 的
+  （未知别名、引用 `ref_N`、超长、空正文等）整份作废，列在 `rejected`，退出码 1。
+- 计划文件每份画像记录 `base_version`（生成时的当前版本号）、`signature`（可用事实签名）、`reason`、
+  `generated` 与 `entries`；所有者直接改 `entries`（或删掉整份）后再 `apply`。计划含正文派生内容，只在部署环境内
+  查看与编辑，不贴进仓库或 issue。
+- `apply` 逐份校验：当前版本号变了拒绝 `version_changed`，可用事实签名变了拒绝 `signature_changed`，结构或
+  编号校验不过拒绝（列出失效编号）；其余照常写入，一份被拒不影响其他份。写入是 `source=owner` 的新版本并记下签名；
+  `entries` 与 `generated` 不同的那份自动锁定，相同的不改锁定状态；与当前条目相同的不加版本。有拒绝时退出码 1，
+  重新 `generate` 后再 `apply`。同一份计划再次应用时，上次写了新版本的那份拒绝 `version_changed`，与当前条目相同的那份仍是空操作。
+- `members --pin` 写所有者名单（`source=owner`，最多 5 人，按根去重），Dream 收尾不再重算该群；`--unpin`
+  改回 `dream`，名单不变，下一次 Dream 收尾重算。
+- `check` 对全部有条目的画像做渲染时校验，输出每份画像的条目编号（`rendered`）与违规（失效条目的位置与编号、
+  后继映射）。只读，不写库；版本快照里的历史条目不在检查范围。
+- `status` 输出最近一次窗口、各群显示名单、维护集合、到期画像（维护集合内、未锁定、可用事实非空且签名与上次
+  处理时不同）、各群名单行与每份画像的版本号、当前版本来源、锁定、上次尝试时间与签名是否最新。
+  作废次数不入库，看 `memory_profile_rejected` 日志。
 
 ## 提取收紧与当次任务指令清理
 

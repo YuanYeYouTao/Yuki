@@ -45,7 +45,7 @@ MAX_EPISODE_INDEX_LINES = 120  # listed one per line; older ones become month co
 MAX_EPISODE_RECENT_LINES = 20  # today's new episodes listed; the rest as one count
 UNTITLED = "（未命名经历）"
 RECENT_HEADER = "今天新记下的经历（还没进入目录）"
-_FINISHED = ("completed", "partial_failed")
+FINISHED_RUN_STATUSES = ("completed", "partial_failed")  # watermark; P4 member window
 
 
 @dataclass(frozen=True, slots=True)
@@ -216,7 +216,9 @@ def _line(episode: _Episode) -> str:
 async def _watermark(session: AsyncSession, through_fact_id: int | None) -> EpisodeWatermark:
     """The newest finished Dream run (at or below ``through_fact_id`` when given)."""
     run = MemoryDreamRunModel
-    statement = select(run).where(run.completed_at.is_not(None), run.status.in_(_FINISHED))
+    statement = select(run).where(
+        run.completed_at.is_not(None), run.status.in_(FINISHED_RUN_STATUSES)
+    )
     if through_fact_id is not None:
         statement = statement.where(run.snapshot_max_fact_id <= through_fact_id)
     row = await session.scalar(statement.order_by(run.completed_at.desc(), run.id.desc()).limit(1))

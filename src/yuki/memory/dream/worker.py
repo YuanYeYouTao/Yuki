@@ -133,7 +133,7 @@ class DreamWorker:
         pending = await self._resident.pending()
         return snapshot.model_copy(
             update={
-                "resident_pending_owners": len(pending.owners),
+                "resident_pending_owners": pending.count,
                 "resident_oldest_pending_at": pending.oldest_pending_at,
                 **(
                     {"running": False, "last_error_category": type(task_error).__name__}
