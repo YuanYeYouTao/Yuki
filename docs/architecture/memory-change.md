@@ -24,11 +24,15 @@ current_speaker、named_member、member_{id}、replied_message_author、candidat
 它们只能解析到本轮出现者的附带限制也一并删除，不改写成新的授权门槛（存在性核对不是授权）。
 真实来源照旧：人类写入的 evidence 须为真实入站事件，SELF 写入须给 `quote` 并按本轮
 `memory_tool_receipts.result_excerpt` 子串核验。`memory_key` 与 `category` 由 kind 生成（SELF 为
-`self_<kind>`），只作检索标签。自动提取在 `memory.extraction_tightened_enabled` 开启时同样不让模型给
-`category`，写入取 kind 的值；关闭时仍是模型给出的类别。存量事实的 `category` 不改。restore、contest、merge、reassign、update_metadata、selector、
+`self_<kind>`），只作检索标签。`save_memory(kind=episode)` 不带标题（`title` 为空，经历目录显示
+“（未命名经历）”，可由所有者 `yuki memory episodes set-title` 补写）；correct 与元数据新版本沿用原标题。
+自动提取在 `memory.extraction_tightened_enabled` 开启时同样不让模型给
+`category`，写入取 kind 的值；关闭时仍是模型给出的类别。存量事实的 `category` 不改。
+restore、contest、merge、reassign、update_metadata、selector、
 expected_fact_state、valid_from／until、confidence、request_basis 不再提供给模型。
 
-Dream 可按实际内容重组 fact、preference 或 episode，不要求 focus、正文和 key 唯一，
+Dream 可按实际内容重组 fact、preference 或 episode，不要求 focus、正文和 key 唯一（episode 输出以该输出的
+focus 作标题，synthesize 沿用锚点标题，merge／keep 保留锚点），
 不限制固定输出条数。部分整理只替换输出实际引用的来源；其余事实保持原样，不提前写处理
 checkpoint。新事实复制全部获准原证据，模型输入采样不裁剪持久来源；回滚沿原签名和回执。
 单条真实来源也可参与 merge、synthesize 或 resolve，沿原操作语义处理。

@@ -29,12 +29,12 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from yuki.cli import _cli_model_executor
+from yuki.cli import _cli_models
 from yuki.config import Settings
 from yuki.memory.event_extractor import MemoryEventExtractor
 from yuki.memory.extraction import (
-    BATCH_EXTRACTION_PROMPT_VERSION,
-    TIGHTENED_BATCH_EXTRACTION_PROMPT_VERSION,
+    EXTRACTION_PROMPT_VERSION,
+    TIGHTENED_EXTRACTION_PROMPT_VERSION,
 )
 from yuki.memory.quality.task_scoped import TASK_SCOPED_PATTERN
 from yuki.persistence.database import Database
@@ -60,7 +60,7 @@ async def _replay(
     settings = Settings(database_url=url)
     database = Database(url)
     try:
-        async with _cli_model_executor(settings, database) as (active, models):
+        async with _cli_models(settings, database) as (active, models):
             ledger = EventLedgerRepository(database)
             extractor = MemoryEventExtractor(
                 models,
@@ -102,8 +102,8 @@ async def _replay(
         await database.close()
     return {
         "prompt_versions": {
-            "v7": BATCH_EXTRACTION_PROMPT_VERSION,
-            "v8": TIGHTENED_BATCH_EXTRACTION_PROMPT_VERSION,
+            "v7": EXTRACTION_PROMPT_VERSION,
+            "v8": TIGHTENED_EXTRACTION_PROMPT_VERSION,
         },
         "sets": results,
     }

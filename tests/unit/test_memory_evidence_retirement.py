@@ -45,6 +45,7 @@ async def test_nine_original_tool_sources_survive_completed_reflection_and_recei
             {
                 "episodes": [
                     {
+                        "title": "完成九个步骤",
                         "importance": 4,
                         "passages": [
                             {

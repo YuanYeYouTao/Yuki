@@ -127,7 +127,9 @@ async def test_upgrade_preserves_rows_and_allows_independent_same_key(tmp_path, 
         assert db.execute("SELECT version_num FROM alembic_version").fetchone() == (
             canonical_schema_revision(),
         )
-        assert db.execute("SELECT * FROM memory_facts").fetchall() == before
+        # Later migrations may append columns (0163 title); original values stay.
+        after = db.execute("SELECT * FROM memory_facts").fetchall()
+        assert [row[: len(before[0])] for row in after] == before
         db.execute(sql, values)
         assert db.execute(
             "SELECT COUNT(*) FROM memory_facts WHERE memory_key='same-key'"

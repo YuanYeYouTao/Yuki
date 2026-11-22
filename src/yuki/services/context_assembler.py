@@ -21,6 +21,7 @@ from yuki.domain.conversations import ConversationScope, ScopeType
 from yuki.domain.messages import ChatMessage, InboundMessage
 from yuki.domain.profiles import UserProfileSnapshot
 from yuki.event_prompt import ChatEventPromptRenderer
+from yuki.memory.episode_index import EpisodeIndex
 from yuki.memory.resident import ResidentMemory
 from yuki.persistence.event_repository import ConversationReadVersion
 from yuki.persistence.repositories import (
@@ -82,6 +83,8 @@ class AssembledContext:
     history_incremental: bool = False
     prepared_fragments: FrozenFragments | None = None
     resident_text: str = ""
+    episode_index_text: str = ""
+    episode_recent_text: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,11 +116,13 @@ class ContextAssembler:
         ledger: EventLedgerRepository,
         conversation_scopes: ConversationScopeRepository,
         resident: ResidentMemory | None = None,
+        episodes: EpisodeIndex | None = None,
     ) -> None:
         self._settings = settings
         self._ledger = ledger
         self._scopes = conversation_scopes
         self._resident = resident
+        self._episodes = episodes
 
     async def _assemble_activation(
         self,
@@ -297,10 +302,10 @@ class ContextAssembler:
                 turn=turn,
                 runtime=runtime,
             )
-            return await self._with_resident(context, turn=turn, runtime=runtime)
+            return await self._with_memory_segments(context, turn=turn, runtime=runtime)
         if inbound is None and profile is None:
             context = await self._assemble_activation(identity=identity, turn=turn, content=content)
-            return await self._with_resident(context, turn=turn, runtime=runtime)
+            return await self._with_memory_segments(context, turn=turn, runtime=runtime)
         if inbound is None or profile is None:
             raise ConversationCoverageError("message turn requires a real inbound actor")
         if turn.trigger_event_id is None:
@@ -325,32 +330,49 @@ class ContextAssembler:
             current_event=current,
         )
         await self._validate_history_source(snapshot, current)
-        return await self._with_resident(context, turn=turn, runtime=runtime)
+        return await self._with_memory_segments(context, turn=turn, runtime=runtime)
 
-    async def _with_resident(
+    async def _with_memory_segments(
         self,
         context: AssembledContext,
         *,
         turn: ConversationTurnSnapshot,
         runtime: RuntimeConfigSnapshot,
     ) -> AssembledContext:
-        """Attach the resident memory segment of this turn's Conversation."""
-        if self._resident is None or not runtime.memory.resident_enabled:
-            return context
-        try:
-            rendered = await self._resident.render_conversation(turn.conversation_id)
-        except Exception as exc:
-            # Deliberate single exception to the no-defensive-programming rule
-            # (memory layering P1 §5.6, F16): the resident segment is an optional
-            # prompt aid, so a render failure drops it for this turn only and the
-            # turn proceeds. The renderer itself has no fallback anywhere else.
-            logger.exception(
-                "memory_resident_render_failed conversation_id=%s exception_category=%s",
-                turn.conversation_id,
-                type(exc).__name__,
-            )
-            return context
-        return replace(context, resident_text=rendered.text)
+        """Attach the resident segment and the episode index of this turn's Conversation.
+
+        Deliberate single exception to the no-defensive-programming rule (memory
+        layering P1 §5.6 F16, P2 §8.2): both are optional prompt aids, so a render
+        failure drops only the failing one for this turn and the turn proceeds. The
+        renderers themselves have no fallback anywhere else.
+        """
+        if self._resident is not None and runtime.memory.resident_enabled:
+            try:
+                resident = await self._resident.render_conversation(turn.conversation_id)
+            except Exception as exc:
+                logger.exception(
+                    "memory_resident_render_failed conversation_id=%s exception_category=%s",
+                    turn.conversation_id,
+                    type(exc).__name__,
+                )
+            else:
+                context = replace(context, resident_text=resident.text)
+        if self._episodes is not None and runtime.memory.episode_index_enabled:
+            try:
+                episodes = await self._episodes.render_conversation(turn.conversation_id)
+            except Exception as exc:
+                logger.exception(
+                    "memory_episode_index_render_failed conversation_id=%s exception_category=%s",
+                    turn.conversation_id,
+                    type(exc).__name__,
+                )
+            else:
+                context = replace(
+                    context,
+                    episode_index_text=episodes.index_text,
+                    episode_recent_text=episodes.recent_text,
+                )
+        return context
 
     async def _assemble_actorless_turn(
         self,

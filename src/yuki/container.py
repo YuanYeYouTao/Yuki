@@ -63,6 +63,7 @@ from yuki.identity.ingress import CanonicalIngressResolver
 from yuki.identity.routing import PresenceRouter, RouteMonitor
 from yuki.identity.write_settings import configure_identity_write_settings
 from yuki.memory.embedding.runtime import MemoryEmbeddingRuntime
+from yuki.memory.episode_index import EpisodeIndex
 from yuki.memory.resident import ResidentMemory
 from yuki.persistence.database import Database
 from yuki.plugin_host.background_turns import PluginBackgroundTurnWorker
@@ -310,6 +311,7 @@ class ApplicationContainer:
         )
         self.emoji_delivery = self.social_service.emoji_delivery
         self.resident_memory = ResidentMemory(self.database)
+        self.episode_index = EpisodeIndex(self.database, timezone=settings.memory_dream_timezone)
         self.conversation_module = ConversationModule(
             settings=settings,
             persistence=persistence,
@@ -331,6 +333,7 @@ class ApplicationContainer:
             observe_main_response=self._observe_main_response,
             participation_runtime_context=self._participation_runtime_context,
             resident=self.resident_memory,
+            episodes=self.episode_index,
         )
         conversation = self.conversation_module.build()
         self.conversation = conversation

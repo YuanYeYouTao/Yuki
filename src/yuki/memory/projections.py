@@ -175,6 +175,7 @@ def project_memory_fact(
         category=row.category,
         content=row.content,
         normalized_content=row.normalized_content,
+        title=row.title,
         importance=row.importance,
         confidence=row.confidence,
         source_type=row.source_type,

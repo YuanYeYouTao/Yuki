@@ -656,6 +656,7 @@ class MemoryFactService:
                 memory_key=current.memory_key,
                 category=current.category,
                 content=normalized,
+                title=current.title,
                 importance=current.importance,
                 confidence=1.0,
                 source_type=MemorySourceType.EXPLICIT,

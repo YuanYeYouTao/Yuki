@@ -98,16 +98,12 @@ V8_SENTENCES = (
     "同一批里同一个意思只输出一条 claim。",
 )
 
-# Digests of what main f0d7fed9 sends (instruction as sent, schema with sorted keys).
+# Digests of what main 1215ed17 (P2) sends (instruction as sent, schema with sorted keys).
 # X2 proves the switch-off side stays byte-identical to the deployed contract.
 DEPLOYED = {
-    "batch_instruction": "46b1108b003a89e54aa35662db1a8de719c73d7d8bd7d0b031ef5133b35c2ba8",
-    "batch_schema": "b630c6c234f1080e0b121b621da4d24e01d9c53cc7bab9874f26c548bce65730",
-    "single_instruction": "21a902d7aac2309dedbb0a97a20e48362e9b982a88ae696fae1a91914ba941f4",
-    "single_schema": "c842c449eb8abd0e4005758ac4d200b0086b4244de0056fa72bfe2314a681c7a",
+    "batch_instruction": "69ff70af0eb8307a6bc31ea5a6294705a5149fb2904de5a8253d9f651550b61c",
+    "batch_schema": "98f0bf0705bcf215c569361a59fc83f4d14e3c74891e4416ea5c056b67ebf848",
 }
-LEGACY_VERSIONS = {"batch_prompt": "memory-v2-batch-extraction-v6", "batch_schema": "5"}
-TIGHTENED_VERSIONS = {"batch_prompt": "memory-v2-batch-extraction-v7", "batch_schema": "6"}
 
 
 @pytest.fixture
@@ -268,9 +264,9 @@ def _version_lines(caplog) -> list[str]:
     ]
 
 
-def _versions_of(line: str) -> dict[str, str]:
+def _tightened_of(line: str) -> str:
     fields = dict(part.split("=", 1) for part in line.split()[1:] if "=" in part)
-    return {"batch_prompt": fields["prompt_version"], "batch_schema": fields["schema_version"]}
+    return fields["extraction_tightened"]
 
 
 MIXED = "这次 PR #12 先别合，等我看完任务书再说；另外以后汇报都先写结论再写过程"
@@ -294,7 +290,7 @@ async def test_x01_switch_on_sends_v8_and_writes_only_the_long_term_claim(scene,
     assert all(sentence in _instruction(request) for sentence in V8_SENTENCES)
     assert _sha(_instruction(request)) != DEPLOYED["batch_instruction"]
     (line,) = _version_lines(caplog)
-    assert _versions_of(line) == TIGHTENED_VERSIONS
+    assert _tightened_of(line) == "True"
     facts = await _facts(scene, written)
     assert [(row["kind"], row["category"]) for row in facts] == [("preference", "preference")]
     _artifact(
@@ -303,7 +299,7 @@ async def test_x01_switch_on_sends_v8_and_writes_only_the_long_term_claim(scene,
         {
             "instruction_sha256": _sha(_instruction(request)),
             "schema_sha256": _schema_sha(request),
-            "versions": _versions_of(line),
+            "extraction_tightened": _tightened_of(line),
             "facts": facts,
         },
     )
@@ -325,7 +321,7 @@ async def test_x02_switch_off_is_byte_identical_to_the_deployed_contract(scene, 
     assert _schema_sha(request) == DEPLOYED["batch_schema"]
     assert not any(sentence in _instruction(request) for sentence in V8_SENTENCES)
     (line,) = _version_lines(caplog)
-    assert _versions_of(line) == LEGACY_VERSIONS
+    assert _tightened_of(line) == "False"
     facts = await _facts(scene, written)
     assert [row["category"] for row in facts] == ["工作习惯"]
     _artifact(
@@ -334,7 +330,7 @@ async def test_x02_switch_off_is_byte_identical_to_the_deployed_contract(scene, 
         {
             "instruction_sha256": _sha(_instruction(request)),
             "schema_sha256": _schema_sha(request),
-            "versions": _versions_of(line),
+            "extraction_tightened": _tightened_of(line),
             "facts": facts,
         },
     )
@@ -1065,8 +1061,8 @@ async def test_x15_no_fact_text_in_plan_cli_stats_or_logs(scene, caplog):
 
     import yuki.cli as cli
 
-    original = cli._cli_model_executor
-    cli._cli_model_executor = scripted_models
+    original = cli._cli_models
+    cli._cli_models = scripted_models
     try:
         code = await _memory_command(
             scene.settings,
@@ -1080,7 +1076,7 @@ async def test_x15_no_fact_text_in_plan_cli_stats_or_logs(scene, caplog):
             ),
         )
     finally:
-        cli._cli_model_executor = original
+        cli._cli_models = original
     assert code == 0
     plan_text = path.read_text("utf-8")
     plan = json.loads(plan_text)

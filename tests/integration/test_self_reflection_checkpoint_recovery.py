@@ -42,6 +42,7 @@ def proposal(key):
 
 def episode():
     return {
+        "title": "生成曲线绘图",
         "passages": [
             {"evidence_refs": ["tool_1"], "content": "我生成了曲线绘图，并校验了实际产物。"}
         ],

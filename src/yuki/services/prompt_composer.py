@@ -122,6 +122,30 @@ class PromptComposer:
                     priority=10,
                 )
             )
+        if context.episode_index_text:
+            # The episode index follows the resident segment as the very last part of
+            # the system message: it changes at most once per Dream batch, so it joins
+            # the cached prefix; like the resident segment it stays out of the
+            # recovery contract hash.
+            contributions.append(
+                static_text(
+                    "memory.episode_index",
+                    context.episode_index_text,
+                    channel=PromptChannel.CONTEXT,
+                    priority=5,
+                )
+            )
+        if context.episode_recent_text:
+            # Episodes written after the watermark change every turn: they ride in the
+            # current message right after the current scene material.
+            contributions.append(
+                PromptContribution(
+                    id="memory.episodes_recent",
+                    channel=PromptChannel.CONTEXT,
+                    priority=84,
+                    payload=context.episode_recent_text,
+                )
+            )
         if context.metadata_payload:
             contributions.append(
                 PromptContribution(

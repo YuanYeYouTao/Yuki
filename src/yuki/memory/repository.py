@@ -908,6 +908,7 @@ class MemoryFactRepository:
             category=fact.category,
             content=fact.content,
             normalized_content=normalized_content,
+            title=fact.title,
             importance=fact.importance,
             confidence=fact.confidence,
             source_type=fact.source_type.value,

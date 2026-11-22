@@ -128,6 +128,7 @@ class MemoryMutationRequest(_MutationModel):
     target: MemoryMutationTarget | None = None
     visibility: SelfMemoryVisibilityMode | None = None
     new_content: str | None = Field(default=None)
+    title: str | None = Field(default=None)  # episode title (memory layering P2)
     memory_key: str | None = Field(default=None)
     category: str | None = Field(default=None)
     kind: MemoryKind | None = None

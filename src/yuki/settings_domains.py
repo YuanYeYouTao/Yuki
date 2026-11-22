@@ -202,6 +202,7 @@ class MemorySettings(DomainSettings):
     memory_resident_enabled: bool
     memory_extraction_tightened_enabled: bool
     memory_resident_max_selections_per_run: int = Field(gt=0)
+    memory_episode_index_enabled: bool
     memory_embedding_enabled: bool
     memory_embedding_provider: str
     memory_embedding_base_url: str

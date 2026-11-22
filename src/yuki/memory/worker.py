@@ -16,13 +16,7 @@ from yuki.memory.enums import (
     MemorySourceType,
 )
 from yuki.memory.event_extractor import MemoryEventExtractor
-from yuki.memory.extraction import (
-    BATCH_EXTRACTION_PROMPT_VERSION,
-    BATCH_EXTRACTION_SCHEMA_VERSION,
-    TIGHTENED_BATCH_EXTRACTION_PROMPT_VERSION,
-    TIGHTENED_BATCH_EXTRACTION_SCHEMA_VERSION,
-    MemoryClaim,
-)
+from yuki.memory.extraction import MemoryClaim
 from yuki.memory.job_claims import MemoryJobClaimLost
 from yuki.memory.models import MemoryJob
 from yuki.memory.mutation.service import MemoryMutationService
@@ -177,18 +171,13 @@ class MemoryWorker:
             tightened = (await self._runtime_config.snapshot()).memory.extraction_tightened_enabled
             logger.info(
                 "memory_extraction_batch_started batch_id=%s trigger=%s events=%d characters=%d "
-                "oldest_age_seconds=%d prompt_version=%s schema_version=%s",
+                "oldest_age_seconds=%d extraction_tightened=%s",
                 batch_id,
                 trigger,
                 len(jobs),
                 characters,
                 age,
-                TIGHTENED_BATCH_EXTRACTION_PROMPT_VERSION
-                if tightened
-                else BATCH_EXTRACTION_PROMPT_VERSION,
-                TIGHTENED_BATCH_EXTRACTION_SCHEMA_VERSION
-                if tightened
-                else BATCH_EXTRACTION_SCHEMA_VERSION,
+                tightened,
             )
             first_event = jobs[0].event
             context = await self._ledger.list_scope_before(
