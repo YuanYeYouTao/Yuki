@@ -136,10 +136,10 @@ python scripts/verify_episode_check.py --database <sqlite-file> --check episodes
 输出都是 JSON。
 
 ```bash
-yuki memory profile show <画像> [--content]          # 版本号、当前版本来源与原因、锁定、签名、条目小节与编号
+yuki memory profile show <画像> [--content]          # 版本号、当前版本来源与原因、锁定、签名、条目小节与编号、可查话题
 yuki memory profile history <画像>                   # 全部版本：来源、原因、时间、条目数、所在 Dream 运行
 yuki memory profile diff <画像> --from N --to M [--content]   # 按条目：新增、删除、改写（共用 fact）、不变数
-yuki memory profile rollback <画像> --to N           # 以 vN 的条目生成新版本（source=owner）并锁定
+yuki memory profile rollback <画像> --to N           # 以 vN 的条目与话题生成新版本（source=owner）并锁定
 yuki memory profile lock <画像>                      # Dream 挑选跳过；程序清理照常
 yuki memory profile unlock <画像>
 yuki memory profile generate --displayed --out plan.json        # 或 --person <id> [--audience …]
@@ -159,18 +159,19 @@ yuki memory profile status
   `--person` 省略 `--audience` 时两份都生成。可用事实为空的画像不调用，列在 `skipped`；输出违反 §8.4 的
   （未知别名、引用 `ref_N`、超长、空正文等）整份作废，列在 `rejected`，退出码 1。
 - 计划文件每份画像记录 `base_version`（生成时的当前版本号）、`signature`（可用事实签名）、`reason`、
-  `generated` 与 `entries`；所有者直接改 `entries`（或删掉整份）后再 `apply`。计划含正文派生内容，只在部署环境内
+  `generated` 与 `entries`、`generated_topics` 与 `topics`（可查话题，至多 4 个、每个至多 8 字）；所有者直接改
+  `entries` / `topics`（或删掉整份）后再 `apply`。计划含正文派生内容，只在部署环境内
   查看与编辑，不贴进仓库或 issue。
 - `apply` 逐份校验：当前版本号变了拒绝 `version_changed`，可用事实签名变了拒绝 `signature_changed`，结构或
   编号校验不过拒绝（列出失效编号）；其余照常写入，一份被拒不影响其他份。写入是 `source=owner` 的新版本并记下签名；
-  `entries` 与 `generated` 不同的那份自动锁定，相同的不改锁定状态；与当前条目相同的不加版本。有拒绝时退出码 1，
+  `entries` 与 `generated`（或 `topics` 与 `generated_topics`）不同的那份自动锁定，相同的不改锁定状态；与当前条目相同的不加版本。有拒绝时退出码 1，
   重新 `generate` 后再 `apply`。同一份计划再次应用时，上次写了新版本的那份拒绝 `version_changed`，与当前条目相同的那份仍是空操作。
 - `members --pin` 写所有者名单（`source=owner`，最多 5 人，按根去重），Dream 收尾不再重算该群；`--unpin`
   改回 `dream`，名单不变，下一次 Dream 收尾重算。
 - `check` 对全部有条目的画像做渲染时校验，输出每份画像的条目编号（`rendered`）与违规（失效条目的位置与编号、
   后继映射）。只读，不写库；版本快照里的历史条目不在检查范围。
-- `status` 输出最近一次窗口、各群显示名单、维护集合、到期画像（维护集合内、未锁定、可用事实非空且签名与上次
-  处理时不同）、各群名单行与每份画像的版本号、当前版本来源、锁定、上次尝试时间与签名是否最新。
+- `status` 输出最近一次窗口、各群显示名单、维护集合、到期画像（维护集合内、未锁定、可用事实非空，且签名与上次
+  处理时不同或当前版本还没有话题）、各群名单行与每份画像的版本号、当前版本来源、锁定、上次尝试时间与签名是否最新。
   作废次数不入库，看 `memory_profile_rejected` 日志。
 
 ## 提取收紧与当次任务指令清理

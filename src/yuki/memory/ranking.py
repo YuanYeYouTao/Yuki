@@ -1,41 +1,104 @@
-"""Deterministic ranking for Memory V2 lexical and overview candidates."""
+"""Deterministic ranking for Memory V2 search and overview candidates.
+
+Contract: docs/architecture/memory-v2-retrieval.md "查询与排序". Lexical scores come
+from ``memory/lexical.py`` (computed over the whole candidate pool, so comparable across
+owners); the final order is RRF over the lexical and vector ranks, with facts whose key
+or content equals the query first.
+"""
 
 from __future__ import annotations
+
+from collections.abc import Mapping
 
 from yuki.memory.embedding.models import MemorySemanticCandidate
 from yuki.memory.enums import MemoryConflictState
 from yuki.memory.models import (
     MemoryEntityTarget,
     MemoryFact,
-    MemoryLexicalCandidate,
     MemoryQuery,
     MemoryRetrievalHit,
 )
 from yuki.memory.query import normalize_query_text
 
+_FIRST = frozenset({"memory_key_exact", "content_exact"})
 
-def relevance_band(hit: MemoryRetrievalHit) -> int:
-    """Coarse relevance tier, not a confidence probability or authorization."""
-    if hit.selection_reason in {"memory_key_exact", "content_exact"}:
-        return 21
-    return int(max(0.0, hit.semantic_score or 0.0) * 20)
+
+def _exact(fact: MemoryFact, normalized_query: str) -> str | None:
+    if normalize_query_text(fact.memory_key) == normalized_query:
+        return "memory_key_exact"
+    if normalize_query_text(fact.normalized_content) == normalized_query:
+        return "content_exact"
+    if normalize_query_text(fact.category) == normalized_query:
+        return "category_exact"
+    return None
 
 
 class MemoryRanker:
     """Rank without an LLM and always end with a stable fact-id tie break."""
 
     @staticmethod
+    def hits(
+        *,
+        facts: tuple[MemoryFact, ...],
+        lexical_scores: Mapping[int, float],
+        semantic_candidates: tuple[MemorySemanticCandidate, ...],
+        target: MemoryEntityTarget,
+        normalized_query: str,
+    ) -> tuple[MemoryRetrievalHit, ...]:
+        """One unranked hit per fact with a positive lexical score or a vector match."""
+        semantic = {candidate.fact_id: candidate for candidate in semantic_candidates}
+        found: list[MemoryRetrievalHit] = []
+        for fact in facts:
+            score = lexical_scores.get(fact.id, 0.0)
+            vector = semantic.get(fact.id)
+            if score <= 0 and vector is None:
+                continue
+            exact = _exact(fact, normalized_query) if score > 0 else None
+            sources = tuple(
+                source
+                for source, present in (("lexical", score > 0), ("semantic", vector is not None))
+                if present
+            )
+            found.append(
+                MemoryRetrievalHit(
+                    fact=fact,
+                    target=target,
+                    rank=1,
+                    lexical_score=score if score > 0 else None,
+                    semantic_score=vector.cosine_similarity if vector is not None else None,
+                    sources=sources,
+                    selection_reason=exact
+                    or (
+                        "hybrid_match"
+                        if len(sources) == 2
+                        else "semantic_match"
+                        if vector is not None
+                        else "lexical_match"
+                    ),
+                )
+            )
+        return tuple(found)
+
+    @staticmethod
     def rank_global(
         hits: tuple[MemoryRetrievalHit, ...], query: MemoryQuery
     ) -> tuple[MemoryRetrievalHit, ...]:
-        """Recompute both ranks in the common pool, not inside each owner."""
+        """RRF over the common pool's lexical and vector ranks, not inside each owner."""
         unique = tuple({hit.fact.id: hit for hit in reversed(hits)}.values())
         lexical = {
             hit.fact.id: rank
             for rank, hit in enumerate(
                 sorted(
                     (hit for hit in unique if hit.lexical_score is not None),
-                    key=lambda hit: (-(hit.lexical_score or 0), hit.fact.id),
+                    key=lambda hit: (
+                        hit.selection_reason not in _FIRST,
+                        -(hit.lexical_score or 0),
+                        hit.fact.conflict_state is MemoryConflictState.CONTESTED,
+                        -hit.fact.importance,
+                        -hit.fact.confidence,
+                        -hit.fact.updated_at.timestamp(),
+                        hit.fact.id,
+                    ),
                 ),
                 1,
             )
@@ -72,153 +135,13 @@ class MemoryRanker:
         ordered = sorted(
             scored,
             key=lambda hit: (
-                -relevance_band(hit),
+                hit.selection_reason not in _FIRST,
                 -hit.fusion_score,
                 -hit.fact.importance,
                 hit.fact.id,
             ),
         )
         return tuple(hit.model_copy(update={"rank": rank}) for rank, hit in enumerate(ordered, 1))
-
-    def rank_lexical(
-        self,
-        *,
-        facts: tuple[MemoryFact, ...],
-        candidates: tuple[MemoryLexicalCandidate, ...],
-        target: MemoryEntityTarget,
-        normalized_query: str,
-        limit: int,
-    ) -> tuple[MemoryRetrievalHit, ...]:
-        candidate_by_id = {candidate.fact_id: candidate for candidate in candidates}
-
-        def key(fact: MemoryFact) -> tuple[object, ...]:
-            candidate = candidate_by_id[fact.id]
-            memory_key = normalize_query_text(fact.memory_key)
-            content = normalize_query_text(fact.normalized_content)
-            category = normalize_query_text(fact.category)
-            return (
-                0 if memory_key == normalized_query else 1,
-                0 if content == normalized_query else 1,
-                0 if category == normalized_query else 1,
-                candidate.fts_rank,
-                1 if fact.conflict_state is MemoryConflictState.CONTESTED else 0,
-                -fact.importance,
-                -fact.confidence,
-                -fact.updated_at.timestamp(),
-                fact.id,
-            )
-
-        ordered = sorted(facts, key=key)[:limit]
-        hits: list[MemoryRetrievalHit] = []
-        for rank, fact in enumerate(ordered, start=1):
-            candidate = candidate_by_id[fact.id]
-            if normalize_query_text(fact.memory_key) == normalized_query:
-                reason = "memory_key_exact"
-            elif normalize_query_text(fact.normalized_content) == normalized_query:
-                reason = "content_exact"
-            elif normalize_query_text(fact.category) == normalized_query:
-                reason = "category_exact"
-            else:
-                reason = "lexical_match"
-            hits.append(
-                MemoryRetrievalHit(
-                    fact=fact,
-                    target=target,
-                    rank=rank,
-                    lexical_score=-candidate.fts_rank,
-                    exact_match=candidate.exact_match,
-                    matched_terms=candidate.matched_terms,
-                    selection_reason=reason,
-                )
-            )
-        return tuple(hits)
-
-    def rank_hybrid(
-        self,
-        *,
-        facts: tuple[MemoryFact, ...],
-        lexical_candidates: tuple[MemoryLexicalCandidate, ...],
-        semantic_candidates: tuple[MemorySemanticCandidate, ...],
-        target: MemoryEntityTarget,
-        normalized_query: str,
-        lexical_weight: float,
-        semantic_weight: float,
-        rrf_k: int,
-        limit: int,
-    ) -> tuple[MemoryRetrievalHit, ...]:
-        """Fuse incomparable retrieval scores by rank, then apply stable tie breaks."""
-
-        lexical_fact_ids = {candidate.fact_id for candidate in lexical_candidates}
-        lexical_hits = self.rank_lexical(
-            facts=tuple(fact for fact in facts if fact.id in lexical_fact_ids),
-            candidates=lexical_candidates,
-            target=target,
-            normalized_query=normalized_query,
-            limit=len(lexical_candidates),
-        )
-        lexical = {hit.fact.id: hit for hit in lexical_hits}
-        semantic = {candidate.fact_id: candidate for candidate in semantic_candidates}
-
-        def fusion(fact: MemoryFact) -> float:
-            lexical_hit = lexical.get(fact.id)
-            semantic_hit = semantic.get(fact.id)
-            return (lexical_weight / (rrf_k + lexical_hit.rank) if lexical_hit else 0) + (
-                semantic_weight / (rrf_k + semantic_hit.semantic_rank) if semantic_hit else 0
-            )
-
-        def exact(fact: MemoryFact) -> bool:
-            hit = lexical.get(fact.id)
-            return bool(hit and hit.selection_reason.endswith("_exact"))
-
-        ordered = sorted(
-            facts,
-            key=lambda fact: (
-                0 if exact(fact) else 1,
-                -fusion(fact),
-                1 if fact.conflict_state is MemoryConflictState.CONTESTED else 0,
-                -fact.importance,
-                -fact.confidence,
-                -fact.updated_at.timestamp(),
-                fact.id,
-            ),
-        )[:limit]
-        hits: list[MemoryRetrievalHit] = []
-        for rank, fact in enumerate(ordered, start=1):
-            lexical_hit = lexical.get(fact.id)
-            semantic_hit = semantic.get(fact.id)
-            if lexical_hit and lexical_hit.selection_reason.endswith("_exact"):
-                reason = lexical_hit.selection_reason
-            elif lexical_hit and semantic_hit:
-                reason = "hybrid_match"
-            elif semantic_hit:
-                reason = "semantic_match"
-            else:
-                reason = "lexical_match"
-            sources = tuple(
-                source
-                for source, present in (
-                    ("lexical", lexical_hit is not None),
-                    ("semantic", semantic_hit is not None),
-                )
-                if present
-            )
-            hits.append(
-                MemoryRetrievalHit(
-                    fact=fact,
-                    target=target,
-                    rank=rank,
-                    lexical_score=lexical_hit.lexical_score if lexical_hit else None,
-                    semantic_score=(semantic_hit.cosine_similarity if semantic_hit else None),
-                    fusion_score=fusion(fact),
-                    lexical_rank=lexical_hit.rank if lexical_hit else None,
-                    semantic_rank=semantic_hit.semantic_rank if semantic_hit else None,
-                    exact_match=bool(lexical_hit and lexical_hit.exact_match),
-                    matched_terms=lexical_hit.matched_terms if lexical_hit else (),
-                    sources=sources,
-                    selection_reason=reason,
-                )
-            )
-        return tuple(hits)
 
     @staticmethod
     def rank_overview(

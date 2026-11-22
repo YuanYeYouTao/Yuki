@@ -55,9 +55,10 @@ RESULTS = Path(__file__).resolve().parents[2] / "test-results" / "memory-residen
 HEADER = "常驻记忆（"
 _FACT_MARK = re.compile(r"（fact:(\d+)）")
 # Section titles, fact lines (profile entries cite up to two IDs), profile name lines
-# of group members (P4) and the explicit overflow line.
+# of group members (P4), profile topic lines and the explicit overflow line.
 _SEGMENT_LINE = re.compile(
-    r"^(\[[^\]]+\]|- .*（fact:\d+(?:,\d+)*）|· .*（person:[^）]*）|（另有 \d+ 条.*）)$"
+    r"^(\[[^\]]+\]|- .*（fact:\d+(?:,\d+)*）|· .*（person:[^）]*）"
+    r"|- 可查话题：.+|（另有 \d+ 条.*）)$"
 )
 _UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 _SELECTION_ALIAS = re.compile(r"\b(kept|new|pinned)_\d+\b")

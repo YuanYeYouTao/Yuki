@@ -48,6 +48,7 @@ from yuki.memory.profiles import (
     ProfileValidationError,
     RenderedProfile,
     validate_entries,
+    validate_topics,
 )
 from yuki.memory.resident import ResidentMemory
 from yuki.model_runtime.executor import ModelExecutor
@@ -115,8 +116,8 @@ async def latest_window(database: Database) -> ProfileWindow:
 
 @dataclass(frozen=True, slots=True)
 class PlannedProfile:
-    """One generated profile: ``entries`` starts equal to ``generated``; the owner may
-    edit ``entries`` (or ``reason``) before ``apply``."""
+    """One generated profile: ``entries`` / ``topics`` start equal to ``generated`` /
+    ``generated_topics``; the owner may edit them (or ``reason``) before ``apply``."""
 
     person_id: str  # root
     audience: ProfileAudience
@@ -125,6 +126,8 @@ class PlannedProfile:
     reason: str
     generated: tuple[ProfileEntry, ...]
     entries: tuple[ProfileEntry, ...]
+    generated_topics: tuple[ProfileEntry, ...]
+    topics: tuple[ProfileEntry, ...]
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -135,6 +138,8 @@ class PlannedProfile:
             "reason": self.reason,
             "generated": [entry.to_json() for entry in self.generated],
             "entries": [entry.to_json() for entry in self.entries],
+            "generated_topics": [_topic_json(topic) for topic in self.generated_topics],
+            "topics": [_topic_json(topic) for topic in self.topics],
         }
 
     @classmethod
@@ -150,7 +155,17 @@ class PlannedProfile:
             reason=str(value["reason"]),
             generated=tuple(ProfileEntry.from_json(item) for item in value["generated"]),
             entries=tuple(ProfileEntry.from_json(item) for item in value["entries"]),
+            generated_topics=tuple(_topic(item) for item in value["generated_topics"]),
+            topics=tuple(_topic(item) for item in value["topics"]),
         )
+
+
+def _topic_json(topic: ProfileEntry) -> dict[str, Any]:
+    return {"text": topic.text, "fact_ids": list(topic.fact_ids)}
+
+
+def _topic(value: dict[str, Any]) -> ProfileEntry:
+    return ProfileEntry(None, str(value["text"]), tuple(int(item) for item in value["fact_ids"]))
 
 
 @dataclass(frozen=True, slots=True)
@@ -258,6 +273,8 @@ class ProfileGeneration:
                     reason=proposal.reason,
                     generated=proposal.entries,
                     entries=proposal.entries,
+                    generated_topics=proposal.topics,
+                    topics=proposal.topics,
                 )
             )
         return GenerationResult(
@@ -297,16 +314,29 @@ async def apply_plan(
                 rejected.append(ProfileOutcome(person, audience, "signature_changed"))
                 continue
             entries = validate_entries(item.entries)
-            check = await store.check(person, audience, entries)
-            if check.dropped:
-                failed = tuple(fact for dropped in check.dropped for fact in dropped.fact_ids)
+            topics = validate_topics(item.topics)
+            checks = [
+                await store.check(person, audience, entries),
+                await store.check(person, audience, topics),
+            ]
+            if any(check.dropped for check in checks):
+                failed = tuple(
+                    fact
+                    for check in checks
+                    for dropped in check.dropped
+                    for fact in dropped.fact_ids
+                )
                 rejected.append(ProfileOutcome(person, audience, "unavailable_fact", failed))
                 continue
-            edited = entries != validate_entries(item.generated)
+            edited = (entries, topics) != (
+                validate_entries(item.generated),
+                validate_topics(item.generated_topics),
+            )
             commit = await store.commit(
                 person,
                 audience,
                 entries,
+                topics=topics,
                 source="owner",
                 reason=f"owner apply{' (edited)' if edited else ''}: {item.reason}",
                 expected_version=version,
@@ -349,10 +379,13 @@ async def rollback(
     if target is None or current is None:
         raise ProfileValidationError("unknown_version", str(version))
     check = await store.check(person_id, audience, target.entries)
+    # A version written before topics existed has none: restore none, not the current ones.
+    topics = await store.check(person_id, audience, target.topics or ())
     commit = await store.commit(
         person_id,
         audience,
         check.entries,
+        topics=topics.entries,
         source="owner",
         reason=f"owner rollback to v{version}",
         expected_version=current.current_version,

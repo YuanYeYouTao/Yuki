@@ -408,14 +408,6 @@ class MemoryQuery(_MemoryModel):
     intent: MemoryQueryIntent | None = None
 
 
-class MemoryLexicalCandidate(_MemoryModel):
-    fact_id: int = Field(gt=0)
-    target: MemoryEntityTarget
-    fts_rank: float
-    exact_match: bool = False
-    matched_terms: tuple[str, ...] = ()
-
-
 class MemoryRetrievalHit(_MemoryModel):
     fact: MemoryFact
     target: MemoryEntityTarget
@@ -426,8 +418,6 @@ class MemoryRetrievalHit(_MemoryModel):
     lexical_rank: int | None = Field(default=None, gt=0)
     semantic_rank: int | None = Field(default=None, gt=0)
     sources: tuple[str, ...] = ()
-    exact_match: bool = False
-    matched_terms: tuple[str, ...] = ()
     selection_reason: str
 
 

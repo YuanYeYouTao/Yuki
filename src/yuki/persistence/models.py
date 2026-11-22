@@ -732,6 +732,8 @@ class MemoryProfileVersionModel(Base):
     reason: Mapped[str] = mapped_column(Text, nullable=False)
     dream_run_public_id: Mapped[str | None] = mapped_column(String(36))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    # Up to four topics with their fact IDs; NULL on versions written before 0166.
+    topics_json: Mapped[str | None] = mapped_column(Text)
 
 
 class MemorySpaceMemberModel(Base):

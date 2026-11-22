@@ -27,22 +27,18 @@ from yuki.memory.enums import (
     MemoryRetrievalMode,
     MemoryTargetRole,
 )
-from yuki.memory.fts import (
-    AuthorizedLexicalCandidate,
-    MemoryLexicalIndex,
-    SQLiteMemoryFTSIndex,
-    build_safe_lexical_query,
-)
+from yuki.memory.fts import MemoryLexicalIndex, SQLiteMemoryFTSIndex, subject_names
+from yuki.memory.lexical import LexicalDocument, LexicalTerms, lexical_terms, score_documents
 from yuki.memory.metrics import MemoryRetrievalMetric, MemoryRetrievalMetrics
 from yuki.memory.models import (
     MemoryEntityTarget,
     MemoryFact,
-    MemoryLexicalCandidate,
     MemoryQuery,
     MemoryRetrievalBlock,
     MemoryRetrievalHit,
     MemoryRetrievalResult,
 )
+from yuki.memory.query import normalize_query_text
 from yuki.memory.ranking import MemoryRanker
 from yuki.memory.repository import MemoryFactRepository
 
@@ -156,10 +152,10 @@ class MemoryRetriever:
         if not isinstance(self._index, SQLiteMemoryFTSIndex):
             raise RuntimeError("global memory search requires SQLite FTS index")
         query_hash = hashlib.sha256(query.normalized_text.encode("utf-8")).hexdigest()
-        safe = build_safe_lexical_query(query.normalized_text, term_limit=query.query_term_limit)
+        terms = lexical_terms(query.normalized_text, term_limit=query.query_term_limit)
         lexical, lexical_truncated = await self._index.search_authorized(
             scope,
-            safe,
+            terms,
             candidate_limit=query.candidate_limit,
             kinds=query.kinds,
             temporal=query.intent.temporal if query.intent else None,
@@ -212,13 +208,9 @@ class MemoryRetriever:
                     )
                     semantic_degraded = True
                     logger.warning("memory_semantic_degraded error_category=%s", semantic_status)
-        candidate_ids = tuple(
-            dict.fromkeys([item.fact_id for item in lexical] + [item.fact_id for item in semantic])
-        )
+        candidate_ids = tuple(dict.fromkeys([*lexical, *(item.fact_id for item in semantic)]))
         facts = await self._repository.get_active_authorized(scope, candidate_ids)
-        lexical_by_id: dict[int, AuthorizedLexicalCandidate] = {
-            item.fact_id: item for item in lexical
-        }
+        scores = await self._lexical_scores(terms, facts)
         semantic_by_id: dict[int, AuthorizedSemanticCandidate] = {
             item.fact_id: item for item in semantic
         }
@@ -230,17 +222,6 @@ class MemoryRetriever:
         pooled: list[MemoryRetrievalHit] = []
         for block_id, target_facts in by_target.items():
             target = targets[block_id]
-            target_lexical = tuple(
-                MemoryLexicalCandidate(
-                    fact_id=fact.id,
-                    target=target,
-                    fts_rank=lexical_by_id[fact.id].fts_rank,
-                    exact_match=lexical_by_id[fact.id].exact_match,
-                    matched_terms=lexical_by_id[fact.id].matched_terms,
-                )
-                for fact in target_facts
-                if fact.id in lexical_by_id
-            )
             target_semantic = tuple(
                 MemorySemanticCandidate(
                     fact_id=fact.id,
@@ -252,16 +233,12 @@ class MemoryRetriever:
                 if fact.id in semantic_by_id
             )
             pooled.extend(
-                self._ranker.rank_hybrid(
+                self._ranker.hits(
                     facts=tuple(target_facts),
-                    lexical_candidates=target_lexical,
+                    lexical_scores=scores,
                     semantic_candidates=target_semantic,
                     target=target,
                     normalized_query=query.normalized_text,
-                    lexical_weight=query.hybrid_lexical_weight,
-                    semantic_weight=query.hybrid_semantic_weight,
-                    rrf_k=query.hybrid_rrf_k,
-                    limit=len(target_facts),
                 )
             )
         ranked = self._ranker.rank_global(tuple(pooled), query)
@@ -317,6 +294,26 @@ class MemoryRetriever:
             truncated=candidate_truncated or output_truncated,
             partial_reason=partial_reason,
             ranked_count=len(ranked),
+        )
+
+    async def _lexical_scores(
+        self, terms: LexicalTerms, facts: tuple[MemoryFact, ...]
+    ) -> dict[int, float]:
+        """Lexical score of every pooled fact (memory/lexical.py), entity names included."""
+        async with self._repository.database.read_session() as reader:
+            names = await subject_names(reader, facts)
+        return score_documents(
+            terms,
+            [
+                LexicalDocument(
+                    fact_id=fact.id,
+                    entity=names[fact.id],
+                    topic=normalize_query_text(fact.title or ""),
+                    key=normalize_query_text(f"{fact.memory_key} {fact.category}"),
+                    content=normalize_query_text(fact.normalized_content),
+                )
+                for fact in facts
+            ],
         )
 
     async def _owner_targets(
@@ -395,7 +392,6 @@ class MemoryRetriever:
         candidate_count = 0
         semantic_candidate_count = 0
         candidate_truncated = False
-        blocks: list[MemoryRetrievalBlock] = []
         all_hits: list[MemoryRetrievalHit] = []
         short_fallback_used = False
         query_vector = None
@@ -441,12 +437,11 @@ class MemoryRetriever:
                 logger.warning("memory_semantic_degraded error_category=%s", exc.code)
         elif query.mode is MemoryRetrievalMode.OVERVIEW:
             semantic_status = "overview"
-        if query.targets and query.mode is not MemoryRetrievalMode.OVERVIEW and lexical_enabled:
-            safe = build_safe_lexical_query(
-                query.normalized_text, term_limit=query.query_term_limit
-            )
+        terms = lexical_terms(query.normalized_text, term_limit=query.query_term_limit)
+        searched: list[
+            tuple[MemoryEntityTarget, tuple[MemoryFact, ...], tuple[MemorySemanticCandidate, ...]]
+        ] = []
         for target in query.targets:
-            hits: tuple[MemoryRetrievalHit, ...]
             if query.mode is MemoryRetrievalMode.OVERVIEW or not lexical_enabled:
                 overview_pool_limit = query.limit_per_target
                 facts = await self._repository.list_overview(
@@ -457,89 +452,85 @@ class MemoryRetriever:
                 candidate_truncated = candidate_truncated or len(facts) > overview_pool_limit
                 facts = facts[:overview_pool_limit]
                 candidate_count += len(facts)
-                hits = self._ranker.rank_overview(
-                    facts,
-                    target=target,
-                    limit=overview_pool_limit,
-                    reason=("overview" if lexical_enabled else "retrieval_disabled_fallback"),
-                )
-            else:
-                search_started = time.perf_counter()
-                candidates = await self._index.search(
-                    target,
-                    safe,
-                    candidate_limit=query.candidate_limit + 1,
-                    kinds=query.kinds,
-                    short_query_fallback_enabled=query.short_query_fallback_enabled,
-                    temporal=query.intent.temporal if query.intent is not None else None,
-                )
-                fts_latency += time.perf_counter() - search_started
-                candidate_truncated = candidate_truncated or len(candidates) > query.candidate_limit
-                candidates = candidates[: query.candidate_limit]
-                short_fallback_used = short_fallback_used or bool(
-                    safe.like_terms and query.short_query_fallback_enabled
-                )
-                semantic_candidates: tuple[MemorySemanticCandidate, ...] = ()
-                if query_vector is not None:
-                    assert self._semantic_index is not None
-                    assert self._embedding_profile is not None
-                    semantic_started = time.perf_counter()
-                    try:
-                        semantic_result = await self._semantic_index.search(
-                            target=target,
-                            query_vector=query_vector,
-                            profile=self._embedding_profile.profile,
-                            profile_id=self._embedding_profile.id,
-                            candidate_limit=query.semantic_candidate_limit + 1,
-                            kinds=query.kinds,
-                            temporal=query.intent.temporal if query.intent is not None else None,
-                        )
-                        semantic_candidates = semantic_result.candidates
-                        semantic_approximate |= semantic_result.approximate
-                        semantic_coverage_complete &= semantic_result.coverage_complete
-                        candidate_truncated |= semantic_result.truncated
-                        if not semantic_result.coverage_complete:
-                            semantic_status = "index_incomplete"
-                    except (ValueError, DBAPIError):
-                        semantic_degraded = True
-                        semantic_status = "embedding_index_invalid"
-                        logger.warning(
-                            "memory_semantic_degraded error_category=%s",
-                            semantic_status,
-                        )
-                    semantic_latency += time.perf_counter() - semantic_started
-                    candidate_truncated = (
-                        candidate_truncated
-                        or len(semantic_candidates) > query.semantic_candidate_limit
-                    )
-                    semantic_candidates = semantic_candidates[: query.semantic_candidate_limit]
-                candidate_ids = tuple(
-                    dict.fromkeys(
-                        [item.fact_id for item in candidates]
-                        + [item.fact_id for item in semantic_candidates]
+                all_hits.extend(
+                    self._ranker.rank_overview(
+                        facts,
+                        target=target,
+                        limit=overview_pool_limit,
+                        reason=("overview" if lexical_enabled else "retrieval_disabled_fallback"),
                     )
                 )
-                candidate_facts = await self._repository.get_active_for_target(
-                    target, candidate_ids
+                continue
+            search_started = time.perf_counter()
+            candidates, lexical_truncated = await self._index.search(
+                target,
+                terms,
+                candidate_limit=query.candidate_limit,
+                kinds=query.kinds,
+                short_query_fallback_enabled=query.short_query_fallback_enabled,
+                temporal=query.intent.temporal if query.intent is not None else None,
+            )
+            fts_latency += time.perf_counter() - search_started
+            candidate_truncated = candidate_truncated or lexical_truncated
+            short_fallback_used = short_fallback_used or bool(
+                terms.scan_terms and query.short_query_fallback_enabled
+            )
+            semantic_candidates: tuple[MemorySemanticCandidate, ...] = ()
+            if query_vector is not None:
+                assert self._semantic_index is not None
+                assert self._embedding_profile is not None
+                semantic_started = time.perf_counter()
+                try:
+                    semantic_result = await self._semantic_index.search(
+                        target=target,
+                        query_vector=query_vector,
+                        profile=self._embedding_profile.profile,
+                        profile_id=self._embedding_profile.id,
+                        candidate_limit=query.semantic_candidate_limit + 1,
+                        kinds=query.kinds,
+                        temporal=query.intent.temporal if query.intent is not None else None,
+                    )
+                    semantic_candidates = semantic_result.candidates
+                    semantic_approximate |= semantic_result.approximate
+                    semantic_coverage_complete &= semantic_result.coverage_complete
+                    candidate_truncated |= semantic_result.truncated
+                    if not semantic_result.coverage_complete:
+                        semantic_status = "index_incomplete"
+                except (ValueError, DBAPIError):
+                    semantic_degraded = True
+                    semantic_status = "embedding_index_invalid"
+                    logger.warning(
+                        "memory_semantic_degraded error_category=%s",
+                        semantic_status,
+                    )
+                semantic_latency += time.perf_counter() - semantic_started
+                candidate_truncated = (
+                    candidate_truncated or len(semantic_candidates) > query.semantic_candidate_limit
                 )
-                candidate_count += len(candidates) + len(semantic_candidates)
-                semantic_candidate_count += len(semantic_candidates)
-                hybrid_started = time.perf_counter()
-                lexical_hits = self._ranker.rank_hybrid(
-                    facts=candidate_facts,
-                    lexical_candidates=candidates,
-                    semantic_candidates=semantic_candidates,
-                    target=target,
-                    normalized_query=query.normalized_text,
-                    lexical_weight=query.hybrid_lexical_weight,
-                    semantic_weight=query.hybrid_semantic_weight,
-                    rrf_k=query.hybrid_rrf_k,
-                    limit=len(candidate_facts),
+                semantic_candidates = semantic_candidates[: query.semantic_candidate_limit]
+            candidate_ids = tuple(
+                dict.fromkeys([*candidates, *(item.fact_id for item in semantic_candidates)])
+            )
+            candidate_facts = await self._repository.get_active_for_target(target, candidate_ids)
+            candidate_count += len(candidates) + len(semantic_candidates)
+            semantic_candidate_count += len(semantic_candidates)
+            searched.append((target, candidate_facts, semantic_candidates))
+        if searched:
+            hybrid_started = time.perf_counter()
+            scores = await self._lexical_scores(
+                terms, tuple(fact for _, facts, _ in searched for fact in facts)
+            )
+            for target, candidate_facts, semantic_candidates in searched:
+                all_hits.extend(
+                    self._ranker.hits(
+                        facts=candidate_facts,
+                        lexical_scores=scores,
+                        semantic_candidates=semantic_candidates,
+                        target=target,
+                        normalized_query=query.normalized_text,
+                    )
                 )
-                hybrid_latency += time.perf_counter() - hybrid_started
-                hits = lexical_hits
-            blocks.append(MemoryRetrievalBlock(target=target, hits=hits))
-            all_hits.extend(hits)
+            hybrid_latency += time.perf_counter() - hybrid_started
 
         if query.mode is MemoryRetrievalMode.RELEVANT:
             ranked = self._ranker.rank_global(tuple(all_hits), query)
