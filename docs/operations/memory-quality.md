@@ -48,15 +48,16 @@ Rebuild 已提交事实与 proposal 回执共同核对，确认已提交不再�
 
 ## 常驻记忆核心集
 
-常驻记忆直接生效、无开关：每轮 system 消息末尾渲染常驻记忆段，Dream 运行处理完全部簇后对到期主人做核心集挑选。
+常驻记忆直接生效、无开关：每轮 system 消息末尾渲染常驻记忆段，Dream 运行处理完全部簇后对到期的群做核心集挑选。
+人物不再有核心集（由人物画像替代，迁移 `0164`）。
 下面的命令默认使用当前配置的数据库，也可加 `--database-url`。
 
 ```bash
-yuki memory resident show --person <person-id> [--content]   # 或 --space <space-id> / --self
+yuki memory resident show --space <space-id> [--content]     # 或 --self
 yuki memory resident render --conversation <conversation-id>
-yuki memory resident set --person <person-id> --facts 12,34    # 写入并锁定（source=owner）；--facts '' 清空
-yuki memory resident unlock --person <person-id>               # 交还挑选步骤
-yuki memory resident select --person <person-id> [--dry-run] [--content]
+yuki memory resident set --space <space-id> --facts 12,34      # 写入并锁定（source=owner）；--facts '' 清空
+yuki memory resident unlock --space <space-id>                 # 交还挑选步骤
+yuki memory resident select --space <space-id> [--dry-run] [--content]
 yuki memory resident status
 yuki memory resident check > check.json
 python scripts/verify_resident_check.py --database <sqlite-file> --check check.json
@@ -68,7 +69,6 @@ python scripts/verify_resident_check.py --database <sqlite-file> --check check.j
   `model_calls` 预算。每个主人的换入、换出 fact ID 写进 `memory_resident_selected` 日志。
 - `select` 在 CLI 进程内按 bot 启动时的同一方式装配模型运行时（环境变量、模型档案与已激活的重启覆盖），
   调用记录写进同一数据库，不需要 bot 在跑；锁定的主人先 `unlock`。`--dry-run` 也会真实调用一次模型。
-- 人物合并时根人物那一行的已看水位归零，下一次挑选会重新看一遍合并后的全部候选。
 - 挑选只写 `memory_resident_sets`，不改事实，不产生 Dream 操作行，也不参与 Dream 回滚；失败记日志，
   该主人不变、留到下次，Dream 运行照常收尾。`DreamHealth.resident_pending_owners` 与
   `resident_oldest_pending_at`（`status` 同样输出）持续增长说明挑选长期没跑或一直轮不到。

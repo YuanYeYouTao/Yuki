@@ -619,8 +619,9 @@ async def test_x09_one_run_plans_twenty_clusters(scene):
     assert finished.statistics.candidate_clusters >= 20
     assert finished.completed_clusters == 20
     assert len(scene.dream_requests) == finished.model_calls == 20 <= 24
-    # The P1 selection step pays its own call, outside the Dream run's budget.
-    assert len(scene.selection_requests) == 1
+    # The pending facts are person facts: persons have no core set any more (P4 §4.4),
+    # so the group core-set selection step has no due owner and makes no call.
+    assert len(scene.selection_requests) == 0
     _artifact(
         scene,
         "X9",
@@ -960,14 +961,14 @@ async def test_x15_no_fact_text_in_plan_cli_stats_or_logs(scene, caplog):
 # -------------------------------------------------------------------------- X16
 async def test_x16_cleaned_fact_leaves_the_resident_segment_and_basis_stays(scene):
     """Case 16: a core-set fact is cleaned; the unplanned basis fact keeps its state."""
-    a1 = await scene.event("private:A", "A", "PR #40 今晚合并；我对花生过敏", key="a1")
-    task = await scene.fact("task", "A", "PR #40 今晚合并", evidence=(a1,))
-    basis = await scene.fact("basis", "A", "对花生过敏", evidence=(a1,))
-    await scene.write_set("A", [task, basis], source="dream")
-    before = await scene.turn("A", "清理之前")
+    g1 = await scene.event("space:G", "A", "PR #40 今晚合并；本群周五聚餐", key="g1")
+    task = await scene.fact("task", "G", "PR #40 今晚合并", evidence=(g1,))
+    basis = await scene.fact("basis", "G", "周五聚餐", evidence=(g1,))
+    await scene.write_set("G", [task, basis], source="dream")
+    before = await scene.turn("B", "清理之前", group="G")
     path = await _write_plan(scene, await _scan(scene, _scan_reply(lambda t: "PR #40" in t)))
     applied = await _cli(scene, "apply", path)
-    after = await scene.turn("A", "清理之后")
+    after = await scene.turn("B", "清理之后", group="G")
 
     assert applied.returncode == 0, applied
     assert _plan_ids(path) == [task]

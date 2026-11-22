@@ -37,7 +37,6 @@ from yuki.gateway.providers import builtin_provider_catalog
 from yuki.gateway.providers.snowluma import SNOWLUMA_PROVIDER_ID
 from yuki.gateway.registry import GatewayConnectionRegistry
 from yuki.http_environment import load_http_environment
-from yuki.identity.person_identity import current_person_id
 from yuki.identity.routing import PresenceRouter
 from yuki.memory.dream.db_models import MemoryDreamRunModel
 from yuki.memory.episode_index import EpisodeIndex
@@ -278,7 +277,6 @@ def _add_resident_parser(
         parser: argparse.ArgumentParser, *, allow_self: bool
     ) -> argparse.ArgumentParser:
         group = parser.add_mutually_exclusive_group(required=True)
-        group.add_argument("--person", help="人物 ID；按合并后的根人物读写")
         group.add_argument("--space", help="群 space ID")
         if allow_self:
             group.add_argument("--self", dest="self_owner", action="store_true")
@@ -286,7 +284,8 @@ def _add_resident_parser(
         return parser
 
     show = owner_arguments(
-        resident_commands.add_parser("show", help="列出主人的明确事实 ID 与核心集"), allow_self=True
+        resident_commands.add_parser("show", help="列出群或 SELF 的明确事实 ID 与核心集"),
+        allow_self=True,
     )
     show.add_argument("--content", action="store_true", help="同时打印正文")
     render = resident_commands.add_parser("render", help="打印该会话此刻会渲染出的常驻段")
@@ -555,13 +554,10 @@ async def _task_scoped_command(settings: Settings, args: argparse.Namespace) -> 
         await database.close()
 
 
-async def _resident_owner(database: Database, args: argparse.Namespace) -> ResidentOwner:
+def _resident_owner(args: argparse.Namespace) -> ResidentOwner:
     if getattr(args, "self_owner", False):
         return ResidentOwner("self")
-    if args.space is not None:
-        return ResidentOwner("space", space_id=str(args.space))
-    async with database.read_session() as session:
-        return ResidentOwner("person", person_id=await current_person_id(session, args.person))
+    return ResidentOwner("space", space_id=str(args.space))
 
 
 def _resident_set_payload(current: ResidentSet | None) -> dict[str, object] | None:
@@ -613,7 +609,7 @@ async def _resident_command(settings: Settings, args: argparse.Namespace) -> int
                 ],
             }
         else:
-            owner = await _resident_owner(database, args)
+            owner = _resident_owner(args)
             payload = {"owner": owner_label(owner)}
             if action == "show":
                 explicit = await queue.pinned_fact_ids(owner)

@@ -30,7 +30,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import InstrumentedAttribute
+from sqlalchemy.orm import InstrumentedAttribute, aliased
 from sqlalchemy.sql.elements import ColumnElement
 from sqlalchemy.sql.selectable import Select
 
@@ -89,6 +89,7 @@ from yuki.persistence.models import (
     MemoryEvidenceModel,
     MemoryFactModel,
     MemoryJobModel,
+    MemoryProfileModel,
     MemorySelfReflectionRunModel,
     MemorySelfReflectionStateModel,
     MemoryToolReceiptModel,
@@ -1431,7 +1432,9 @@ class PeopleRepository:
         )
         await self._forget_person_plugin(session, person_ids, legacy)
         await self._forget_person_automations(session, person_ids)
-        await self._forget_person_memory(session, person_ids, prepared.source_receipt_ids)
+        await self._forget_person_memory(
+            session, person_ids, prepared.source_receipt_ids, erased_events=event_ids
+        )
         await session.execute(
             update(ToolArtifactModel)
             .where(ToolArtifactModel.handle_id.in_(prepared.source_artifact_ids))
@@ -1622,10 +1625,15 @@ class PeopleRepository:
         session: AsyncSession,
         person_ids: tuple[str, ...],
         source_receipt_ids: tuple[int, ...] = (),
+        *,
+        erased_events: Select[tuple[int]] | None = None,
     ) -> None:
         """Delete Person-owned live Memory rows before canonical Person delete.
 
-        Clusters first (RESTRICT on persons). Facts next so their evidence
+        Clusters first (RESTRICT on persons). Profiles of every person root whose
+        facts are affected (owned or seen by this Person, or evidenced by its
+        receipts or erased events) next, whole with their versions, so no snapshot
+        keeps text derived from what is erased. Facts next so their evidence
         CASCADE stays on this Person. Jobs/receipts/reflection after that, so
         another Person's evidence is not removed via receipt CASCADE. Dream
         run ledgers stay as provenance.
@@ -1636,6 +1644,34 @@ class PeopleRepository:
             MemoryDreamClusterModel.canonical_visibility_person_id.in_(person_ids),
         )
         await session.execute(delete(MemoryDreamClusterModel).where(person_dream))
+        erased_receipts = select(MemoryToolReceiptModel.id).where(
+            or_(
+                MemoryToolReceiptModel.canonical_person_id.in_(person_ids),
+                MemoryToolReceiptModel.id.in_(source_receipt_ids),
+            )
+        )
+        erased_evidence = [MemoryEvidenceModel.tool_receipt_id.in_(erased_receipts)]
+        if erased_events is not None:
+            erased_evidence.append(MemoryEvidenceModel.event_id.in_(erased_events))
+        subject = aliased(CanonicalPersonModel)
+        await session.execute(
+            delete(MemoryProfileModel).where(
+                MemoryProfileModel.person_id.in_(
+                    select(func.coalesce(subject.merged_into_person_id, subject.id))
+                    .select_from(MemoryFactModel)
+                    .join(subject, subject.id == MemoryFactModel.canonical_subject_person_id)
+                    .where(
+                        or_(
+                            MemoryFactModel.canonical_subject_person_id.in_(person_ids),
+                            MemoryFactModel.canonical_visibility_person_id.in_(person_ids),
+                            MemoryFactModel.id.in_(
+                                select(MemoryEvidenceModel.fact_id).where(or_(*erased_evidence))
+                            ),
+                        )
+                    )
+                )
+            )
+        )
         await session.execute(
             delete(MemoryFactModel).where(
                 or_(

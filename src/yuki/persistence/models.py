@@ -583,17 +583,18 @@ class MemoryFactModel(Base):
 
 
 class MemoryResidentSetModel(Base):
-    """One owner's ordered resident core set: fact IDs only, never memory text.
+    """A group's or SELF's ordered resident core set: fact IDs only, never memory text.
 
     A derived view over ``memory_facts``. Rendering re-applies every filter, so
     rows never need syncing when facts change; see the memory layering P1 task book.
+    Person core sets were replaced by profiles (0164); ``owner_person_id`` stays
+    NULL.
     """
 
     __tablename__ = "memory_resident_sets"
     __table_args__ = (
         CheckConstraint(
-            "(owner_kind = 'person' AND owner_person_id IS NOT NULL AND owner_space_id IS NULL)"
-            " OR (owner_kind = 'space' AND owner_space_id IS NOT NULL AND owner_person_id IS NULL)"
+            "(owner_kind = 'space' AND owner_space_id IS NOT NULL AND owner_person_id IS NULL)"
             " OR (owner_kind = 'self' AND owner_person_id IS NULL AND owner_space_id IS NULL)",
             name="ck_memory_resident_sets_owner",
         ),
@@ -626,6 +627,80 @@ class MemoryResidentSetModel(Base):
     revision: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     selected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class MemoryProfileModel(Base):
+    """One person root's public or private profile: the current version pointer.
+
+    Entries live only in ``memory_profile_versions``; the layered memory P4 task book
+    (§4) is the contract. A derived view: dropping it loses no fact.
+    """
+
+    __tablename__ = "memory_profiles"
+    __table_args__ = (
+        UniqueConstraint("person_id", "audience", name="uq_memory_profiles_person_audience"),
+        CheckConstraint("audience IN ('public', 'private')", name="ck_memory_profiles_audience"),
+        CheckConstraint("current_version >= 0", name="ck_memory_profiles_version"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    person_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("persons.id", ondelete="CASCADE"), nullable=False
+    )
+    audience: Mapped[str] = mapped_column(String(16), nullable=False)
+    current_version: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    considered_signature: Mapped[str | None] = mapped_column(String(64))
+    attempted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    locked: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="0")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class MemoryProfileVersionModel(Base):
+    """A full snapshot of one profile version; appended, never rewritten."""
+
+    __tablename__ = "memory_profile_versions"
+    __table_args__ = (
+        UniqueConstraint("profile_id", "version", name="uq_memory_profile_versions_version"),
+        CheckConstraint("version >= 1", name="ck_memory_profile_versions_version"),
+        CheckConstraint(
+            "source IN ('dream', 'owner', 'program')", name="ck_memory_profile_versions_source"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    profile_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("memory_profiles.id", ondelete="CASCADE"), nullable=False
+    )
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    entries_json: Mapped[str] = mapped_column(Text, nullable=False)
+    source: Mapped[str] = mapped_column(String(16), nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    dream_run_public_id: Mapped[str | None] = mapped_column(String(36))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class MemorySpaceMemberModel(Base):
+    """One displayed member of a group: position 1-5 of its list, by person root."""
+
+    __tablename__ = "memory_space_members"
+    __table_args__ = (
+        UniqueConstraint("space_id", "person_id", name="uq_memory_space_members_person"),
+        CheckConstraint("position BETWEEN 1 AND 5", name="ck_memory_space_members_position"),
+        CheckConstraint("source IN ('dream', 'owner')", name="ck_memory_space_members_source"),
+        Index("ix_memory_space_members_person", "person_id"),
+    )
+
+    space_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("spaces.id", ondelete="CASCADE"), primary_key=True
+    )
+    position: Mapped[int] = mapped_column(Integer, primary_key=True)
+    person_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("persons.id", ondelete="CASCADE"), nullable=False
+    )
+    source: Mapped[str] = mapped_column(String(16), nullable=False)
+    dream_run_public_id: Mapped[str | None] = mapped_column(String(36))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 

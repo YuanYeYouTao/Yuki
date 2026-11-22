@@ -134,7 +134,7 @@ Embedding 请求、缓存命中、错误和已知 usage 分别记录，缺失的
 
 | 会话 | 小节（固定顺序） |
 |---|---|
-| 与 P 的私聊 | `[对方明确要求记住的]`：P 的 person / person_group 明确事实（`source_type` 或 `authority` 为 explicit），按 ID 升序，最多 30 条，超出时加一行“另有 N 条”；`[关于对方]`：P 的核心集；`[我自己的原则]` |
+| 与 P 的私聊 | `[对方明确要求记住的]`：P 的 person / person_group 明确事实（`source_type` 或 `authority` 为 explicit），按 ID 升序，最多 30 条，超出时加一行“另有 N 条”；`[我自己的原则]` |
 | 群 G | `[本群]`：G 的核心集；`[我自己的原则]` |
 
 群聊不带发言人或被 @ 的人的个人小节。每行是事实正文（连续空白折成一个空格）加 `（fact:ID）`，
@@ -144,21 +144,23 @@ Embedding 请求、缓存命中、错误和已知 usage 分别记录，缺失的
 **过滤**（每轮重新判定，核心集不需要随事实变化同步）：
 - 共同条件：active、`conflict_state=clear`、未隔离、未过期；kind 为 fact 或 preference；
   人物事实的 authority 为 explicit 或 self_report，主人人物（原人物与根人物）enabled。
-- 核心集条目必须属于该行的主人：人物行只收该人物（按根）的 person / person_group 事实，
-  群行只收该群的 group 事实，SELF 行只收 SELF 事实。
+- 核心集条目必须属于该行的主人：群行只收该群的 group 事实，SELF 行只收 SELF 事实。
 - 私聊：任一证据（聊天事件，或工具回执的触发事件）来自别人的私聊即排除；没有证据行的事实允许。
 - 群聊：至少有一条证据，且每条证据都直接指向一条聊天事件、该事件所在会话的 `space_id` 是本群。
 - SELF 原则：visibility 为 global，私聊里另含可见人物是对方的 private，群聊里另含可见群是本群的 group。
 - 列表里的 ID 不再 active 时，沿 `supersedes_id` 指向它的最新事实、否则沿已提交 Dream 操作的输出，
   走到 active 的后继再套用全部条件；没有后继就跳过。
 
-**核心集**存于 `memory_resident_sets`（schema `0162`）：一行一个主人（人物根、群或 SELF），
+**核心集**存于 `memory_resident_sets`（schema `0162`，`0164` 起只允许群与 SELF）：一行一个主人（群或 SELF），
 有序 fact ID 列表最多 10 条、来源 `dream` / `owner`、挑选水位 `considered_through_fact_id`、
 列表每变一次加 1 的 `revision`。表里没有记忆正文，是可删除重建的派生数据。写入先在 reader 里校验
 条数、主人一致与共同条件，再用一个短写事务提交；SELF 行只由所有者写。
 Dream 每日批次在全部簇处理完后对到期主人运行一次挑选步骤（候选为共同条件下、属于该主人且非明确事实的事实），
 `source='owner'` 的行跳过；所有者通过 `yuki memory resident` 子命令查看、渲染、改写、锁定与解锁。
 设计依据与验收见[记忆分层 P1 实施任务书](Yuki-记忆分层P1实施任务书-2026-11-21.md)。
+人物核心集（原 `[关于对方]`）已由人物画像替代：迁移 `0164` 删除 `owner_kind='person'` 的行并收窄 CHECK，
+挑选步骤、CLI `--person` 与人物合并时的水位清零一并删除；画像的存储、版本与群成员名单见
+[记忆分层 P4 人物画像任务书](Yuki-记忆分层P4人物画像任务书-2026-11-22.md) §4–§6（`memory/profiles.py`）。
 
 ## 经历目录
 
