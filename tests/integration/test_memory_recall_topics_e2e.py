@@ -454,3 +454,44 @@ async def test_t8_rollback_to_a_version_without_topics_drops_the_current_topics(
         {"before": before.segment, "after": after.segment, "versions": stored},
         scene.labels(),
     )
+
+
+# -------------------------------------------------------------------------------- T9
+async def test_t9_schema_invalid_topics_get_the_same_repair_request(scene):
+    """T9: topics share the profile call's structured output, so a topic over 8
+    characters gets the one repair request carrying the validation error (like an
+    over-long entry); a compliant repair writes the topics, both requests paid."""
+    facts = await _base(scene)
+    replies = iter(
+        [
+            lambda o: reply(
+                [("兴趣", "周末常去爬山", [o[facts["hike"]]])],
+                [("塞尔达传说旷野之息", [o[facts["zelda"]]])],
+            ),
+            lambda o: reply(
+                [("兴趣", "周末常去爬山", [o[facts["hike"]]])],
+                [("塞尔达", [o[facts["zelda"]]])],
+            ),
+        ]
+    )
+
+    def respond(payload, request):
+        if payload["audience"] != "public":
+            return reply([("身份", "在准备考研", [scene.offered(payload)[facts["exam"]]])], [])
+        return next(replies)(scene.offered(payload))
+
+    scene.profile_responder = respond
+    start = len(scene.profile_requests)
+    await scene.dream_run()
+    public_requests = [
+        request
+        for request in scene.profile_requests[start:]
+        if json.loads(request.messages[1].content)["audience"] == "public"
+    ]
+    group = await scene.turn("A", "群里谁玩游戏", group="G")
+
+    assert len(public_requests) == 2
+    repair = json.loads(public_requests[-1].messages[-1].content)["repair_request"]
+    assert repair["reason_code"] == "schema_validation"
+    assert "max_length=8" in repair["detail"]
+    assert topic_lines(group.segment) == {MEMBERS_TITLE: [f"{TOPICS}塞尔达"]}
