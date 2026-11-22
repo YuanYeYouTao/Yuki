@@ -27,11 +27,9 @@ from yuki.domain.messages import (
     ChatRequest,
     ChatResponse,
     ChatTool,
-    FunctionCallOutput,
     ModelResponseStatus,
     NativeToolDefinition,
     NativeToolEvent,
-    ProviderContinuation,
     ResponseCitation,
     ToolCall,
 )
@@ -1067,13 +1065,6 @@ class TurnExecution:
             elif public_requested:
                 raise WorkCapacityError("model_request_capacity")
             if plan is None:
-                tail = self.state.transcript.entries()[len(self.initial_messages) :]
-                if trigger_tokens is not None and not any(
-                    isinstance(entry, (FunctionCallOutput, ProviderContinuation))
-                    or (isinstance(entry, ChatMessage) and entry.role in {"assistant", "tool"})
-                    for entry in tail
-                ):
-                    return request
                 current = self.state.control.current if self.state.control is not None else None
                 focus = json.dumps(
                     {
@@ -1110,11 +1101,13 @@ class TurnExecution:
                     focus="本轮程序持有的目标归属（null 表示没有当前业务 Work）：" + focus,
                     checkpoint_summary=self._execution_checkpoint_summary,
                     unobserved_tool_round=unobserved_tool_round,
+                    trigger_tokens=trigger_tokens,
                 )
         except WorkCapacityError:
             # A soft watermark is a maintenance policy, not an input-capacity
-            # error. Only planning failures are optional; paid/unknown outcomes,
-            # source changes and cancellation keep their original recovery path.
+            # error. Only planning failures are optional: no legal prefix, or no
+            # summary could bring the request below the trigger. Paid/unknown
+            # outcomes, source changes and cancellation keep their recovery path.
             if trigger_tokens is None:
                 raise
             return request
