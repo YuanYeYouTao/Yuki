@@ -40,6 +40,13 @@ Provider 明确报告输出截断时返回
 新输出只有待创建的 `proposals` 与按 `passages` 组织的 `episodes`，后端直接复用 CREATE。
 每条 episode 另有必填的 `title`（一句不超过 20 字、不写日期），存入 `memory_facts.title`，
 供[经历目录](memory-v2.md#经历目录)使用。
+同一段活动只写一条 episode：一局游戏、一次讨论、一次排查、一次闲聊各算一条，中间的回合、插话和阶段不拆开；
+本批里互不相干的几段活动才分成几条，只是 `context_events` 里已开始活动的继续且没有新结果或转折时不另写。
+不设每批条数上限，也不给自省喂已有经历；跨批次的同一段活动留给 Dream 合并
+（[P2.1 任务书](Yuki-记忆分层P2.1经历目录精简任务书-2026-11-23.md) §8）。
+`yuki memory stats` 的 `self_reflection_by_week` 按周给出已完成聊天批次的每 100 条已处理消息经历数、
+一批写 3 条以上与一条未写的批次数，只记录、不设门槛；指令改动的漏记核查用
+`scripts/replay_self_reflection_one_episode.py` 在部署环境内离线重放（不写库）。
 模型不再选择 operation、旧 fact 引用或候选裁决；没有内容时两个列表均可为空，正常推进本批水位。
 `context_events` 仅帮助理解，不进入新事实的来源映射；每条新记录仍须引用本批实际展示的事件或工具回执。
 普通提取只生成 Person、PersonGroup、Group 新事实，已退出 SELF 候选生产与裁决链，
