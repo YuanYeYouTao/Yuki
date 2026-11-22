@@ -976,7 +976,7 @@ class MemoryFactService:
         self,
         fact_id: int,
         *,
-        actor_user_id: str,
+        actor_user_id: str | None,
         evidence: MemoryEvidenceCreate | None = None,
         confirmed_at: datetime | None = None,
         session: AsyncSession | None = None,

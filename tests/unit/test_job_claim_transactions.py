@@ -10,6 +10,7 @@ from tests.conftest import make_settings
 from tests.support.canonical_ingress import append_user_event
 from tests.support.model_executor import InjectedModelExecutor
 
+from yuki.admin.config_service import RuntimeConfigService
 from yuki.conversation.canonical_db_models import CanonicalConversationModel
 from yuki.domain.messages import ChatRequest, ChatResponse
 from yuki.llm.base import LLMProvider, LLMUnavailableError
@@ -193,6 +194,9 @@ async def test_memory_worker_recovers_original_job_after_repeated_provider_failu
         ledger=EventLedgerRepository(database),
         model_executor=InjectedModelExecutor(provider),
         concurrency=ConcurrencyManager(),
+        runtime_config=RuntimeConfigService(
+            settings=make_settings(database.url), database=database
+        ),
     )
     assert await worker.enqueue(identity, "private:1001")
     for attempts in range(1, 5):

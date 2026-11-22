@@ -13,6 +13,7 @@ from sqlalchemy import select, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from yuki.admin.config_service import RuntimeConfigService
 from yuki.config import Settings
 from yuki.identity.authority import person_is_superuser
 from yuki.identity.db_models import PresenceModel
@@ -39,6 +40,8 @@ from yuki.memory.extraction import (
     EXTRACTION_PROMPT_VERSION,
     EXTRACTION_SCHEMA_VERSION,
     SOURCE_ADAPTATION_VERSION,
+    TIGHTENED_EXTRACTION_PROMPT_VERSION,
+    TIGHTENED_EXTRACTION_SCHEMA_VERSION,
     MemoryClaim,
     source_event_fingerprint,
 )
@@ -78,6 +81,8 @@ def canonical_json(value: Any) -> str:
 class PreparedRebuildPlan:
     snapshot: int
     statistics: MemoryRebuildPlanStatistics
+    # ``memory.extraction_tightened_enabled`` when the plan was prepared.
+    tightened: bool
 
 
 async def prepare_rebuild_core(
@@ -85,6 +90,7 @@ async def prepare_rebuild_core(
     settings: Settings,
     ledger: EventLedgerRepository,
     selection: MemoryRebuildSelection,
+    tightened: bool,
 ) -> PreparedRebuildPlan:
     if not settings.memory_rebuild_enabled:
         raise RuntimeError("MEMORY_REBUILD_ENABLED is false")
@@ -93,43 +99,44 @@ async def prepare_rebuild_core(
         selection,
         snapshot_max_event_id=snapshot,
     )
-    return PreparedRebuildPlan(snapshot, statistics)
+    return PreparedRebuildPlan(snapshot, statistics, tightened)
 
 
 async def plan_rebuild_core(
     *,
     settings: Settings,
     repository: MemoryRebuildRepository,
-    ledger: EventLedgerRepository,
     selection: MemoryRebuildSelection,
     actor_user_id: str,
     model_name: str | None = None,
     session: AsyncSession | None = None,
-    prepared: PreparedRebuildPlan | None = None,
+    prepared: PreparedRebuildPlan,
 ) -> MemoryRebuildRun:
-    if prepared is None:
-        if session is not None:
-            raise ValueError("rebuild plan must be prepared before opening a writer")
-        prepared = await prepare_rebuild_core(settings=settings, ledger=ledger, selection=selection)
     selection_json = canonical_json(selection)
     return await repository.create_run(
         selection=selection,
         selection_json=selection_json,
         selection_hash=hashlib.sha256(selection_json.encode()).hexdigest(),
         snapshot_max_event_id=prepared.snapshot,
-        fingerprint=extraction_fingerprint(settings, model_name=model_name),
+        fingerprint=extraction_fingerprint(
+            settings, model_name=model_name, tightened=prepared.tightened
+        ),
         statistics=prepared.statistics,
         actor_user_id=actor_user_id,
         session=session,
     )
 
 
-def extraction_fingerprint(settings: Settings, *, model_name: str | None = None) -> str:
+def extraction_fingerprint(
+    settings: Settings, *, model_name: str | None = None, tightened: bool
+) -> str:
+    """Record the extraction contract a run was planned under (the switch at plan time)."""
+
     payload = {
         "task": ModelTask.MEMORY_EXTRACTION.value,
         "model": model_name or settings.llm_model,
-        "prompt": EXTRACTION_PROMPT_VERSION,
-        "schema": EXTRACTION_SCHEMA_VERSION,
+        "prompt": TIGHTENED_EXTRACTION_PROMPT_VERSION if tightened else EXTRACTION_PROMPT_VERSION,
+        "schema": TIGHTENED_EXTRACTION_SCHEMA_VERSION if tightened else EXTRACTION_SCHEMA_VERSION,
         "subject_resolver": SUBJECT_RESOLVER_VERSION,
         "claim_validator": CLAIM_VALIDATOR_VERSION,
         "source_adaptation": SOURCE_ADAPTATION_VERSION,
@@ -224,9 +231,11 @@ class MemoryRebuildService:
         ledger: EventLedgerRepository,
         extractor: MemoryEventExtractor,
         processor: MemoryClaimProcessor,
+        runtime_config: RuntimeConfigService,
         eligibility: MemoryEventEligibilityPolicy | None = None,
     ) -> None:
         self.settings = settings
+        self._runtime_config = runtime_config
         self.repository = repository
         self.ledger = ledger
         self.extractor = extractor
@@ -286,10 +295,18 @@ class MemoryRebuildService:
     ) -> MemoryRebuildRun:
         if authorize:
             await self._authorize(actor_user_id, session=session)
+        if prepared is None:
+            if session is not None:
+                raise ValueError("rebuild plan must be prepared before opening a writer")
+            prepared = await prepare_rebuild_core(
+                settings=self.settings,
+                ledger=self.ledger,
+                selection=selection,
+                tightened=await self._tightened(),
+            )
         return await plan_rebuild_core(
             settings=self.settings,
             repository=self.repository,
-            ledger=self.ledger,
             selection=selection,
             actor_user_id=actor_user_id,
             model_name=self.extractor.model_name,
@@ -494,18 +511,23 @@ class MemoryRebuildService:
         await self._authorize(actor_user_id)
         return await self.repository.purge(run_id)
 
+    async def _tightened(self) -> bool:
+        return (await self._runtime_config.snapshot()).memory.extraction_tightened_enabled
+
     async def process_extraction_once(self, run: MemoryRebuildRun) -> int:
         if run.status is not MemoryRebuildRunStatus.EXTRACTING:
             return 0
         if not await self._continue_run(run):
             return 0
+        # One snapshot per extraction page, like a live batch.
+        tightened = await self._tightened()
         pending = await self.repository.pending_extraction_events(
             run.public_id, limit=self.settings.memory_rebuild_scan_batch_size
         )
         if pending:
             semaphore = asyncio.Semaphore(self.settings.memory_rebuild_extraction_concurrency)
             results = await asyncio.gather(
-                *(self._extract_one(run, event, semaphore) for event in pending)
+                *(self._extract_one(run, event, semaphore, tightened) for event in pending)
             )
             return sum(state == "processed" for state in results)
         scanned = await self.repository.item_count(run.public_id)
@@ -539,7 +561,7 @@ class MemoryRebuildService:
             return 0
         semaphore = asyncio.Semaphore(self.settings.memory_rebuild_extraction_concurrency)
         results = await asyncio.gather(
-            *(self._extract_one(run, source_event, semaphore) for source_event in rows)
+            *(self._extract_one(run, source_event, semaphore, tightened) for source_event in rows)
         )
         for source_event, state in zip(rows, results, strict=True):
             if state not in {"processed", "complete", "failed"}:
@@ -552,6 +574,7 @@ class MemoryRebuildService:
         run: MemoryRebuildRun,
         source_event: Any,
         semaphore: asyncio.Semaphore,
+        tightened: bool,
     ) -> str:
         async with semaphore:
             current = await self._require(run.public_id)
@@ -604,6 +627,7 @@ class MemoryRebuildService:
                             event,
                             context=context,
                             self_name=self.settings.character_identity.display_name,
+                            tightened=tightened,
                         )
                 finally:
                     self._active_in_flight_calls -= 1

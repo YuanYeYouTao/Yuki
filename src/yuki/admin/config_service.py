@@ -1606,6 +1606,7 @@ class RuntimeConfigService:
                 ),
                 maintenance_batch_limit=int(cast(int, value("memory.maintenance_batch_limit"))),
                 resident_enabled=bool(value("memory.resident_enabled")),
+                extraction_tightened_enabled=bool(value("memory.extraction_tightened_enabled")),
             ),
             reply=ReplyRuntimeConfig(
                 delay_min_seconds=delay_min,

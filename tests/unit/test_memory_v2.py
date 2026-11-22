@@ -11,6 +11,7 @@ from tests.conftest import make_settings
 from tests.support.event_seed import seed_event
 from tests.support.model_executor import InjectedModelExecutor
 
+from yuki.admin.config_service import RuntimeConfigService
 from yuki.domain.conversations import ScopeType
 from yuki.domain.messages import ChatRequest, ChatResponse
 from yuki.llm.base import LLMProvider
@@ -228,6 +229,9 @@ async def test_worker_propagates_cancellation(database: Database) -> None:
         ledger=ledger,
         model_executor=InjectedModelExecutor(_CancelledProvider()),
         concurrency=ConcurrencyManager(),
+        runtime_config=RuntimeConfigService(
+            settings=make_settings(database.url), database=database
+        ),
     )
     with pytest.raises(asyncio.CancelledError):
         await worker.process_once()

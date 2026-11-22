@@ -271,6 +271,15 @@ class DreamHealth(_DreamModel):
     compaction_evidence_after: int = Field(default=0, ge=0)
     compaction_last_error_category: str | None = None
 
+    unreviewed_facts: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Active or contested facts without a Dream checkpoint, or whose checkpoint "
+            "signature changed (the incremental plan's definition of changed)."
+        ),
+    )
+
     resident_pending_owners: int = Field(
         default=0,
         ge=0,

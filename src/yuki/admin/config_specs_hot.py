@@ -288,6 +288,19 @@ def hot_config_specs() -> tuple[ConfigSpec, ...]:
             category="memory",
         ),
         _spec(
+            "memory.extraction_tightened_enabled",
+            "收紧记忆提取",
+            "开启后自动提取与 Rebuild 使用 v8 指令：当次任务指令不提取、同一批同义只出一条，"
+            "类别由 kind 生成。每个提取批次开始时读取一次；关闭后下一批次回到旧指令，"
+            "已写入的事实保留。",
+            value_type="boolean",
+            scopes=_G,
+            env_alias="MEMORY_EXTRACTION_TIGHTENED_ENABLED",
+            getter=_field("memory_extraction_tightened_enabled"),
+            settings_fields=("memory_extraction_tightened_enabled",),
+            category="memory",
+        ),
+        _spec(
             "context.local_event_limit",
             "近期本地事件数量",
             "主 Agent 每轮读取近期本地事件的资源上限；语义窗口和压缩水位按 token 热配置计算。",

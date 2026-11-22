@@ -289,6 +289,47 @@ class DreamRepository:
             ambiguous_bot_facts=ambiguous,
         )
 
+    async def _unreviewed_facts(self, session: AsyncSession) -> int:
+        checkpoints = {
+            int(row.fact_id): str(row.signature)
+            for row in await session.execute(
+                select(
+                    MemoryDreamFactCheckpointModel.fact_id,
+                    MemoryDreamFactCheckpointModel.signature,
+                )
+            )
+        }
+        now = datetime.now(UTC)
+        unreviewed = 0
+        after_id = 0
+        while True:
+            fact_ids = tuple(
+                int(item)
+                for item in await session.scalars(
+                    select(MemoryFactModel.id)
+                    .where(
+                        MemoryFactModel.status.in_(
+                            (MemoryStatus.ACTIVE.value, MemoryStatus.CONTESTED.value)
+                        ),
+                        MemoryFactModel.review_state != "quarantined",
+                        or_(
+                            MemoryFactModel.valid_until.is_(None),
+                            MemoryFactModel.valid_until > now,
+                        ),
+                        MemoryFactModel.id > after_id,
+                    )
+                    .order_by(MemoryFactModel.id)
+                    .limit(256)
+                )
+            )
+            if not fact_ids:
+                return unreviewed
+            unreviewed += sum(
+                checkpoints.get(fact.id) != fact_signature(fact)
+                for fact in await self._facts.get_facts(fact_ids, session=session)
+            )
+            after_id = fact_ids[-1]
+
     async def checkpoint_map(self) -> dict[int, str]:
         async with self.database.read_session() as session:
             rows = (
@@ -1293,6 +1334,7 @@ class DreamRepository:
                 .order_by(MemoryEvidenceCompactionRunModel.id.desc())
                 .limit(1)
             )
+            unreviewed = await self._unreviewed_facts(session)
         return DreamHealth(
             enabled=enabled,
             running=active is not None,
@@ -1318,6 +1360,7 @@ class DreamRepository:
             compaction_last_error_category=(
                 compaction_latest.error_category if compaction_latest is not None else None
             ),
+            unreviewed_facts=unreviewed,
         )
 
     async def committed_operation_ids(self, run_public_id: str) -> tuple[str, ...]:

@@ -16,6 +16,8 @@ from yuki.memory.extraction import (
     MemoryExtractionInput,
     MemoryExtractionOutput,
     PrimaryEvent,
+    TightenedBatchMemoryExtractionOutput,
+    TightenedMemoryExtractionOutput,
 )
 from yuki.memory.subjects import SubjectContextBuilder, SubjectResolutionContext
 from yuki.model_runtime.executor import ModelExecutor
@@ -72,8 +74,20 @@ source_event_id 绑定真实来源；正文可以记录明确的人物姓名、�
 不输出数据库状态、authority 或隐藏推理。
 """
 
+# The task-scope rule; the stock clean-up scan classifies existing facts by the same text.
+TASK_SCOPE_RULE = (
+    "只为当前这件事给出的要求、决定或安排——指向某个 PR、issue、分支、文件、任务书、"
+    "当次交付物或当次会话——是当次任务指令，不提取；它们留在会话历史与任务记录里。\n"
+    "对方表明以后都适用、或描述的是一般做事方式的，才作为长期偏好提取。\n"
+)
+_TASK_SCOPE_INSTRUCTION = TASK_SCOPE_RULE + "同一批里同一个意思只输出一条 claim。\n"
+
 EXTRACTION_INSTRUCTION = _EXTRACTION_INSTRUCTION + _VALUE_INSTRUCTION
 BATCH_EXTRACTION_INSTRUCTION = _BATCH_EXTRACTION_INSTRUCTION + _VALUE_INSTRUCTION
+# ``memory.extraction_tightened_enabled`` (v8 / batch v7): the old text plus the
+# task-scope rule, shared by live batches and Rebuild.
+TIGHTENED_EXTRACTION_INSTRUCTION = EXTRACTION_INSTRUCTION + _TASK_SCOPE_INSTRUCTION
+TIGHTENED_BATCH_EXTRACTION_INSTRUCTION = BATCH_EXTRACTION_INSTRUCTION + _TASK_SCOPE_INSTRUCTION
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,6 +137,7 @@ class MemoryEventExtractor:
         *,
         context: tuple[EventRecord, ...] = (),
         self_name: str,
+        tightened: bool,
     ) -> MemoryExtractionResult:
         if not event.evidence_content.strip():
             return MemoryExtractionResult(MemoryExtractionOutput(), 0)
@@ -144,18 +159,33 @@ class MemoryEventExtractor:
                 if row.evidence_content.strip()
             ),
         )
-        output, response = await self._concurrency.run_llm(
-            "memory-v2-extractor",
-            lambda: self._structured.run_with_response(
-                task=ModelTask.MEMORY_EXTRACTION,
-                temperature=0.1,
-                max_output_tokens=None,
-                instruction=EXTRACTION_INSTRUCTION,
-                structured_input=payload,
-                output_model=MemoryExtractionOutput,
-            ),
-            translate_cancellation=False,
-        )
+        if tightened:
+            tightened_output, response = await self._concurrency.run_llm(
+                "memory-v2-extractor",
+                lambda: self._structured.run_with_response(
+                    task=ModelTask.MEMORY_EXTRACTION,
+                    temperature=0.1,
+                    max_output_tokens=None,
+                    instruction=TIGHTENED_EXTRACTION_INSTRUCTION,
+                    structured_input=payload,
+                    output_model=TightenedMemoryExtractionOutput,
+                ),
+                translate_cancellation=False,
+            )
+            output = tightened_output.output()
+        else:
+            output, response = await self._concurrency.run_llm(
+                "memory-v2-extractor",
+                lambda: self._structured.run_with_response(
+                    task=ModelTask.MEMORY_EXTRACTION,
+                    temperature=0.1,
+                    max_output_tokens=None,
+                    instruction=EXTRACTION_INSTRUCTION,
+                    structured_input=payload,
+                    output_model=MemoryExtractionOutput,
+                ),
+                translate_cancellation=False,
+            )
         resolved_claims, subject_context = await self._subjects.resolve_claim_names(
             event,
             output.claims,
@@ -178,6 +208,7 @@ class MemoryEventExtractor:
         context: tuple[EventRecord, ...] = (),
         max_output_tokens: int = 4096,
         self_name: str,
+        tightened: bool,
     ) -> BatchMemoryExtractionResult:
         selected_events = tuple(event for event in events if event.evidence_content.strip())
         contexts = await asyncio.gather(*(self._subjects.build(event) for event in selected_events))
@@ -209,18 +240,33 @@ class MemoryEventExtractor:
                 if row.evidence_content.strip()
             ),
         )
-        output, response = await self._concurrency.run_llm(
-            "memory-v2-batch-extractor",
-            lambda: self._structured.run_with_response(
-                task=ModelTask.MEMORY_EXTRACTION,
-                temperature=0.1,
-                max_output_tokens=max_output_tokens,
-                instruction=BATCH_EXTRACTION_INSTRUCTION,
-                structured_input=payload,
-                output_model=BatchMemoryExtractionOutput,
-            ),
-            translate_cancellation=False,
-        )
+        if tightened:
+            tightened_output, response = await self._concurrency.run_llm(
+                "memory-v2-batch-extractor",
+                lambda: self._structured.run_with_response(
+                    task=ModelTask.MEMORY_EXTRACTION,
+                    temperature=0.1,
+                    max_output_tokens=max_output_tokens,
+                    instruction=TIGHTENED_BATCH_EXTRACTION_INSTRUCTION,
+                    structured_input=payload,
+                    output_model=TightenedBatchMemoryExtractionOutput,
+                ),
+                translate_cancellation=False,
+            )
+            output = tightened_output.output()
+        else:
+            output, response = await self._concurrency.run_llm(
+                "memory-v2-batch-extractor",
+                lambda: self._structured.run_with_response(
+                    task=ModelTask.MEMORY_EXTRACTION,
+                    temperature=0.1,
+                    max_output_tokens=max_output_tokens,
+                    instruction=BATCH_EXTRACTION_INSTRUCTION,
+                    structured_input=payload,
+                    output_model=BatchMemoryExtractionOutput,
+                ),
+                translate_cancellation=False,
+            )
         claims_by_event: dict[int, list[tuple[int, BatchMemoryClaim]]] = {}
         for index, item in enumerate(output.claims):
             claims_by_event.setdefault(item.source_event_id, []).append((index, item))

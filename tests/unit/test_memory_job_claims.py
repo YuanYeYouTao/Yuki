@@ -13,6 +13,7 @@ from tests.support.model_executor import InjectedModelExecutor
 from tests.unit.test_memory_mutation import _service
 from tests.unit.test_memory_v2 import _append_event, _claim
 
+from yuki.admin.config_service import RuntimeConfigService
 from yuki.conversation.canonical_db_models import CanonicalConversationModel
 from yuki.domain.messages import ChatRequest, ChatResponse
 from yuki.llm.base import LLMProvider
@@ -266,6 +267,9 @@ async def test_reclaim_during_extraction_discards_all_old_worker_results(
         ledger=ledger,
         model_executor=InjectedModelExecutor(Provider()),
         concurrency=ConcurrencyManager(),
+        runtime_config=RuntimeConfigService(
+            settings=make_settings(database.url), database=database
+        ),
     )
     assert await worker.enqueue(event.id, "private:1001")
     running = asyncio.create_task(worker.process_once())
@@ -306,6 +310,9 @@ async def test_reclaim_after_extraction_blocks_fact_and_receipt_without_writer_l
         ledger=ledger,
         model_executor=InjectedModelExecutor(Provider()),
         concurrency=ConcurrencyManager(),
+        runtime_config=RuntimeConfigService(
+            settings=make_settings(database.url), database=database
+        ),
     )
     original_mutate = worker.mutations.mutate_validated_claim
     current: MemoryJob | None = None

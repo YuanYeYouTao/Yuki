@@ -14,6 +14,7 @@ from tests.unit.test_memory_mutation import _event, _service
 from tests.unit.test_memory_rebuild import _service as rebuild_service
 from tests.unit.test_memory_worker_shutdown import _Provider as ExtractionProvider
 
+from yuki.admin.config_service import RuntimeConfigService
 from yuki.llm.fake import FakeLLMProvider
 from yuki.memory.dream.db_models import MemoryDreamClusterModel
 from yuki.memory.dream.models import DreamClusterStatus, DreamOutput
@@ -268,6 +269,9 @@ async def test_worker_keeps_paid_output_and_applied_claim_during_completion_cont
         ledger=ledger,
         model_executor=InjectedModelExecutor(provider),
         concurrency=ConcurrencyManager(),
+        runtime_config=RuntimeConfigService(
+            settings=make_settings(database.url), database=database
+        ),
     )
     assert await worker.enqueue(source.id, source.scope.key)
     async with database.immediate_session() as writer:

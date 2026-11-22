@@ -24,7 +24,8 @@ current_speaker、named_member、member_{id}、replied_message_author、candidat
 它们只能解析到本轮出现者的附带限制也一并删除，不改写成新的授权门槛（存在性核对不是授权）。
 真实来源照旧：人类写入的 evidence 须为真实入站事件，SELF 写入须给 `quote` 并按本轮
 `memory_tool_receipts.result_excerpt` 子串核验。`memory_key` 与 `category` 由 kind 生成（SELF 为
-`self_<kind>`），只作检索标签。restore、contest、merge、reassign、update_metadata、selector、
+`self_<kind>`），只作检索标签。自动提取在 `memory.extraction_tightened_enabled` 开启时同样不让模型给
+`category`，写入取 kind 的值；关闭时仍是模型给出的类别。存量事实的 `category` 不改。restore、contest、merge、reassign、update_metadata、selector、
 expected_fact_state、valid_from／until、confidence、request_basis 不再提供给模型。
 
 Dream 可按实际内容重组 fact、preference 或 episode，不要求 focus、正文和 key 唯一，

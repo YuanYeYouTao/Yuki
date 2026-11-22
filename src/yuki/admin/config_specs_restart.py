@@ -330,7 +330,7 @@ def restart_config_specs() -> tuple[ConfigSpec, ...]:
                 (
                     "memory.dream_max_clusters_per_run",
                     "Dream 每轮簇上限",
-                    "夜间增量 Dream 每轮最多尝试的候选簇数。",
+                    "夜间增量 Dream 每轮最多尝试的候选簇数；默认与调用上限相同。",
                     "integer",
                     1,
                     None,

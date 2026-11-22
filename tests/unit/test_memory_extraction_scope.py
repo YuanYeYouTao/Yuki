@@ -9,6 +9,7 @@ from tests.conftest import make_settings
 from tests.support.model_executor import InjectedModelExecutor
 from tests.unit.test_memory_v2 import _append_event, _claim
 
+from yuki.admin.config_service import RuntimeConfigService
 from yuki.llm.fake import FakeLLMProvider
 from yuki.memory.enums import MemoryRebuildJobOutcome
 from yuki.memory.event_extractor import MemoryEventExtractor
@@ -34,9 +35,9 @@ async def test_actual_single_and_batch_requests_have_no_self_subject(database, g
     provider = FakeLLMProvider(lambda request: '{"claims":[]}')
     extractor = MemoryEventExtractor(InjectedModelExecutor(provider), ConcurrencyManager())
     if batch:
-        await extractor.extract_batch((event,), self_name="Yuki")
+        await extractor.extract_batch((event,), self_name="Yuki", tightened=False)
     else:
-        await extractor.extract(event, self_name="Yuki")
+        await extractor.extract(event, self_name="Yuki", tightened=False)
     payload = json.loads(provider.requests[0].messages[-1].content)
     declarations = (
         payload["events"][0]["available_subjects"] if batch else payload["available_subjects"]
@@ -91,6 +92,9 @@ async def test_worker_still_creates_person_person_group_and_group_from_original_
         ledger=ledger,
         model_executor=InjectedModelExecutor(provider),
         concurrency=ConcurrencyManager(),
+        runtime_config=RuntimeConfigService(
+            settings=make_settings(database.url), database=database
+        ),
     )
     assert await worker.enqueue(event.id, event.scope.key)
     assert await worker.process_once() == 1
@@ -163,6 +167,9 @@ async def test_worker_preserves_old_candidates_and_outcome_without_new_self_writ
         ledger=ledger,
         model_executor=InjectedModelExecutor(provider),
         concurrency=ConcurrencyManager(),
+        runtime_config=RuntimeConfigService(
+            settings=make_settings(database.url), database=database
+        ),
     )
     assert await worker.enqueue(event.id, event.scope.key)
     assert await worker.process_once() == (0 if self_attempt else 1)

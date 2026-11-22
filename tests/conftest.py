@@ -400,6 +400,7 @@ def build_harness(
             timezone=settings.default_timezone,
         ),
         processor=claim_processor,
+        runtime_config=runtime_config,
     )
     command_service = command_service or CommandService(
         admin_operations=operations,
@@ -454,6 +455,7 @@ def build_harness(
             ledger=ledger,
             model_executor=models,
             concurrency=concurrency,
+            runtime_config=runtime_config,
         ),
         autonomous_groups=_ImmediateOrdinaryInput(),
         runtime_config=runtime_config,

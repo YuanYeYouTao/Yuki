@@ -49,7 +49,9 @@ async def test_prepared_plan_uses_supplied_writer_for_current_authority(database
     await _event(ledger, message_id="prepared-plan-owner")
     actor = await _admin(database)
     selection = MemoryRebuildSelection(all_events=True)
-    prepared = await prepare_rebuild_core(settings=settings, ledger=ledger, selection=selection)
+    prepared = await prepare_rebuild_core(
+        settings=settings, ledger=ledger, selection=selection, tightened=False
+    )
 
     def no_reader():
         raise AssertionError("supplied writer must not open another reader")
