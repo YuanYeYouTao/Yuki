@@ -242,10 +242,6 @@ class EpisodeIndex:
         self._database = database
         self._timezone = timezone
 
-    async def watermark(self) -> EpisodeWatermark:
-        async with self._database.read_session() as session:
-            return await _watermark(session)
-
     async def render_conversation(self, conversation_id: str) -> EpisodeIndexRender:
         async with self._database.read_session() as session:
             owner = await conversation_owner(session, conversation_id)

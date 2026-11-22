@@ -11,7 +11,8 @@ Always run:
 - ``test_k22_render_statements_constant``: one audience with 15 visible episodes, one
   with 1000: the same statement count; the large one reads no archived evidence.
 - ``test_selection_prep_statements_constant``: 1 leaver and 15 leavers: the same count.
-- ``test_month_recount_statements_constant``: 3 and 20 audiences: the same count.
+- ``test_month_recount_statements_constant``: the nightly preparation, which also
+  recounts the months, for 3 and 20 audiences with rows: the same count.
 Each also runs ``EXPLAIN QUERY PLAN`` on every statement and fails on a ``SCAN`` of
 ``memory_facts``, ``memory_evidence`` or ``chat_events``.
 
@@ -152,6 +153,9 @@ async def test_k22_render_statements_constant(scene):
     large = await _episodes(scene, "private:A", "A", 1000, "l")
     scene.memorable_responder = scene.choose(lambda pool: pool[:10])
     await scene.advance()
+    # Today's tail differs too (1 versus 5): no statement per tail episode either.
+    small_tail = await _episodes(scene, "space:G", "G", 1, "st")
+    large_tail = await _episodes(scene, "private:A", "A", 5, "lt")
     small_render, small_sql = await _render_statements(scene, "space:G")
     large_render, large_sql = await _render_statements(scene, "private:A")
     planned = plans(_path(scene.database), [*small_sql, *large_sql])
@@ -160,9 +164,11 @@ async def test_k22_render_statements_constant(scene):
     assert list(small_render.window_fact_ids) == small
     assert list(large_render.window_fact_ids) == large[-15:]
     assert len(large_render.memorable_fact_ids) == 10
+    assert list(small_render.recent_fact_ids) == small_tail
+    assert set(large_render.recent_fact_ids) == set(large_tail)
     # The private chat resolves its person root: one statement more than the group.
     assert len(large_sql) == len(small_sql) + 1, (len(small_sql), len(large_sql))
-    assert len(evidence_params) == 1 and len(evidence_params[0]) <= 25 + 1
+    assert len(evidence_params) == 1 and len(evidence_params[0]) <= 25 + len(large_tail) + 1
     assert [item for item in planned if item["large_scans"]] == []
     MEMORABLE_RESULTS.mkdir(parents=True, exist_ok=True)
     (MEMORABLE_RESULTS / "K22-statements.json").write_text(
@@ -230,10 +236,8 @@ async def test_selection_prep_statements_constant(scene):
 
 
 async def test_month_recount_statements_constant(scene):
-    """One batch for 3 audiences and for 20: the same statements."""
-    from yuki.memory.episode_index import IndexOwner
-    from yuki.memory.episode_selection import recount_months
-
+    """The nightly preparation (month counts included) for 3 and for 20 audiences with
+    rows: the same statements."""
     memories = scene.chat._memories
     persons = []
     async with scene.database.immediate_session() as writer:
@@ -243,7 +247,8 @@ async def test_month_recount_statements_constant(scene):
                     writer, str(50000 + index), display_name=f"m-{index}", now=datetime.now(UTC)
                 )
             )
-    for index, person in enumerate(persons):
+
+    async def write(index: int, person: str) -> None:
         for number in range(3):
             await memories.remember(
                 MemoryFactCreate(
@@ -260,20 +265,18 @@ async def test_month_recount_statements_constant(scene):
                     valid_from=_at(f"2026-0{1 + number}-01"),
                 )
             )
-    owners = [IndexOwner("private", person) for person in persons]
 
-    async def recount(selected):
-        with recorded(scene.database) as statements:
-            async with scene.database.read_session() as session:
-                counts = await recount_months(session, selected, {}, TIMEZONE)
-        return counts, business(statements)
-
-    three, three_sql = await recount(owners[:3])
-    twenty, twenty_sql = await recount(owners)
+    for index, person in enumerate(persons[:3]):
+        await write(index, person)
+    await scene.advance()
+    three, three_sql = await _prepare_statements(scene)
+    for index, person in enumerate(persons[3:], start=3):
+        await write(index, person)
+    await scene.advance()
+    twenty, twenty_sql = await _prepare_statements(scene)
     planned = plans(_path(scene.database), [*three_sql, *twenty_sql])
 
-    assert three[owners[0]] == {"2026-01": 1, "2026-02": 1, "2026-03": 1}
-    assert len(twenty) == 20
+    assert len(three.audiences) == 3 and len(twenty.audiences) == 20
     assert len(three_sql) == len(twenty_sql), (len(three_sql), len(twenty_sql))
     assert [item for item in planned if item["large_scans"]] == []
 

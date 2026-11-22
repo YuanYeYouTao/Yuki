@@ -30,7 +30,7 @@ from __future__ import annotations
 import json
 import logging
 from collections import Counter
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -381,17 +381,6 @@ async def prepare_episodes(session: AsyncSession, timezone: str) -> EpisodePrepa
         for owner in sorted(owners, key=lambda item: item.label)
     )
     return EpisodePreparation(audiences, visible, through, lower)
-
-
-async def recount_months(
-    session: AsyncSession,
-    owners: Collection[IndexOwner],
-    listed: Mapping[IndexOwner, Collection[int]],
-    timezone: str,
-) -> dict[IndexOwner, dict[str, int]]:
-    """§6.3 month counts for any number of audiences: the same two statements."""
-    visible = await visible_episodes(session, timezone)
-    return {owner: month_counts(visible, owner, listed.get(owner, ())) for owner in owners}
 
 
 def _content(
