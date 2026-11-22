@@ -41,18 +41,20 @@ from yuki.memory.episode_index import FINISHED_RUN_STATUSES
 from yuki.memory.profiles import (
     MAX_PROFILE_ENTRIES,
     MAX_PROFILE_ENTRY_CHARS,
+    MAX_PROFILE_TOPIC_CHARS,
+    MAX_PROFILE_TOPICS,
     MAX_SPACE_MEMBERS,
     ProfileAudience,
     ProfileConflict,
     ProfileEntry,
     ProfileStore,
     ProfileValidationError,
-    check_entries,
     check_many,
     person_root,
     profile_fact_sets,
     profile_signature,
     validate_entries,
+    validate_topics,
 )
 from yuki.memory.resident import evidence_origins, load_facts, private_evidence_visible
 from yuki.model_runtime.models import ModelTask
@@ -62,6 +64,7 @@ from yuki.persistence.models import (
     ChatEventModel,
     MemoryFactModel,
     MemoryProfileModel,
+    MemoryProfileVersionModel,
     MemorySpaceMemberModel,
 )
 from yuki.services.concurrency import ConcurrencyManager
@@ -82,6 +85,9 @@ _INSTRUCTION = """\
 - 每条的 facts 列出依据的 f_N，至少一个；只写这些事实明确支持的内容。
 - 正文不写出处、日期、群名、"据说"之类，出处由 facts 承担。
 - 不写某次具体事件、一次性任务指令、时效性状态、玩笑；不写健康、性、财务类内容。
+topics 是“可查话题”：最多 4 个短词（每个不超过 8 字），写 entries 没概括到、但这些事实里还记着的
+具体话题（作品、爱好、计划、经历的主题词），供以后聊到相关话题时去查记忆；每个列出依据的 f_N。
+current_topics 是现有话题，没有明确理由就保持；同样不写健康、性、财务类。
 """
 _PRIVATE_NOTE = (
     "私人画像：只写私聊才有的内容，不重复 reference 里 ref_N（公共画像与对方明确要求记住的）"
@@ -98,10 +104,18 @@ class ProfileEntryOutput(BaseModel):
     facts: tuple[str, ...] = Field(min_length=1, description="f_N aliases supporting the entry.")
 
 
+class ProfileTopicOutput(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    text: str = Field(max_length=MAX_PROFILE_TOPIC_CHARS)
+    facts: tuple[str, ...] = Field(min_length=1, description="f_N aliases supporting the topic.")
+
+
 class ProfileOutput(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     entries: tuple[ProfileEntryOutput, ...] = Field(max_length=MAX_PROFILE_ENTRIES)
+    topics: tuple[ProfileTopicOutput, ...] = Field(default=(), max_length=MAX_PROFILE_TOPICS)
     reason: str = Field(description="One sentence: why the profile changed, or 不变.")
 
 
@@ -121,6 +135,7 @@ class ProfileProposal:
     person_id: str  # root
     audience: ProfileAudience
     entries: tuple[ProfileEntry, ...]
+    topics: tuple[ProfileEntry, ...]
     reason: str
     signature: str  # the available set the call saw
     base_version: int  # current_version when the call started
@@ -256,14 +271,15 @@ async def maintained_profiles(
 async def due_profiles(
     database: Database, maintained: dict[ProfileAudience, frozenset[str]]
 ) -> tuple[DueProfile, ...]:
-    """Unlocked maintained profiles whose non-empty available set changed, in queue
-    order: attempt time ascending (never attempted first), then root ID; a person's
-    private profile always right after its due public profile.
+    """Unlocked maintained profiles whose non-empty available set changed (or whose
+    current version predates topics, ``topics_json`` NULL), in queue order: attempt time
+    ascending (never attempted first), then root ID; a person's private profile always
+    right after its due public profile.
 
     A constant number of queries for any number of people: stored profiles, every
     maintained root's facts and evidence, and the creation times of available facts.
     """
-    profile = MemoryProfileModel
+    profile, version = MemoryProfileModel, MemoryProfileVersionModel
     roots = maintained["public"] | maintained["private"]
     async with database.read_session() as session:
         stored = {
@@ -276,7 +292,15 @@ async def due_profiles(
                         profile.considered_signature,
                         profile.attempted_at,
                         profile.locked,
-                    ).where(profile.person_id.in_(roots))
+                        profile.current_version,
+                        version.topics_json,
+                    )
+                    .outerjoin(
+                        version,
+                        (version.profile_id == profile.id)
+                        & (version.version == profile.current_version),
+                    )
+                    .where(profile.person_id.in_(roots))
                 )
             ).all()
         }
@@ -298,7 +322,11 @@ async def due_profiles(
             if (row is not None and row.locked) or not fact_ids:
                 continue
             signature = profile_signature(fact_ids)
-            if row is not None and row.considered_signature == signature:
+            if (
+                row is not None
+                and row.considered_signature == signature
+                and not (row.current_version and row.topics_json is None)
+            ):
                 continue
             attempted = (
                 stored_utc(row.attempted_at) if row is not None and row.attempted_at else None
@@ -382,28 +410,35 @@ class ProfileMaintenance:
 
         One batched check over every stored profile, then one short write per
         changed profile."""
-        profiles = [item for item in await self.store.profiles() if item.entries]
+        profiles = [item for item in await self.store.profiles() if item.entries or item.topics]
         async with self._database.read_session() as session:
             checks = await check_many(
-                session, [(item.person_id, item.audience, item.entries) for item in profiles]
+                session,
+                [
+                    (item.person_id, item.audience, items)
+                    for item in profiles
+                    for items in (item.entries, item.topics or ())
+                ],
             )
         written = 0
-        for profile, checked in zip(profiles, checks, strict=True):
-            if not checked.changed:
+        for index, profile in enumerate(profiles):
+            checked, topics = checks[2 * index], checks[2 * index + 1]
+            if not (checked.changed or topics.changed):
                 continue
+            dropped = (*checked.dropped, *topics.dropped)
+            replaced = sorted({*checked.replaced, *topics.replaced})
             parts = []
-            if checked.dropped:
-                failed = sorted({item for drop in checked.dropped for item in drop.fact_ids})
+            if dropped:
+                failed = sorted({item for drop in dropped for item in drop.fact_ids})
                 parts.append("程序删除：依据失效 fact " + ",".join(map(str, failed)))
-            if checked.replaced:
-                parts.append(
-                    "编号换成后继 " + ",".join(f"{old}->{new}" for old, new in checked.replaced)
-                )
+            if replaced:
+                parts.append("编号换成后继 " + ",".join(f"{old}->{new}" for old, new in replaced))
             try:
                 result = await self.store.commit(
                     profile.person_id,
                     profile.audience,
                     checked.entries,
+                    topics=topics.entries if profile.topics is not None else None,
                     source="program",
                     reason="；".join(parts),
                     expected_version=profile.current_version,
@@ -416,8 +451,8 @@ class ProfileMaintenance:
                 "memory_profile_cleaned owner=%s version=%d dropped=%d replaced=%d",
                 profile_label(profile.person_id, profile.audience),
                 result.profile.current_version,
-                len(checked.dropped),
-                len(checked.replaced),
+                len(dropped),
+                len(replaced),
             )
         return written
 
@@ -446,6 +481,11 @@ class ProfileMaintenance:
             if profile is not None and profile.entries
             else ()
         )
+        current_topics = (
+            (await self.store.check(root, audience, profile.topics)).entries
+            if profile is not None and profile.topics
+            else ()
+        )
         available = await self.store.available(root, audience)
         if not available.fact_ids:
             return None
@@ -461,6 +501,13 @@ class ProfileMaintenance:
                     "facts": [aliases[item] for item in entry.fact_ids if item in aliases],
                 }
                 for index, entry in enumerate(current, 1)
+            ],
+            "current_topics": [
+                {
+                    "text": topic.text,
+                    "facts": [aliases[item] for item in topic.fact_ids if item in aliases],
+                }
+                for topic in current_topics
             ],
             "facts": [
                 {"ref": aliases[fact_id], **facts[fact_id]} for fact_id in available.fact_ids
@@ -480,21 +527,26 @@ class ProfileMaintenance:
         except StructuredTaskError as exc:
             raise ProfileRejected(exc.reason_code, model_calls=1) from exc
         try:
-            entries = validate_entries(
-                _resolve(output, {alias: fact_id for fact_id, alias in aliases.items()})
+            resolved, resolved_topics = _resolve(
+                output, {alias: fact_id for fact_id, alias in aliases.items()}
             )
+            entries = validate_entries(resolved)
+            topics = validate_topics(resolved_topics)
         except ProfileValidationError as exc:
             raise ProfileRejected(exc.code, model_calls=calls) from exc
         except ProfileRejected as exc:
             raise ProfileRejected(exc.code, model_calls=calls) from exc
         async with self._database.read_session() as session:
-            checked = await check_entries(session, root, audience, entries)
-        if checked.dropped or checked.replaced:
+            checked, checked_topics = await check_many(
+                session, [(root, audience, entries), (root, audience, topics)]
+            )
+        if any(item.dropped or item.replaced for item in (checked, checked_topics)):
             raise ProfileRejected("unavailable_fact", model_calls=calls)
         return ProfileProposal(
             person_id=root,
             audience=audience,
             entries=entries,
+            topics=topics,
             reason=output.reason.strip(),
             signature=available.signature,
             base_version=version,
@@ -516,6 +568,7 @@ class ProfileMaintenance:
                 root,
                 audience,
                 proposal.entries,
+                topics=proposal.topics,
                 source="dream",
                 reason=proposal.reason,
                 expected_version=proposal.base_version,
@@ -623,18 +676,22 @@ class ProfileMaintenance:
         ] + [entry.text for entry in public_entries]
 
 
-def _resolve(output: ProfileOutput, aliases: dict[str, int]) -> tuple[ProfileEntry, ...]:
+def _resolve(
+    output: ProfileOutput, aliases: dict[str, int]
+) -> tuple[tuple[ProfileEntry, ...], tuple[ProfileEntry, ...]]:
+    """Entries and topics with ``f_N`` aliases replaced by fact IDs."""
     if not output.reason.strip():
         raise ProfileRejected("empty_reason")
-    entries: list[ProfileEntry] = []
-    for item in output.entries:
-        if any(ref.startswith("ref_") for ref in item.facts):
+    items: list[ProfileEntry] = []
+    for section, text, facts in (
+        *((item.section, item.text, item.facts) for item in output.entries),
+        *((None, item.text, item.facts) for item in output.topics),
+    ):
+        if any(ref.startswith("ref_") for ref in facts):
             raise ProfileRejected("reference_alias")
-        if any(ref not in aliases for ref in item.facts):
+        if any(ref not in aliases for ref in facts):
             raise ProfileRejected("unknown_alias")
-        if len(set(item.facts)) != len(item.facts):
+        if len(set(facts)) != len(facts):
             raise ProfileRejected("duplicate_alias")
-        entries.append(
-            ProfileEntry(item.section, item.text, tuple(aliases[ref] for ref in item.facts))
-        )
-    return tuple(entries)
+        items.append(ProfileEntry(section, text, tuple(aliases[ref] for ref in facts)))
+    return tuple(items[: len(output.entries)]), tuple(items[len(output.entries) :])

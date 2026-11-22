@@ -1,108 +1,57 @@
-"""SQLite FTS5 derived index with subject-first SQL boundaries."""
+"""SQLite lexical candidates for ``search_memory``: FTS5 trigrams plus one weighted scan.
+
+Contract: docs/architecture/memory-v2-retrieval.md "词法打分". Terms of three or more
+characters go through the trigram index (ordered by bm25); shorter terms through one
+scan over the authorized active facts, ordered by the summed length of the terms each
+fact holds. A term found in a person's display name or alias (the whole merged family)
+or in a space name adds that subject's facts to the scan window. Both statements keep
+``memory_facts`` as the truth source and take at most ``candidate_limit`` IDs each.
+"""
 
 from __future__ import annotations
 
-import re
-import unicodedata
-from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Protocol
 
-from sqlalchemy import column, func, literal, literal_column, or_, select, table, text
+from sqlalchemy import case, column, func, literal, or_, select, table, text, union
 from sqlalchemy.exc import DatabaseError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
+from yuki.identity.db_models import CanonicalPersonModel, CanonicalSpaceModel
 from yuki.memory.authorized_scope import AuthorizedMemoryScope, authorized_fact_condition
 from yuki.memory.enums import MemoryKind
 from yuki.memory.errors import MemoryRetrievalError
+from yuki.memory.lexical import LexicalTerms, entity_terms, normalized_names
 from yuki.memory.models import (
     MemoryEntityTarget,
+    MemoryFact,
     MemoryIndexHealth,
-    MemoryLexicalCandidate,
     MemoryTemporalIntent,
 )
 from yuki.memory.partition import (
     MemoryPartitionResolutionError,
     resolve_fact_canonical_owners,
 )
-from yuki.memory.query import normalize_query_text
-from yuki.memory.temporal_filter import strict_time_conditions, strict_time_sql
+from yuki.memory.temporal_filter import strict_time_conditions
 from yuki.persistence.database import Database
-from yuki.persistence.models import MemoryFactModel
+from yuki.persistence.models import MemoryFactModel, PersonAliasModel
 
-_WORD = re.compile(r"[^\W_]+", re.UNICODE)
-
-
-@dataclass(frozen=True, slots=True)
-class SafeLexicalQuery:
-    normalized_text: str
-    terms: tuple[str, ...]
-    fts_expression: str
-    short_term: str | None
-    short_terms: tuple[str, ...] = ()
-
-    @property
-    def like_terms(self) -> tuple[str, ...]:
-        return self.short_terms or ((self.short_term,) if self.short_term else ())
-
-
-@dataclass(frozen=True, slots=True)
-class AuthorizedLexicalCandidate:
-    fact_id: int
-    fts_rank: float
-    exact_match: bool
-    matched_terms: tuple[str, ...]
-
-
-def build_safe_lexical_query(value: str, *, term_limit: int) -> SafeLexicalQuery:
-    """Generate quoted FTS terms without accepting user-provided FTS syntax."""
-
-    normalized = normalize_query_text(value)
-    terms: list[str] = []
-    short_terms: list[str] = []
-    for raw in _WORD.findall(unicodedata.normalize("NFKC", normalized)):
-        token = raw.casefold()
-        if len(token) < 3:
-            if token not in short_terms:
-                short_terms.append(token)
-            if len(terms) + len(short_terms) >= term_limit:
-                break
-            continue
-        has_cjk = any("\u3400" <= character <= "\u9fff" for character in token)
-        generated = (
-            tuple(token[index : index + 3] for index in range(len(token) - 2))
-            if has_cjk and len(token) > 3
-            else (token,)
-        )
-        for term in generated:
-            if term not in terms:
-                terms.append(term)
-            if len(terms) + len(short_terms) >= term_limit:
-                break
-        if len(terms) + len(short_terms) >= term_limit:
-            break
-    expression = " OR ".join(f'"{term}"' for term in terms)
-    short = normalized if 0 < len(normalized) < 3 else None
-    return SafeLexicalQuery(
-        normalized_text=normalized,
-        terms=tuple((*terms, *short_terms)),
-        fts_expression=expression,
-        short_term=short,
-        short_terms=tuple(short_terms),
-    )
+_FTS = table("memory_facts_fts", column("rowid"))
+_ENTITY_WEIGHT = 2  # a name hit weighs like one two-character term in the scan order
 
 
 class MemoryLexicalIndex(Protocol):
     async def search(
         self,
         target: MemoryEntityTarget,
-        query: SafeLexicalQuery,
+        terms: LexicalTerms,
         *,
         candidate_limit: int,
         kinds: tuple[MemoryKind, ...] = (),
         short_query_fallback_enabled: bool = True,
         temporal: MemoryTemporalIntent | None = None,
-    ) -> tuple[MemoryLexicalCandidate, ...]: ...
+    ) -> tuple[tuple[int, ...], bool]: ...
 
     async def rebuild(self) -> MemoryIndexHealth: ...
 
@@ -118,207 +67,51 @@ class SQLiteMemoryFTSIndex:
     async def search_authorized(
         self,
         scope: AuthorizedMemoryScope,
-        query: SafeLexicalQuery,
+        terms: LexicalTerms,
         *,
         candidate_limit: int,
         kinds: tuple[MemoryKind, ...] = (),
         temporal: MemoryTemporalIntent | None = None,
-    ) -> tuple[tuple[AuthorizedLexicalCandidate, ...], bool]:
-        """One global FTS order over all SQL-authorized canonical owners."""
-        if not query.fts_expression and not query.like_terms:
-            return (), False
-        mf = MemoryFactModel
-        conditions = [
-            authorized_fact_condition(scope),
-            mf.status == "active",
-            mf.review_state != "quarantined",
-            (mf.valid_until.is_(None) | (mf.valid_until > datetime.now(UTC))),
-        ]
-        if kinds:
-            conditions.append(mf.kind.in_(kind.value for kind in kinds))
-
-        conditions.extend(strict_time_conditions(temporal))
-        fields = (mf.id, mf.memory_key, mf.category, mf.normalized_content)
-        fts = table("memory_facts_fts", column("rowid"))
+    ) -> tuple[tuple[int, ...], bool]:
+        """Candidate IDs over all SQL-authorized canonical owners, and whether either
+        statement reached ``candidate_limit``."""
         try:
             async with self._database.read_session() as session:
-                rows: list[Any] = []
-                if query.fts_expression:
-                    statement = (
-                        select(
-                            *fields,
-                            func.bm25(literal_column("memory_facts_fts"), 1.0, 4.0, 2.0).label(
-                                "fts_rank"
-                            ),
-                        )
-                        .select_from(fts.join(mf, mf.id == fts.c.rowid))
-                        .where(*conditions, text("memory_facts_fts MATCH :fts_query"))
-                        .order_by(text("fts_rank ASC"), mf.id.asc())
-                        .limit(candidate_limit + 1)
-                    )
-                    rows.extend(
-                        (await session.execute(statement, {"fts_query": query.fts_expression}))
-                        .mappings()
-                        .all()
-                    )
-                if query.like_terms:
-                    patterns = tuple(f"%{self._escape_like(term)}%" for term in query.like_terms)
-                    statement = (
-                        select(*fields, literal(1000.0).label("fts_rank"))
-                        .where(
-                            *conditions,
-                            or_(
-                                *(
-                                    mf.normalized_content.like(pattern, escape="\\")
-                                    | mf.memory_key.like(pattern, escape="\\")
-                                    | mf.category.like(pattern, escape="\\")
-                                    for pattern in patterns
-                                )
-                            ),
-                        )
-                        .order_by(mf.id.asc())
-                        .limit(candidate_limit + 1)
-                    )
-                    rows.extend((await session.execute(statement)).mappings().all())
+                return await _candidates(
+                    session,
+                    terms,
+                    [authorized_fact_condition(scope), *_live(kinds, temporal)],
+                    candidate_limit,
+                )
         except DatabaseError as exc:
             raise MemoryRetrievalError("memory_index_unavailable") from exc
-        rows_by_id: dict[int, Any] = {}
-        for row in rows:
-            rows_by_id.setdefault(int(row["id"]), row)
-        rows = list(rows_by_id.values())
-        truncated = len(rows) > candidate_limit
-        candidates = []
-        for row in rows[:candidate_limit]:
-            key = normalize_query_text(str(row["memory_key"]))
-            category = normalize_query_text(str(row["category"]))
-            content = normalize_query_text(str(row["normalized_content"]))
-            haystack = " ".join((key, category, content))
-            candidates.append(
-                AuthorizedLexicalCandidate(
-                    fact_id=int(row["id"]),
-                    fts_rank=float(row["fts_rank"]),
-                    exact_match=query.normalized_text in {key, category, content},
-                    matched_terms=tuple(term for term in query.terms if term in haystack),
-                )
-            )
-        return tuple(candidates), truncated
 
     async def search(
         self,
         target: MemoryEntityTarget,
-        query: SafeLexicalQuery,
+        terms: LexicalTerms,
         *,
         candidate_limit: int,
         kinds: tuple[MemoryKind, ...] = (),
         short_query_fallback_enabled: bool = True,
         temporal: MemoryTemporalIntent | None = None,
-    ) -> tuple[MemoryLexicalCandidate, ...]:
-        if not query.fts_expression and not (query.like_terms and short_query_fallback_enabled):
-            return ()
+    ) -> tuple[tuple[int, ...], bool]:
+        """The same candidates inside one resolved target."""
         try:
             async with self._database.read_session() as session:
                 try:
-                    scope_sql, params = await self._scope_filter(session, target)
+                    scope = await _target_conditions(session, target)
                 except MemoryPartitionResolutionError:
-                    return ()
-                params.update(
-                    {
-                        "now": datetime.now(UTC),
-                        "limit": max(1, candidate_limit),
-                    }
+                    return (), False
+                return await _candidates(
+                    session,
+                    terms,
+                    [*scope, *_live(kinds, temporal)],
+                    candidate_limit,
+                    scan=short_query_fallback_enabled,
                 )
-                time_sql, time_params = strict_time_sql(temporal)
-                params.update(time_params)
-                kind_sql = ""
-                if kinds:
-                    placeholders = []
-                    for index, kind in enumerate(kinds):
-                        name = f"kind_{index}"
-                        placeholders.append(f":{name}")
-                        params[name] = kind.value
-                    kind_sql = f" AND mf.kind IN ({', '.join(placeholders)})"
-                rows: list[Any] = []
-                if query.fts_expression:
-                    fts_params = {**params, "fts_query": query.fts_expression}
-                    rows.extend(
-                        (
-                            await session.execute(
-                                text(
-                                    """
-                                    SELECT mf.id, mf.memory_key, mf.category,
-                                           mf.normalized_content,
-                                           bm25(memory_facts_fts, 1.0, 4.0, 2.0) AS fts_rank
-                                    FROM memory_facts_fts
-                                    JOIN memory_facts AS mf
-                                      ON mf.id = memory_facts_fts.rowid
-                                    WHERE memory_facts_fts MATCH :fts_query
-                                      AND mf.status = 'active'
-                                      AND (mf.valid_until IS NULL OR mf.valid_until > :now)
-                                    """
-                                    + scope_sql
-                                    + time_sql
-                                    + kind_sql
-                                    + " ORDER BY fts_rank ASC, mf.id ASC LIMIT :limit"
-                                ),
-                                fts_params,
-                            )
-                        ).mappings()
-                    )
-                if query.like_terms and short_query_fallback_enabled:
-                    like_params = dict(params)
-                    short_clauses: list[str] = []
-                    for index, term in enumerate(query.like_terms):
-                        parameter = f"short_term_{index}"
-                        like_params[parameter] = f"%{self._escape_like(term)}%"
-                        short_clauses.extend(
-                            f"mf.{field} LIKE :{parameter} ESCAPE '\\'"
-                            for field in ("normalized_content", "memory_key", "category")
-                        )
-                    rows.extend(
-                        (
-                            await session.execute(
-                                text(
-                                    """
-                                    SELECT mf.id, mf.memory_key, mf.category,
-                                           mf.normalized_content, 1000.0 AS fts_rank
-                                    FROM memory_facts AS mf
-                                    WHERE mf.status = 'active'
-                                      AND (mf.valid_until IS NULL OR mf.valid_until > :now)
-                                    """
-                                    + " AND ("
-                                    + " OR ".join(short_clauses)
-                                    + ")"
-                                    + scope_sql
-                                    + time_sql
-                                    + kind_sql
-                                    + " ORDER BY mf.id ASC LIMIT :limit"
-                                ),
-                                like_params,
-                            )
-                        ).mappings()
-                    )
         except DatabaseError as exc:
             raise MemoryRetrievalError("memory_index_unavailable") from exc
-
-        candidates: dict[int, MemoryLexicalCandidate] = {}
-        for row in rows:
-            fact_id = int(row["id"])
-            if fact_id in candidates:
-                continue
-            key = normalize_query_text(str(row["memory_key"]))
-            category = normalize_query_text(str(row["category"]))
-            content = normalize_query_text(str(row["normalized_content"]))
-            haystack = " ".join((key, category, content))
-            matched = tuple(term for term in query.terms if term in haystack)
-            exact = query.normalized_text in {key, category, content}
-            candidates[fact_id] = MemoryLexicalCandidate(
-                fact_id=fact_id,
-                target=target,
-                fts_rank=float(row["fts_rank"]),
-                exact_match=exact,
-                matched_terms=matched,
-            )
-        return tuple(candidates.values())[:candidate_limit]
 
     async def health(self) -> MemoryIndexHealth:
         try:
@@ -364,54 +157,188 @@ class SQLiteMemoryFTSIndex:
             raise MemoryRetrievalError("memory_index_inconsistent")
         return health
 
-    @staticmethod
-    async def _scope_filter(
-        session: AsyncSession,
-        target: MemoryEntityTarget,
-    ) -> tuple[str, dict[str, Any]]:
-        owners = await resolve_fact_canonical_owners(session, target)
-        params: dict[str, Any] = {"scope_type": target.scope_type.value}
-        clauses = [" AND mf.scope_type = :scope_type"]
-        if owners.subject_person_id is None:
-            clauses.append(" AND mf.canonical_subject_person_id IS NULL")
-        else:
-            clauses.append(" AND mf.canonical_subject_person_id = :subject_person_id")
-            params["subject_person_id"] = owners.subject_person_id
-        if owners.subject_space_id is None:
-            clauses.append(" AND mf.canonical_subject_space_id IS NULL")
-        else:
-            clauses.append(" AND mf.canonical_subject_space_id = :subject_space_id")
-            params["subject_space_id"] = owners.subject_space_id
-        if target.scope_type.value == "self":
-            clauses.append(
-                " AND ((mf.visibility_type = 'global' "
-                "AND mf.canonical_visibility_person_id IS NULL "
-                "AND mf.canonical_visibility_space_id IS NULL) "
-                "OR (mf.visibility_type = :visibility_type"
-            )
-            params["visibility_type"] = (
-                target.visibility_type.value if target.visibility_type else ""
-            )
-            if owners.visibility_person_id is None:
-                clauses.append(" AND mf.canonical_visibility_person_id IS NULL")
-            else:
-                clauses.append(" AND mf.canonical_visibility_person_id = :visibility_person_id")
-                params["visibility_person_id"] = owners.visibility_person_id
-            if owners.visibility_space_id is None:
-                clauses.append(" AND mf.canonical_visibility_space_id IS NULL))")
-            else:
-                clauses.append(" AND mf.canonical_visibility_space_id = :visibility_space_id))")
-                params["visibility_space_id"] = owners.visibility_space_id
-        else:
-            clauses.extend(
-                (
-                    " AND mf.visibility_type IS NULL",
-                    " AND mf.canonical_visibility_person_id IS NULL",
-                    " AND mf.canonical_visibility_space_id IS NULL",
+
+async def subject_names(session: AsyncSession, facts: tuple[MemoryFact, ...]) -> dict[int, str]:
+    """Each fact's entity field: its subject person's family names and aliases, and the
+    subject space's name. At most two statements whatever the number of facts."""
+    persons = {fact.canonical_subject_person_id for fact in facts} - {None}
+    spaces = {fact.canonical_subject_space_id for fact in facts} - {None}
+    person_names: dict[str, list[str]] = {}
+    if persons:
+        subject, member = aliased(CanonicalPersonModel), aliased(CanonicalPersonModel)
+        root = func.coalesce(subject.merged_into_person_id, subject.id)
+        rows = await session.execute(
+            select(subject.id, member.display_name, PersonAliasModel.alias)
+            .join(member, or_(member.id == root, member.merged_into_person_id == root))
+            .outerjoin(PersonAliasModel, PersonAliasModel.canonical_person_id == member.id)
+            .where(subject.id.in_(persons))
+        )
+        for subject_id, name, alias in rows:
+            person_names.setdefault(str(subject_id), []).extend((str(name or ""), alias or ""))
+    space_names: dict[str, str] = {}
+    if spaces:
+        space_names = {
+            str(space_id): str(name or "")
+            for space_id, name in await session.execute(
+                select(CanonicalSpaceModel.id, CanonicalSpaceModel.name).where(
+                    CanonicalSpaceModel.id.in_(spaces)
                 )
             )
-        return "".join(clauses), params
+        }
+    return {
+        fact.id: normalized_names(
+            [
+                *person_names.get(fact.canonical_subject_person_id or "", ()),
+                space_names.get(fact.canonical_subject_space_id or "", ""),
+            ]
+        )
+        for fact in facts
+    }
 
-    @staticmethod
-    def _escape_like(value: str) -> str:
-        return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+def _live(kinds: tuple[MemoryKind, ...], temporal: MemoryTemporalIntent | None) -> list[Any]:
+    fact = MemoryFactModel
+    conditions: list[Any] = [
+        fact.status == "active",
+        fact.review_state != "quarantined",
+        or_(fact.valid_until.is_(None), fact.valid_until > datetime.now(UTC)),
+        *strict_time_conditions(temporal),
+    ]
+    if kinds:
+        conditions.append(fact.kind.in_(kind.value for kind in kinds))
+    return conditions
+
+
+async def _candidates(
+    session: AsyncSession,
+    terms: LexicalTerms,
+    conditions: list[Any],
+    limit: int,
+    *,
+    scan: bool = True,
+) -> tuple[tuple[int, ...], bool]:
+    fact = MemoryFactModel
+    found: list[int] = []
+    truncated = False
+    if terms.index_terms:
+        rows = list(
+            await session.scalars(
+                select(fact.id)
+                .select_from(_FTS.join(fact, fact.id == _FTS.c.rowid))
+                .where(*conditions, text("memory_facts_fts MATCH :fts_query"))
+                .order_by(text("bm25(memory_facts_fts, 1.0, 4.0, 2.0)"), fact.id)
+                .limit(limit + 1),
+                {"fts_query": terms.fts_expression},
+            )
+        )
+        truncated = len(rows) > limit
+        found.extend(rows[:limit])
+    names = entity_terms(terms)
+    if scan and (terms.scan_terms or names):
+        fields = (fact.normalized_content, fact.memory_key, fact.category, fact.title)
+        score: Any = literal(0)
+        for term in terms.scan_terms:
+            pattern = _pattern(term)
+            score = score + case(
+                (or_(*(field.like(pattern, escape="\\") for field in fields)), len(term)),
+                else_=0,
+            )
+        if names:
+            score = (
+                score
+                + case(
+                    (fact.canonical_subject_person_id.in_(_named_people(names)), _ENTITY_WEIGHT),
+                    else_=0,
+                )
+                + case(
+                    (fact.canonical_subject_space_id.in_(_named_spaces(names)), _ENTITY_WEIGHT),
+                    else_=0,
+                )
+            )
+        window = (
+            select(fact.id.label("id"), fact.importance.label("importance"), score.label("score"))
+            .where(*conditions)
+            .subquery()
+        )
+        rows = list(
+            await session.scalars(
+                select(window.c.id)
+                .where(window.c.score > 0)
+                .order_by(window.c.score.desc(), window.c.importance.desc(), window.c.id.desc())
+                .limit(limit + 1)
+            )
+        )
+        truncated = truncated or len(rows) > limit
+        found.extend(rows[:limit])
+    return tuple(dict.fromkeys(found)), truncated
+
+
+def _named_people(names: tuple[str, ...]) -> Any:
+    """Every person whose family has a display name or alias containing one of ``names``."""
+    person, member = aliased(CanonicalPersonModel), aliased(CanonicalPersonModel)
+    root = func.coalesce(member.merged_into_person_id, member.id)
+    roots = union(
+        select(root).where(_contains(member.display_name, names)),
+        select(root)
+        .join(PersonAliasModel, PersonAliasModel.canonical_person_id == member.id)
+        .where(_contains(PersonAliasModel.alias, names)),
+    )
+    return select(person.id).where(
+        func.coalesce(person.merged_into_person_id, person.id).in_(roots)
+    )
+
+
+def _named_spaces(names: tuple[str, ...]) -> Any:
+    return select(CanonicalSpaceModel.id).where(_contains(CanonicalSpaceModel.name, names))
+
+
+def _contains(field: Any, names: tuple[str, ...]) -> Any:
+    return or_(*(field.like(_pattern(name), escape="\\") for name in names))
+
+
+def _pattern(term: str) -> str:
+    escaped = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
+
+
+async def _target_conditions(session: AsyncSession, target: MemoryEntityTarget) -> list[Any]:
+    fact = MemoryFactModel
+    owners = await resolve_fact_canonical_owners(session, target)
+    conditions: list[Any] = [
+        fact.scope_type == target.scope_type.value,
+        fact.canonical_subject_person_id.is_(None)
+        if owners.subject_person_id is None
+        else fact.canonical_subject_person_id == owners.subject_person_id,
+        fact.canonical_subject_space_id.is_(None)
+        if owners.subject_space_id is None
+        else fact.canonical_subject_space_id == owners.subject_space_id,
+    ]
+    if target.scope_type.value != "self":
+        conditions.extend(
+            (
+                fact.visibility_type.is_(None),
+                fact.canonical_visibility_person_id.is_(None),
+                fact.canonical_visibility_space_id.is_(None),
+            )
+        )
+        return conditions
+    visibility_type = target.visibility_type.value if target.visibility_type else ""
+    conditions.append(
+        or_(
+            (fact.visibility_type == "global")
+            & fact.canonical_visibility_person_id.is_(None)
+            & fact.canonical_visibility_space_id.is_(None),
+            (fact.visibility_type == visibility_type)
+            & (
+                fact.canonical_visibility_person_id.is_(None)
+                if owners.visibility_person_id is None
+                else fact.canonical_visibility_person_id == owners.visibility_person_id
+            )
+            & (
+                fact.canonical_visibility_space_id.is_(None)
+                if owners.visibility_space_id is None
+                else fact.canonical_visibility_space_id == owners.visibility_space_id
+            ),
+        )
+    )
+    return conditions

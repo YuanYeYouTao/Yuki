@@ -1225,6 +1225,10 @@ async def _profile_show(
             _entry_payload(entry, content=content)
             for entry in (profile.entries if profile is not None else ())
         ],
+        "topics": [
+            {"text": topic.text, "fact_ids": list(topic.fact_ids)}
+            for topic in (profile.topics or () if profile is not None else ())
+        ],
     }
 
 

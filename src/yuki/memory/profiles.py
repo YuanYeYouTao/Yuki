@@ -49,7 +49,10 @@ MAX_PROFILE_ENTRY_CHARS = 40  # characters per entry after folding whitespace
 MAX_PROFILE_RENDERED_IDS = 2  # fact IDs shown per rendered entry; every ID is checked
 MAX_SPACE_MEMBERS = 5  # displayed members per group
 MAX_GROUP_MEMBER_ENTRIES = 5  # entries per member in a group (P4-Q1); private chats show all
+MAX_PROFILE_TOPICS = 4  # topics per profile (记忆意图召回评估 §2)
+MAX_PROFILE_TOPIC_CHARS = 8  # characters per topic after folding whitespace
 PROFILE_SECTIONS = ("身份", "关系", "兴趣", "做事方式", "相处")
+TOPICS_LINE = "- 可查话题："
 
 ProfileAudience = Literal["public", "private"]
 ProfileSource = Literal["dream", "owner", "program"]
@@ -98,6 +101,7 @@ class ProfileEntry:
 class ProfileVersion:
     version: int
     entries: tuple[ProfileEntry, ...]
+    topics: tuple[ProfileEntry, ...] | None  # section None; None: written before topics
     source: ProfileSource
     reason: str
     dream_run_public_id: str | None
@@ -110,6 +114,7 @@ class Profile:
     audience: ProfileAudience
     current_version: int  # 0: no version yet
     entries: tuple[ProfileEntry, ...]  # the current version's entries
+    topics: tuple[ProfileEntry, ...] | None  # the current version's topics (None: none yet)
     considered_signature: str | None
     attempted_at: datetime | None
     locked: bool
@@ -165,6 +170,7 @@ class RenderedProfile:
     person_id: str
     audience: ProfileAudience
     entries: tuple[ProfileEntry, ...]
+    topics: tuple[ProfileEntry, ...] = ()
 
 
 PROFILE_TITLES: dict[ProfileAudience, str] = {
@@ -200,6 +206,34 @@ def validate_entries(entries: Sequence[ProfileEntry]) -> tuple[ProfileEntry, ...
             raise ProfileValidationError("duplicate_facts", text)
         checked.append(ProfileEntry(entry.section, text, tuple(entry.fact_ids)))
     return tuple(checked)
+
+
+def validate_topics(topics: Sequence[ProfileEntry]) -> tuple[ProfileEntry, ...]:
+    """Topic rules; returns the topics with whitespace folded and no section."""
+    if len(topics) > MAX_PROFILE_TOPICS:
+        raise ProfileValidationError("too_many_topics", str(len(topics)))
+    checked: list[ProfileEntry] = []
+    for topic in topics:
+        if "\n" in topic.text or "\r" in topic.text:
+            raise ProfileValidationError("multiline_topic")
+        text = " ".join(topic.text.split())
+        if not text:
+            raise ProfileValidationError("empty_topic")
+        if len(text) > MAX_PROFILE_TOPIC_CHARS:
+            raise ProfileValidationError("topic_too_long", text)
+        if text in {item.text for item in checked}:
+            raise ProfileValidationError("duplicate_topic", text)
+        if not topic.fact_ids:
+            raise ProfileValidationError("empty_facts", text)
+        if len(set(topic.fact_ids)) != len(topic.fact_ids):
+            raise ProfileValidationError("duplicate_facts", text)
+        checked.append(ProfileEntry(None, text, tuple(topic.fact_ids)))
+    return tuple(checked)
+
+
+def topics_line(topics: Sequence[ProfileEntry]) -> str:
+    """``- 可查话题：A、B`` without fact IDs; every ID was checked."""
+    return TOPICS_LINE + "、".join(topic.text for topic in topics)
 
 
 async def person_root(session: AsyncSession, person_id: str) -> str:
@@ -326,13 +360,13 @@ def entry_line(entry: ProfileEntry) -> str:
 
 async def current_entries(
     session: AsyncSession, keys: Collection[tuple[str, ProfileAudience]]
-) -> dict[tuple[str, ProfileAudience], tuple[ProfileEntry, ...]]:
-    """The current entries of the given (root, audience) profiles in one query."""
+) -> dict[tuple[str, ProfileAudience], tuple[tuple[ProfileEntry, ...], tuple[ProfileEntry, ...]]]:
+    """The current entries and topics of the given (root, audience) profiles in one query."""
     if not keys:
         return {}
     profile, version = MemoryProfileModel, MemoryProfileVersionModel
     rows = await session.execute(
-        select(profile.person_id, profile.audience, version.entries_json)
+        select(profile.person_id, profile.audience, version.entries_json, version.topics_json)
         .join(
             version,
             (version.profile_id == profile.id) & (version.version == profile.current_version),
@@ -343,31 +377,37 @@ async def current_entries(
         )
     )
     wanted = set(keys)
-    found: dict[tuple[str, ProfileAudience], tuple[ProfileEntry, ...]] = {}
-    for person_id, audience, entries_json in rows:
+    found: dict[
+        tuple[str, ProfileAudience], tuple[tuple[ProfileEntry, ...], tuple[ProfileEntry, ...]]
+    ] = {}
+    for person_id, audience, entries_json, topics_json in rows:
         key = (str(person_id), "private" if audience == "private" else "public")
         if key in wanted:
-            found[key] = _decode(entries_json)
+            found[key] = (_decode(entries_json), _decode_topics(topics_json) or ())
     return found
 
 
 async def render_private_profiles(
     session: AsyncSession, root: str
 ) -> tuple[list[str], tuple[RenderedProfile, ...]]:
-    """§7.2: the counterpart's public and private profiles, every passing entry."""
+    """§7.2: the counterpart's public and private profiles, every passing entry and topic."""
     audiences: tuple[ProfileAudience, ...] = ("public", "private")
     stored = await current_entries(session, [(root, audience) for audience in audiences])
-    present = [audience for audience in audiences if stored.get((root, audience))]
+    present = [audience for audience in audiences if any(stored.get((root, audience), ()))]
     checks = await check_many(
-        session, [(root, audience, stored[(root, audience)]) for audience in present]
+        session,
+        [(root, audience, items) for audience in present for items in stored[(root, audience)]],
     )
     lines: list[str] = []
     rendered: list[RenderedProfile] = []
-    for audience, checked in zip(present, checks, strict=True):
-        if checked.entries:
+    for index, audience in enumerate(present):
+        entries, topics = checks[2 * index].entries, checks[2 * index + 1].entries
+        if entries or topics:
             lines.append(PROFILE_TITLES[audience])
-            lines.extend(entry_line(entry) for entry in checked.entries)
-            rendered.append(RenderedProfile(root, audience, checked.entries))
+            lines.extend(entry_line(entry) for entry in entries)
+            if topics:
+                lines.append(topics_line(topics))
+            rendered.append(RenderedProfile(root, audience, entries, topics))
     return lines, tuple(rendered)
 
 
@@ -395,14 +435,17 @@ async def render_space_profiles(
     if not roots:
         return [], ()
     stored = await current_entries(session, [(root, "public") for root in roots])
-    present = [root for root in roots if stored.get((root, "public"))]
+    present = [root for root in roots if any(stored.get((root, "public"), ()))]
     checks = await check_many(
-        session, [(root, "public", stored[(root, "public")]) for root in present]
+        session, [(root, "public", items) for root in present for items in stored[(root, "public")]]
     )
     shown = {
-        root: checked.entries[:MAX_GROUP_MEMBER_ENTRIES]
-        for root, checked in zip(present, checks, strict=True)
-        if checked.entries
+        root: (
+            checks[2 * index].entries[:MAX_GROUP_MEMBER_ENTRIES],
+            checks[2 * index + 1].entries,
+        )
+        for index, root in enumerate(present)
+        if checks[2 * index].entries or checks[2 * index + 1].entries
     }
     if not shown:
         return [], ()
@@ -434,9 +477,12 @@ async def render_space_profiles(
             continue
         also = merged.get(root, [])
         tail = "；同一人另有 " + "、".join(f"person:{item}" for item in also) if also else ""
+        entries, topics = shown[root]
         lines.append(f"· {names.get(root, '')}（person:{root}{tail}）")
-        lines.extend(entry_line(entry) for entry in shown[root])
-        rendered.append(RenderedProfile(root, "public", shown[root]))
+        lines.extend(entry_line(entry) for entry in entries)
+        if topics:
+            lines.append(topics_line(topics))
+        rendered.append(RenderedProfile(root, "public", entries, topics))
     return lines, tuple(rendered)
 
 
@@ -454,7 +500,7 @@ class ProfileStore:
             row = await session.scalar(_profile_statement(root, audience))
             if row is None:
                 return None
-            return _profile(row, await _entries(session, row.id, row.current_version))
+            return _profile(row, *await _content(session, row.id, row.current_version))
 
     async def load_version(
         self, person_id: str, audience: ProfileAudience, version: int
@@ -502,7 +548,11 @@ class ProfileStore:
         async with self._database.read_session() as session:
             rows = (
                 await session.execute(
-                    select(MemoryProfileModel, MemoryProfileVersionModel.entries_json)
+                    select(
+                        MemoryProfileModel,
+                        MemoryProfileVersionModel.entries_json,
+                        MemoryProfileVersionModel.topics_json,
+                    )
                     .join(person, person.id == MemoryProfileModel.person_id)
                     .outerjoin(
                         MemoryProfileVersionModel,
@@ -513,7 +563,9 @@ class ProfileStore:
                     .order_by(MemoryProfileModel.person_id, MemoryProfileModel.audience)
                 )
             ).all()
-        return tuple(_profile(row, _decode(entries)) for row, entries in rows)
+        return tuple(
+            _profile(row, _decode(entries), _decode_topics(topics)) for row, entries, topics in rows
+        )
 
     async def available(self, person_id: str, audience: ProfileAudience) -> ProfileFacts:
         """The root's currently available facts (§6) and their signature (§8.2)."""
@@ -540,13 +592,15 @@ class ProfileStore:
         source: ProfileSource,
         reason: str,
         expected_version: int,
+        topics: Sequence[ProfileEntry] | None = None,
         signature: str | None = None,
         attempted_at: datetime | None = None,
         lock: bool | None = None,
         require_unlocked: bool = False,
         dream_run_public_id: str | None = None,
     ) -> ProfileCommit:
-        """Write ``entries`` as the next version if they differ from the current ones.
+        """Write ``entries`` and ``topics`` as the next version if they differ from the
+        current ones; ``topics`` None keeps the current version's topics.
 
         ``expected_version`` is the version the caller based the entries on (0 for a
         profile without versions); any other current version raises
@@ -557,6 +611,7 @@ class ProfileStore:
         available is the caller's ``check``.
         """
         checked = validate_entries(entries)
+        checked_topics = None if topics is None else validate_topics(topics)
         if not reason.strip():
             raise ProfileValidationError("empty_reason")
         async with self._database.read_session() as session:
@@ -570,8 +625,10 @@ class ProfileStore:
                 raise ProfileConflict("locked")
             if row is None:
                 row = await _new_row(session, root, audience, now)
-            current = await _entries(session, row.id, row.current_version)
-            written = checked != current
+            current, current_topics = await _content(session, row.id, row.current_version)
+            if checked_topics is None:
+                checked_topics = current_topics
+            written = (checked, checked_topics) != (current, current_topics)
             if written:
                 row.current_version += 1
                 session.add(
@@ -579,6 +636,7 @@ class ProfileStore:
                         profile_id=row.id,
                         version=row.current_version,
                         entries_json=_encode(checked),
+                        topics_json=_encode_topics(checked_topics),
                         source=source,
                         reason=reason.strip(),
                         dream_run_public_id=dream_run_public_id,
@@ -593,7 +651,7 @@ class ProfileStore:
                 row.locked = lock
             row.updated_at = now
             await session.flush()
-            return ProfileCommit(_profile(row, checked if written else current), written)
+            return ProfileCommit(_profile(row, checked, checked_topics), written)
 
     async def record_attempt(
         self, person_id: str, audience: ProfileAudience, attempted_at: datetime
@@ -621,7 +679,7 @@ class ProfileStore:
             row.locked = locked
             row.updated_at = now
             await session.flush()
-            return _profile(row, await _entries(session, row.id, row.current_version))
+            return _profile(row, *await _content(session, row.id, row.current_version))
 
     # ---------------------------------------------------------------- members
     async def members(self, space_id: str) -> SpaceMembers | None:
@@ -722,19 +780,22 @@ async def _new_row(
     return row
 
 
-async def _entries(
+async def _content(
     session: AsyncSession, profile_id: int, version: int
-) -> tuple[ProfileEntry, ...]:
+) -> tuple[tuple[ProfileEntry, ...], tuple[ProfileEntry, ...] | None]:
     if version == 0:
-        return ()
-    return _decode(
-        await session.scalar(
-            select(MemoryProfileVersionModel.entries_json).where(
+        return (), None
+    row = (
+        await session.execute(
+            select(
+                MemoryProfileVersionModel.entries_json, MemoryProfileVersionModel.topics_json
+            ).where(
                 MemoryProfileVersionModel.profile_id == profile_id,
                 MemoryProfileVersionModel.version == version,
             )
         )
-    )
+    ).one()
+    return _decode(row.entries_json), _decode_topics(row.topics_json)
 
 
 def _encode(entries: Sequence[ProfileEntry]) -> str:
@@ -747,13 +808,36 @@ def _decode(value: str | None) -> tuple[ProfileEntry, ...]:
     )
 
 
-def _profile(row: MemoryProfileModel, entries: tuple[ProfileEntry, ...]) -> Profile:
+def _encode_topics(topics: Sequence[ProfileEntry] | None) -> str | None:
+    if topics is None:
+        return None
+    return json.dumps(
+        [{"text": topic.text, "fact_ids": list(topic.fact_ids)} for topic in topics],
+        ensure_ascii=False,
+    )
+
+
+def _decode_topics(value: str | None) -> tuple[ProfileEntry, ...] | None:
+    if value is None:
+        return None
+    return tuple(
+        ProfileEntry(None, str(item["text"]), tuple(int(fact) for fact in item["fact_ids"]))
+        for item in json.loads(value)
+    )
+
+
+def _profile(
+    row: MemoryProfileModel,
+    entries: tuple[ProfileEntry, ...],
+    topics: tuple[ProfileEntry, ...] | None,
+) -> Profile:
     audience: ProfileAudience = "private" if row.audience == "private" else "public"
     return Profile(
         person_id=row.person_id,
         audience=audience,
         current_version=row.current_version,
         entries=entries,
+        topics=topics,
         considered_signature=row.considered_signature,
         attempted_at=None if row.attempted_at is None else stored_utc(row.attempted_at),
         locked=row.locked,
@@ -766,6 +850,7 @@ def _version(row: MemoryProfileVersionModel) -> ProfileVersion:
     return ProfileVersion(
         version=row.version,
         entries=_decode(row.entries_json),
+        topics=_decode_topics(row.topics_json),
         source=sources[row.source],
         reason=row.reason,
         dream_run_public_id=row.dream_run_public_id,

@@ -17,7 +17,8 @@ from yuki.memory.enums import (
     SelfMemoryVisibility,
 )
 from yuki.memory.errors import MemoryRetrievalError
-from yuki.memory.fts import SQLiteMemoryFTSIndex, build_safe_lexical_query
+from yuki.memory.fts import SQLiteMemoryFTSIndex
+from yuki.memory.lexical import lexical_terms
 from yuki.memory.models import (
     MemoryEntityTarget,
     MemoryFact,
@@ -267,10 +268,10 @@ async def test_short_query_and_unsafe_symbols_stay_inside_subject(database: Data
 
     short = await retriever.retrieve(_query("杭州"[:2], _target("1001")))
     assert [hit.fact.id for hit in short.hits] == [expected.id]
-    safe = build_safe_lexical_query('杭州" OR * (秘密) NEAR', term_limit=4)
+    safe = lexical_terms('杭州" OR * (秘密) NEAR', term_limit=4)
     assert "*" not in safe.fts_expression
     assert "(" not in safe.fts_expression
-    assert len(safe.terms) <= 4
+    assert len(safe.index_terms) <= 4 and len(safe.scan_terms) <= 4
 
 
 async def test_strict_time_filters_before_candidate_limits(database: Database) -> None:
