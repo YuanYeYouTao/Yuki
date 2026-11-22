@@ -161,13 +161,14 @@ class Comparison:
 
 def _floor(fact_id: int, chain: Mapping[int, int | None], lower: int) -> int:
     """Walk ``supersedes_id`` back while above ``lower``; the root, or the first ID at
-    or below ``lower`` (whose root is smaller still: not new for any row)."""
-    at, steps = fact_id, 0
-    while at > lower and at in chain and steps <= len(chain):
+    or below ``lower`` (whose root is smaller still: not new for any row). A rewrite
+    always has a larger ID than what it supersedes, so the walk ends."""
+    at = fact_id
+    while at > lower and at in chain:
         parent = chain[at]
         if parent is None:
             break
-        at, steps = parent, steps + 1
+        at = parent
     return at
 
 
