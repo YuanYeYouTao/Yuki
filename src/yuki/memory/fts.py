@@ -4,7 +4,8 @@ Contract: docs/architecture/memory-v2-retrieval.md "词法打分". Terms of thre
 characters go through the trigram index (ordered by bm25); shorter terms through one
 scan over the authorized active facts, ordered by the summed length of the terms each
 fact holds. A term found in a person's display name or alias (the whole merged family)
-or in a space name adds that subject's facts to the scan window. Both statements keep
+adds that person's facts to the scan window, and one found in a space name adds that
+group's group-scope facts. Both statements keep
 ``memory_facts`` as the truth source and take at most ``candidate_limit`` IDs each.
 """
 
@@ -159,10 +160,15 @@ class SQLiteMemoryFTSIndex:
 
 
 async def subject_names(session: AsyncSession, facts: tuple[MemoryFact, ...]) -> dict[int, str]:
-    """Each fact's entity field: its subject person's family names and aliases, and the
-    subject space's name. At most two statements whatever the number of facts."""
+    """Each fact's entity field: its subject person's family names and aliases, or for a
+    group fact the group's name (a person_group fact is about the person, not the group).
+    At most two statements whatever the number of facts."""
     persons = {fact.canonical_subject_person_id for fact in facts} - {None}
-    spaces = {fact.canonical_subject_space_id for fact in facts} - {None}
+    spaces = {
+        fact.canonical_subject_space_id
+        for fact in facts
+        if fact.canonical_subject_person_id is None
+    } - {None}
     person_names: dict[str, list[str]] = {}
     if persons:
         subject, member = aliased(CanonicalPersonModel), aliased(CanonicalPersonModel)
@@ -187,10 +193,9 @@ async def subject_names(session: AsyncSession, facts: tuple[MemoryFact, ...]) ->
         }
     return {
         fact.id: normalized_names(
-            [
-                *person_names.get(fact.canonical_subject_person_id or "", ()),
-                space_names.get(fact.canonical_subject_space_id or "", ""),
-            ]
+            person_names.get(fact.canonical_subject_person_id, ())
+            if fact.canonical_subject_person_id is not None
+            else [space_names.get(fact.canonical_subject_space_id or "", "")]
         )
         for fact in facts
     }
@@ -251,7 +256,11 @@ async def _candidates(
                     else_=0,
                 )
                 + case(
-                    (fact.canonical_subject_space_id.in_(_named_spaces(names)), _ENTITY_WEIGHT),
+                    (
+                        fact.canonical_subject_person_id.is_(None)
+                        & fact.canonical_subject_space_id.in_(_named_spaces(names)),
+                        _ENTITY_WEIGHT,
+                    ),
                     else_=0,
                 )
             )

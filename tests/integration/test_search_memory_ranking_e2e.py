@@ -19,6 +19,13 @@ Failure cases, written before the implementation:
   S5 a fact whose content equals the query is not first.
   S6 the search issues more statements for a larger fact table, or a statement scans
      memory_facts, chat_events or memory_evidence.
+  S7 a mixed-script word ("B站": one Latin letter joined to a CJK character) is cut into
+     two single characters, so a fact holding the word ranks below facts that only hold
+     "b" (in their key) and "站" apart.
+  S8 a group whose name holds the query word ("咖啡同好群") puts every person_group fact
+     of that group into the lexical window ahead of the person fact that holds the word,
+     which then misses the top four: the group name counts as the subject name of facts
+     about its members.
 """
 
 from __future__ import annotations
@@ -329,3 +336,47 @@ async def test_s6_statement_count_constant_and_no_large_scan(scene):
             "plans": plans,
         },
     )
+
+
+# ---------------------------------------------------------------------------------- S7
+async def test_s7_mixed_script_word_stays_one_term(scene):
+    ids, cosines = await _facts(
+        scene,
+        [
+            ("bilibili", "B", "常在B站看番", 0.30, 3),
+            ("bus", "A", "每天坐公交到站", 0.90, 3),
+            ("blog", "G", "群里有人做了个人网站", 0.85, 3),
+            ("bike", "A", "骑车去地铁站", 0.80, 3),
+            ("bakery", "G", "车站旁边新开了面包店", 0.75, 3),
+        ],
+    )
+    query = "B站"
+    await _semantic(scene, cosines, (query,))
+    order = await _search(scene, query)
+
+    assert order[0] == ids["bilibili"], order
+    _write("S7-mixed-script", scene, _record(query, ids, cosines, order))
+
+
+# ---------------------------------------------------------------------------------- S8
+async def test_s8_group_name_is_not_the_subject_name_of_member_facts(scene):
+    from yuki.identity.db_models import CanonicalSpaceModel
+
+    async with scene.database.immediate_session() as writer:
+        await writer.execute(
+            update(CanonicalSpaceModel)
+            .where(CanonicalSpaceModel.id == scene.spaces["G"])
+            .values(name="咖啡同好群")
+        )
+    ids, cosines = await _facts(scene, [("coffee_b", "B", "每天早上喝咖啡", 0.10, 3)])
+    for index in range(55):
+        fact_id = await scene.fact(
+            f"member_{index}", "B@G", f"群里第{index}次聊到周末安排", importance=5
+        )
+        cosines[fact_id] = 0.5
+    query = "咖啡"
+    await _semantic(scene, cosines, (query,))
+    order = await _search(scene, query)
+
+    assert ids["coffee_b"] in order[:4], order
+    _write("S8-group-name", scene, _record(query, ids, cosines, order))

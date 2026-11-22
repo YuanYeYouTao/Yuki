@@ -90,7 +90,14 @@ def lexical_terms(value: str, *, term_limit: int) -> LexicalTerms:
             cursor = match.end()
         if cursor < len(token):
             pieces.append((token[cursor:], False))
+        joined: list[tuple[str, bool]] = []
         for piece, cjk in pieces:
+            # One letter or digit beside a CJK run belongs to it: "B站", "A股", "U盘".
+            if joined and (cjk or len(piece) == 1) and (joined[-1][1] or len(joined[-1][0]) == 1):
+                joined[-1] = (joined[-1][0] + piece, True)
+            else:
+                joined.append((piece, cjk))
+        for piece, cjk in joined:
             if not cjk:
                 if len(piece) < 2:
                     unigrams.append(piece)
@@ -113,7 +120,7 @@ def lexical_terms(value: str, *, term_limit: int) -> LexicalTerms:
     for term in (*index_terms, *scan_terms):
         if len(term) == 1:
             add(term, UNIGRAM)
-        elif not _CJK.fullmatch(term):
+        elif not _CJK.search(term):
             add(term, WORD)
         else:
             add(term, BIGRAM if len(term) == 2 else TRIGRAM)
