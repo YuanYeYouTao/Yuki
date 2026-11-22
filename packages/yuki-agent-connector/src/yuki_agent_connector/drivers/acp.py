@@ -179,6 +179,11 @@ class ACPDriver:
                     and "list" not in self.capabilities
                 ):
                     self.capabilities.insert(0, "list")
+                # The `_session/steering` extension (codex-acp, claude-agent-acp) is
+                # advertised in the top-level `_meta`, not in agentCapabilities.
+                steering = (initialized.field_meta or {}).get("steering") or {}
+                if steering.get("supported") is True and "steer" not in self.capabilities:
+                    self.capabilities.append("steer")
                 self.ready.set_result(None)
                 stopped = asyncio.create_task(self.stopped.wait())
                 exited = asyncio.create_task(process.wait())
@@ -522,9 +527,6 @@ class ACPDriver:
             "tool": dump(tool_call),
             "options": [dump(item) for item in options],
         }
-        if any(item.option_id == "cancel" and item.kind == "reject_once" for item in options):
-            # codex-acp: this reject ends the whole prompt, not just this call (§15 E5).
-            payload["reject_ends_prompt"] = True
         try:
             waiting.recipients = await self._publish(session, "permission", payload, turn=turn)
             if not waiting.recipients:
@@ -767,27 +769,34 @@ class ACPDriver:
                     raise DriverError(
                         "explicit_resume_required", "Authorize loading this stored native session"
                     )
-                # Recover original cwd from the native list; never replace it
-                # with /workspace or assume the configured default is its cwd.
-                if "list" not in self.capabilities:
+                # Recover original cwd from the native list, or else the cwd this
+                # connector recorded when it created the session (an agent without
+                # session/list, such as Gemini CLI); never replace it with
+                # /workspace, the configured default or a cwd the command names.
+                if "list" in self.capabilities:
+                    cursor = None
+                    original = None
+                    while True:
+                        catalog = await self.execute(
+                            {**command, "action": "list", "arguments": {"cursor": cursor}}
+                        )
+                        original = next(
+                            (s for s in catalog["sessions"] if s["id"] == identity), None
+                        )
+                        cursor = catalog.get("next_cursor")
+                        if original or not cursor:
+                            break
+                    if not original:
+                        raise DriverError(
+                            "session_not_found", "Stored session absent from native directory"
+                        )
+                    cwd = original["cwd"]
+                elif command.get("recorded_cwd"):
+                    cwd = command["recorded_cwd"]
+                else:
                     raise DriverError(
                         "cwd_unknown", "Agent cannot reveal this stored session's cwd"
                     )
-                cursor = None
-                original = None
-                while True:
-                    catalog = await self.execute(
-                        {**command, "action": "list", "arguments": {"cursor": cursor}}
-                    )
-                    original = next((s for s in catalog["sessions"] if s["id"] == identity), None)
-                    cursor = catalog.get("next_cursor")
-                    if original or not cursor:
-                        break
-                if not original:
-                    raise DriverError(
-                        "session_not_found", "Stored session absent from native directory"
-                    )
-                cwd = original["cwd"]
                 capabilities = self.native_capabilities.get("sessionCapabilities", {})
                 if capabilities.get("resume") is not None:
                     loaded = await self._native_request(
@@ -827,14 +836,48 @@ class ACPDriver:
                 "status": session.status,
                 "pending": not session.task.done(),
                 "admitted": admitted,
+                # Persisted with this receipt: a later resume finds the session's cwd
+                # even when the agent has no session/list.
+                "cwd": session.cwd,
             }
-        if action in {"steer", "queue"}:
+        if action == "queue" or (action == "steer" and action not in self.capabilities):
             raise DriverError(
                 "unsupported_action", "ACP agent has no negotiated precise steer/queue"
             )
         if not isinstance(identity, str):
             raise DriverError("missing_session", "This action requires the original session ID")
         session = self._session(identity)
+        if action == "steer":
+            if not (session.task and not session.task.done()) or (
+                command.get("execution_id") != session.execution
+            ):
+                raise DriverError(
+                    "execution_mismatch", "Steer must target the running original ACP prompt"
+                )
+            steered = await self._native_request(
+                self.connection.ext_method(
+                    "session/steering",
+                    {
+                        "sessionId": identity,
+                        "prompt": [{"type": "text", "text": arguments["prompt"]}],
+                        # Never a turn of its own: a settled turn hands the input back.
+                        "_meta": {"steering": {"idleBehavior": "promptRequired"}},
+                    },
+                )
+            )
+            if steered.get("outcome") != "injected":
+                raise DriverError(
+                    "turn_not_running",
+                    "The original ACP prompt ended before the steer landed; it was not taken",
+                    {"outcome": steered.get("outcome")},
+                )
+            return {
+                "session_id": identity,
+                "execution_id": session.execution,
+                "status": "running",
+                "pending": True,
+                "admitted": True,
+            }
         if action == "get":
             expected = command.get("execution_id")
             result = {
@@ -913,6 +956,10 @@ class ACPDriver:
                 formal = arguments["response"]["outcome"]
                 choice = formal.get("optionId") if formal["outcome"] == "selected" else None
             kinds = {item.option_id: item.kind for item in waiting.options}
+            if choice == "deny" and choice not in kinds:
+                # Yuki's deny (all a wait nobody received offers): the agent's own
+                # one-time reject, else the cancelled outcome.
+                choice = next((key for key, kind in kinds.items() if kind == "reject_once"), None)
             if choice is not None and choice not in kinds:
                 raise DriverError("invalid_option", "Answer must select an original native option")
             if choice is not None and kinds[choice] not in ONE_TIME_KINDS:

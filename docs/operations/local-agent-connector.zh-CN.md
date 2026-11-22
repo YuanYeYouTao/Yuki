@@ -2,7 +2,7 @@
 
 Yuki 继续运行在服务器，Codex、Claude Code 或 ACP Agent 留在用户电脑。电脑主动连接原 Yuki HTTP 服务上的 `/agents/v1/connect`，不用开放电脑入站端口，不上传原生登录文件，也不用在服务器安装 Codex。
 
-连接器是同仓独立包 [yuki-agent-connector](../../packages/yuki-agent-connector/pyproject.toml)，当前版本 `0.9.3`，设备协议为 `5`（与 Bot 一次硬切：协议不同的一端在握手时被拒，连接器停在 `protocol_unsupported`，不循环重连；更新较旧的一端）。手动安装需要 Python 3.12，配套桌面安装包随附独立运行时。它不安装 Bot，不运行另一个 Main／Work，不替原生 Agent 重建历史，也不直接发聊天消息。Yuki 经子任务工具委派、观察或接手本机 Agent；只有需要决定的事实以卡片交给发起它的工作，汇报仍通过 Main 的 `send`。
+连接器是同仓独立包 [yuki-agent-connector](../../packages/yuki-agent-connector/pyproject.toml)，当前版本 `0.9.4`，设备协议为 `5`（与 Bot 一次硬切：协议不同的一端在握手时被拒，连接器停在 `protocol_unsupported`，不循环重连；更新较旧的一端）。手动安装需要 Python 3.12，配套桌面安装包随附独立运行时。它不安装 Bot，不运行另一个 Main／Work，不替原生 Agent 重建历史，也不直接发聊天消息。Yuki 经子任务工具委派、观察或接手本机 Agent；只有需要决定的事实以卡片交给发起它的工作，汇报仍通过 Main 的 `send`。
 
 ## 本机完整访问
 
@@ -295,6 +295,14 @@ python -m pytest tests/integration/test_local_codex_bridge_live.py -q -s
 
 2026-10-23 在 Windows 上以 `codex-cli 0.163.0` 和连接器 `0.1.0` 完成一次真实模型全链路验收：原生审批经内部问题 ID 回答，隔离目录写入和读回各有一条成功命令回执，最终标记与文件内容一致，原执行终态进入原 Work 的 continuation；测试通过，耗时 34.98 秒。9 条重要事件中含 3 条工具回执，其中首次沙盒执行失败、随后精确授权后的写入与读回成功，失败事实仍保留。该次缓存字段未提供，记录为 unknown。测试只归档自己的新原生会话，未停止用户 daemon；这份记录不涵盖生产上线、真实 QQ 投递、Claude 付费执行或其他 OS 的实机服务验收。
 
+
+## 0.9.4：通用 ACP 的改向、拒绝与续接目录
+
+- **改向（steer）**：Agent 在 `initialize` 结果顶层 `_meta.steering.supported` 声明 `_session/steering` 扩展时（codex-acp 2.9.0、claude-agent-acp 0.109.1 已声明），实例声明 `steer`。`message_task(mode=steer)` 只发给 Yuki 正在进行的那次 prompt（`execution_id` 必须是它，否则 `execution_mismatch`、不发送），请求带 `_meta.steering.idleBehavior: "promptRequired"`，绝不由改向另开一个无主回合。Agent 回 `injected` 时回执与 Codex 的 steer 相同（`status: running`、`pending: true`、`admitted: true`），追加内容之后的输出仍归原 prompt；回 `promptRequired`（回合已在 Agent 一侧结束）时返回 `turn_not_running`，确定未执行。未声明该扩展的 Agent 不声明 `steer`，steer／queue 仍是 `unsupported_action`，回合进行中再发 prompt 仍是 `conflict`；ACP 没有原生排队，`queue` 不模拟。
+- **拒绝**：不再按选项 ID 字面量（`cancel`）推断“拒绝会结束整个回合”，删除 `reject_ends_prompt`。拒绝后的结果以 Agent 实际返回为准：codex-acp 回 prompt `stopReason: cancelled`，委派按 cancelled 结算；Gemini CLI 等只让该工具失败（`tool_call_update` `status: failed` 作为进展上报），回合继续并按其真实终态结算。服务器对无人接收的等待发出的 `deny` 映射为 Agent 自己给出的一次性 reject 选项（没有则为 cancelled 结果）；此前返回 `invalid_option`，交还时的拒绝结算在 ACP 上无法完成。
+- **续接目录**：prompt 回执带会话的 `cwd`，随原 journal 响应保存。恢复一个本连接器不再持有的会话（释放后或 Agent 进程重启后）时，Agent 有 `session/list` 仍按原生目录取 cwd；没有（Gemini CLI 只声明 `loadSession`）时用本连接器 journal 中该会话创建时记录的 cwd，命令里给的 `cwd` 不会替代它；没有记录（会话不是经本连接器创建的）仍返回 `cwd_unknown`。记录的就是会话原本的 cwd，范围按现有规则判断：只有范围覆盖整个 cwd 才用 `workspace-write`，否则切到会询问的模式，不因续接扩大写入范围。
+- **SDK**：ACP Python SDK 由 0.12.1 升到 1.0.0（连接器只用稳定 v1 的连接方法与 `acp.schema` 模型，不涉及已删除的 `acp.helpers`，wire 仍为 `protocolVersion=1`）。仓库根目录 `yuki acp` 适配器仍锁 0.12.1，不在本次范围。
+- 验证：[`test_acp_steer_reject_resume.py`](../../packages/yuki-agent-connector/tests/test_acp_steer_reject_resume.py) 用真实 stdio 驱动对脚本化 ACP Agent；[`test_acp_connector_delegation_e2e.py`](../../tests/integration/test_acp_connector_delegation_e2e.py) 用真实 Bot＋连接器完成一次委派的改向、交还与在原目录续接，产物 `test-results/acp-connector-delegation/run.json`。
 
 ## 0.9.0：委派、观察、范围与设备协议 5
 
