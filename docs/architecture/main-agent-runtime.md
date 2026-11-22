@@ -467,7 +467,9 @@ opaque 与会改变媒体外置的条目仍按原协议准备；复用不代替
 
 热配置 `context.compact_trigger_tokens` 默认 `96000`，环境变量为
 `CONTEXT_COMPACT_TRIGGER_TOKENS`，普通聊天、Work 与子任务使用同一提前整理触发值。
-本地估值包含完整工具、原生声明、媒体与私有协议；触发值不限制可执行输入，也不要求
+本地估值包含完整工具、原生声明、媒体与私有协议，每 3 个 ASCII 字符或每个非 ASCII（中文等）
+字符计 1 token；按 2026-11-22 生产配对回放，默认 96000 约在 8 万真实 token 触发（见
+[会话 Compact](conversation-compact.md)）。触发值不限制可执行输入，也不要求
 整理结果降到该值以下。没有可整理前缀或未得到有效检查点时，仍可容纳的请求继续执行。
 硬容量只按当前 Profile 的 `max_input_tokens`、`context_window_tokens` 与本次输出额度计算；
 未声明的项保持未知，两项均未知时没有本地硬容量兜底。旧 Host 双窗口
