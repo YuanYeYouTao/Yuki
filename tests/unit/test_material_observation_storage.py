@@ -580,12 +580,20 @@ def test_installed_cli_upgrades_copy_without_repository_pythonpath(tmp_path, mon
     copied = runtime / "copied.db"
     with sqlite3.connect(original) as before, sqlite3.connect(copied) as after:
         before.backup(after)
-        original_rows = {
-            table: before.execute(f"SELECT * FROM {table} ORDER BY rowid").fetchall()
+        # Columns a later migration drops on purpose (0165: unused last_injected_at).
+        dropped = {"memory_facts": {"last_injected_at"}}
+        original_columns = {
+            table: [
+                row[1]
+                for row in before.execute(f"PRAGMA table_info({table})")
+                if row[1] not in dropped.get(table, set())
+            ]
             for table in private
         }
-        original_columns = {
-            table: [row[1] for row in before.execute(f"PRAGMA table_info({table})")]
+        original_rows = {
+            table: before.execute(
+                f"SELECT {','.join(original_columns[table])} FROM {table} ORDER BY rowid"
+            ).fetchall()
             for table in private
         }
     cli = Path(sys.executable).parent / ("yuki.exe" if os.name == "nt" else "yuki")
