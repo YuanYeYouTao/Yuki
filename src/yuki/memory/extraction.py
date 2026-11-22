@@ -19,10 +19,10 @@ from yuki.memory.enums import (
 from yuki.persistence.repository_records import EventRecord
 
 EXTRACTION_PROMPT_VERSION = "memory-v2-extraction-v7"
-EXTRACTION_SCHEMA_VERSION = "6"
+EXTRACTION_SCHEMA_VERSION = "7"
 SOURCE_ADAPTATION_VERSION = "3"
 BATCH_EXTRACTION_PROMPT_VERSION = "memory-v2-batch-extraction-v6"
-BATCH_EXTRACTION_SCHEMA_VERSION = "5"
+BATCH_EXTRACTION_SCHEMA_VERSION = "6"
 
 type ExtractionScope = Literal[
     MemoryScopeType.PERSON, MemoryScopeType.PERSON_GROUP, MemoryScopeType.GROUP
@@ -66,6 +66,11 @@ class MemoryClaim(_ExtractionModel):
     memory_key: str = Field(min_length=1)
     category: str = Field(min_length=1)
     content: str = Field(min_length=1)
+    title: str | None = Field(
+        default=None,
+        min_length=1,
+        description="kind=episode 时用一句不超过 20 字的话概括这件事，不写日期；其他 kind 省略。",
+    )
     evidence_quote: str = Field(min_length=1)
     importance: int = Field(default=3, ge=1, le=5)
     confidence: float = Field(default=0.8, ge=0, le=1)

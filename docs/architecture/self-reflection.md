@@ -38,6 +38,8 @@ Provider 明确报告输出截断时返回
 名片和 ID；名字和分类本身不赋予系统权限。
 
 新输出只有待创建的 `proposals` 与按 `passages` 组织的 `episodes`，后端直接复用 CREATE。
+每条 episode 另有必填的 `title`（一句不超过 20 字、不写日期），存入 `memory_facts.title`，
+供[经历目录](memory-v2.md#经历目录)使用；它不受 `memory.episode_index_enabled` 控制。
 模型不再选择 operation、旧 fact 引用或候选裁决；没有内容时两个列表均可为空，正常推进本批水位。
 `context_events` 仅帮助理解，不进入新事实的来源映射；每条新记录仍须引用本批实际展示的事件或工具回执。
 普通提取只生成 Person、PersonGroup、Group 新事实，已退出 SELF 候选生产与裁决链，

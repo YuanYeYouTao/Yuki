@@ -89,7 +89,7 @@ G(X) 为数据库记录的 X 整个 Person 归并集合的历史 canonical membe
 退群但历史记录仍在时关系仍有效；不做朋友的朋友等传递授权。forget 删除关系后下一次查询
 依据剩余数据库记录重新判断，不缓存永久许可。当前在群 G，也可查历史共同群 H。
 模型使用后端提供的内部主体引用；名称只是查找线索，不承担授权证明。
-这条取舍只适用于按需读取。常驻记忆段不带私聊来源的他人事实，群聊里只带证据全部来自本群的事实。
+这条取舍只适用于按需读取。常驻记忆段与经历目录不带私聊来源的他人事实，群聊里只带证据全部来自本群的事实。
 
 `search_memory` 和按 `fact_id` 读取单条事实复用相同政策（原 `read_memory` 已并入；evidence 视图已删除）；旧的“只凭当前群 evidence
 投影 Person”授权路径已经删除。evidence 仍走本人/显式管理授权边界。
@@ -99,7 +99,7 @@ Control Plane 仍要求 capability。
 ## 检索与使用
 
 [检索合同](memory-v2-retrieval.md)定义 Query Plane、主动查询参数、检索与排序。
-主 Agent 每轮只带[常驻记忆段](#常驻记忆段)里的少量稳定条目；其余过去事实由模型调用统一
+主 Agent 每轮只带[常驻记忆段](#常驻记忆段)里的少量稳定条目与[经历目录](#经历目录)里的经历标题；其余过去事实由模型调用统一
 `search_memory`。无显式目标时，后端以本次真实主体的 canonical 身份和历史成员关系，
 在数据库层筛选全部获准 Person、PersonGroup、Group 与当前可见 SELF；历史 owner 即使没有
 活跃平台 Binding 仍可检索。词法和向量候选在授权范围内全局排序，不按 owner 截断。
@@ -152,6 +152,41 @@ Embedding 请求、缓存命中、错误和已知 usage 分别记录，缺失的
 Dream 每日批次在全部簇处理完后对到期主人运行一次挑选步骤（候选为共同条件下、属于该主人且非明确事实的事实），
 `source='owner'` 的行跳过；所有者通过 `yuki memory resident` 子命令查看、渲染、改写、锁定与解锁。
 设计依据与验收见[记忆分层 P1 实施任务书](Yuki-记忆分层P1实施任务书-2026-11-21.md)。
+
+## 经历目录
+
+常驻段之后、system 消息的最后一段可以带“经历目录”（`memory.episode_index`，静态贡献，priority 5），
+当前消息里另有“今天新记下的经历”（`memory.episodes_recent`，TURN 贡献，priority 84，紧跟当前场景资料）。
+两者都不在 `invariant_contributions()` 里，恢复合同哈希不含它们；不新增 system 消息或缓存断点。
+渲染由 `memory/episode_index.py` 的 `EpisodeIndex` 完成：一个只读会话，不调用模型，不写库；运行时开关
+`memory.episode_index_enabled`（默认关闭，与 `memory.resident_enabled` 互不依赖）关闭时不渲染。子 Agent 与
+插件轮不带；渲染失败只在 `ContextAssembler` 一处接住，这一轮少这两段，记 `memory_episode_index_render_failed`。
+目录只有标题，正文按 `fact:ID` 用 `search_memory(fact_id=…)` 主动读取；不按相似度挑选，不注入正文。
+
+**标题**存于 `memory_facts.title`（schema `0163`，只有 episode 使用）。由写这条经历的那次模型调用给出：
+自省 `episodes[].title` 必填；提取 claim 的 `title` 在 kind=episode 时保存，其他 kind 丢弃；Dream recompose
+的 episode 输出取该输出的 `focus`，synthesize 沿用锚点标题；Main `save_memory` 不带标题。写入不受开关控制。
+标题不进 FTS、embedding 文档或 Dream 的事实签名。
+
+**可见范围**与常驻段同一套证据规则（`memory/resident.py` 的 `evidence_origins`、`private_evidence_visible`、
+`space_evidence_visible`）：
+- 共同条件：kind=episode、active、`conflict_state=clear`、未隔离、未过期、authority 不是 third_party，
+  person／person_group 经历的主人人物（原人物与根）enabled。
+- 与 P 的私聊：P（按根）的 person／person_group 经历与 visibility 为 private、可见人物根为 P 的 SELF 经历；
+  任一证据来自别人的私聊或无法追溯的会话即排除，没有证据行的允许。
+- 群 G：G 的 group 经历、主题群为 G 的 person_group 经历、visibility 为 group 且可见群为 G 的 SELF 经历；
+  至少一条证据，且每条都直接指向 G 的聊天事件（工具回执证据不算）。群里不列 person 范围的经历。
+
+**水位**取最近一次已收尾（`completed_at` 不为空、终态 completed 或 partial_failed）的 Dream 运行的
+`snapshot_max_fact_id`；没有时为 0。`fact_id ≤ 水位` 的可见经历进目录，之后的进“今天新记下的经历”，
+因此目录每个 Dream 批次最多变一次（失效、取代、删除与人物停用合并仍立即生效）。
+
+**格式**：日期取 `coalesce(valid_from, created_at)` 的部署时区（`memory_dream_timezone`）日期，按
+`(日期, fact_id)` 升序；目录逐条列出最后 120 条（`- MM-DD 标题（fact:ID）`），更早的按 `YYYY-MM` 只给条数；
+今日新经历列最后 20 条，超出时第二行写“另有 N 条”。标题折叠连续空白、不截断，为空时显示“（未命名经历）”。
+所有者通过 `yuki memory episodes` 子命令渲染、检查、回填与改写标题、查看水位（见
+[Memory 质量运维](../operations/memory-quality.md)）。设计依据与验收见
+[记忆分层 P2 经历目录任务书](Yuki-记忆分层P2经历目录任务书-2026-11-22.md)。
 
 ## 维护与变更边界
 

@@ -278,13 +278,25 @@ def hot_config_specs() -> tuple[ConfigSpec, ...]:
         _spec(
             "memory.resident_enabled",
             "常驻记忆",
-            "是否在每轮主 Agent 当前消息里渲染常驻记忆段，并在 Dream 批次后自动挑选核心集。"
+            "是否在每轮主 Agent 的 system 消息末尾渲染常驻记忆段，并在 Dream 批次后自动挑选核心集。"
             "关闭后下一轮起不再渲染、不再自动挑选；已存核心集与事实保留，管理 CLI 照常可用。",
             value_type="boolean",
             scopes=_G,
             env_alias="MEMORY_RESIDENT_ENABLED",
             getter=_field("memory_resident_enabled"),
             settings_fields=("memory_resident_enabled",),
+            category="memory",
+        ),
+        _spec(
+            "memory.episode_index_enabled",
+            "经历目录",
+            "是否在每轮主 Agent 的 system 消息末尾渲染经历目录，并在当前消息里列出今日新经历。"
+            "关闭后下一轮起不再渲染；经历标题照常写入，管理 CLI 照常可用。",
+            value_type="boolean",
+            scopes=_G,
+            env_alias="MEMORY_EPISODE_INDEX_ENABLED",
+            getter=_field("memory_episode_index_enabled"),
+            settings_fields=("memory_episode_index_enabled",),
             category="memory",
         ),
         _spec(

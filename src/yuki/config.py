@@ -223,6 +223,7 @@ class Settings(BaseSettings):
     memory_maintenance_batch_limit: int = 100
     memory_resident_enabled: bool = False
     memory_resident_max_selections_per_run: int = Field(default=12, gt=0)
+    memory_episode_index_enabled: bool = False
 
     memory_embedding_enabled: bool = True
     memory_embedding_provider: str = "qwen_dashscope"

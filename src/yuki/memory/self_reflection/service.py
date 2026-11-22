@@ -85,7 +85,8 @@ episodes 是创建 Episode 的唯一输出位置，记录你在当前群聊或�
 经历。一次可以输出多条 Episode；每条只写一个核心经历及其直接进展，彼此无因果关联的话题分成
 不同 Episode 或舍弃不值得保留的部分。同一天、同一群或都是自己参与，不足以合并为一条。
 Episode 的类别、范围和来源由后端确定。每条由 passages 组成：每段先选直接支持本段的
-event_N/tool_N 作为 evidence_refs，再写 content；后端按顺序连接各段，不另写总述。提问与
+event_N/tool_N 作为 evidence_refs，再写 content；后端按顺序连接各段，不另写总述。
+每条另给 title：用一句不超过 20 字的话概括这件事，不写日期。提问与
 回答各用自己的来源，只选问题不能证明回答，聊天中声称查过不能证明工具确实执行；整个输入窗口
 不是每条 Episode 的证据，也不要把 context_events 重新总结进正文。
 用自己的第一人称口吻写，外部说法保留其当时的说法性质。正文自然交代经历发生的绝对日期或
@@ -492,6 +493,7 @@ class SelfReflectionService:
                 ),
                 visibility=SelfMemoryVisibilityMode.CURRENT_SCOPE,
                 new_content=proposal.content,
+                title=proposal.title,
                 memory_key=memory_key,
                 category="self_episode",
                 kind=MemoryKind.EPISODE,

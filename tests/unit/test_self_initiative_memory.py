@@ -987,6 +987,7 @@ async def test_silent_service_episode_keeps_checkpoint_without_second_model_requ
                 "proposals": [],
                 "episodes": [
                     {
+                        "title": "生成并校验曲线绘图",
                         "passages": [
                             {
                                 "evidence_refs": ["tool_1", "tool_1"],

@@ -385,6 +385,7 @@ class DreamService:
                             source_facts=tuple(ref_map[ref] for ref in item.source_refs),
                             content=item.content,
                             importance=item.importance,
+                            focus=item.focus,
                         )
                         for item in action.outputs
                     ),
@@ -452,6 +453,7 @@ class DreamService:
                     source_facts=tuple(current_map[ref] for ref in item.source_refs),
                     content=item.content,
                     importance=item.importance,
+                    focus=item.focus,
                 )
                 for item in action.outputs
             )
