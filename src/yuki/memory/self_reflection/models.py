@@ -106,7 +106,6 @@ class SelfEpisodePassage(_Contract):
 
 class SelfEpisodeProposal(_Contract):
     title: str = Field(
-        min_length=1,
         description="一句不超过 20 字的话概括这件事，不写日期；用于经历目录。",
     )
     passages: tuple[SelfEpisodePassage, ...] = Field(

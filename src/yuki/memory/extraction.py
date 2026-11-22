@@ -68,7 +68,6 @@ class MemoryClaim(_ExtractionModel):
     content: str = Field(min_length=1)
     title: str | None = Field(
         default=None,
-        min_length=1,
         description="kind=episode 时用一句不超过 20 字的话概括这件事，不写日期；其他 kind 省略。",
     )
     evidence_quote: str = Field(min_length=1)

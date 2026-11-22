@@ -204,7 +204,7 @@ class MemoryClaimValidator:
             memory_key=key,
             category=category,
             content=content,
-            title=claim.title if kind is MemoryKind.EPISODE else None,
+            title=(claim.title or None) if kind is MemoryKind.EPISODE else None,
             importance=claim.importance,
             confidence=claim.confidence,
             source_type=source_type,

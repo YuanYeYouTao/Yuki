@@ -165,7 +165,8 @@ Dream 每日批次在全部簇处理完后对到期主人运行一次挑选步�
 
 **标题**存于 `memory_facts.title`（schema `0163`，只有 episode 使用）。由写这条经历的那次模型调用给出：
 自省 `episodes[].title` 必填；提取 claim 的 `title` 在 kind=episode 时保存，其他 kind 丢弃；Dream recompose
-的 episode 输出取该输出的 `focus`，synthesize 沿用锚点标题；Main `save_memory` 不带标题。写入不受开关控制。
+的 episode 输出取该输出的 `focus`，synthesize 沿用锚点标题；Main `save_memory` 不带标题。空标题按无标题存 NULL，
+不会让整次输出校验失败（缺标题不是准入条件）。写入不受开关控制。
 标题不进 FTS、embedding 文档或 Dream 的事实签名。
 
 **可见范围**与常驻段同一套证据规则（`memory/resident.py` 的 `evidence_origins`、`private_evidence_visible`、

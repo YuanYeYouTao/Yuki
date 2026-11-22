@@ -1489,6 +1489,93 @@ async def test_g21_untitled_and_multiline_titles_and_backfill(scene):
     )
 
 
+async def test_g21_empty_titles_never_reject_writer_outputs(database, tmp_path):
+    """Case 21 (writers): an empty title is a missing title, never a rejected output.
+
+    Failure case written before the fix: a ``min_length=1`` title made one empty title
+    (also on a non-episode claim, whose title is discarded anyway) fail the whole paid
+    reflection or extraction output, although a missing title is not an admission
+    condition (task book §4.2).
+    """
+    scene = await EpisodeScene(database, tmp_path).build(
+        memory_batch_trigger_count=1, memory_batch_max_wait_seconds=0
+    )
+    await scene.event("private:A", "A", "今天下午去爬了香山", key="a1")
+    reflected = await scene.reflect(
+        {"private:A": [{"title": "", "content": "A 说下午爬了香山。", "cites": ["香山"]}]}
+    )
+    await scene.event("private:A", "A", "我昨天第一次去潜水了，也很喜欢喝美式", key="a2")
+    newest = max(await scene.fact_ids_after(0))
+    claims = [
+        {
+            "subject_ref": "speaker",
+            "scope_type": "person",
+            "kind": "episode",
+            "memory_key": "diving:first",
+            "category": "experience",
+            "content": "昨天第一次去潜水",
+            "evidence_quote": "我昨天第一次去潜水了",
+            "title": "",
+            "importance": 4,
+            "confidence": 0.9,
+            "source_type": "automatic",
+        },
+        {
+            "subject_ref": "speaker",
+            "scope_type": "person",
+            "kind": "preference",
+            "memory_key": "coffee",
+            "category": "drink",
+            "content": "喜欢喝美式",
+            "evidence_quote": "也很喜欢喝美式",
+            "title": "",
+            "importance": 3,
+            "confidence": 0.9,
+            "source_type": "automatic",
+        },
+    ]
+
+    def respond(request):
+        # Raw model JSON: the real extraction path does the validation.
+        payload = json.loads(request.messages[-1].content)
+        source = next(
+            item["source_event_id"] for item in payload["events"] if "潜水" in item["content"]
+        )
+        return json.dumps(
+            {"claims": [{"source_event_id": source, "claim": claim} for claim in claims]},
+            ensure_ascii=False,
+        )
+
+    event = scene.records["a2"]
+    worker = scene.harness.processor._memory_worker
+    scene.extraction_responder = respond
+    try:
+        await worker.enqueue(event.id, event.scope.key)
+        processed = await worker.process_once()
+    finally:
+        scene.extraction_responder = None
+    extracted = await scene.fact_ids_after(newest)
+    kinds = {fact_id: (await scene.fact_row(fact_id))["kind"] for fact_id in extracted}
+    titles = await scene.titles([*reflected["private:A"], *extracted])
+    rendered = await scene.render("private:A")
+    episode_ids = [*reflected["private:A"], *(i for i, k in kinds.items() if k == "episode")]
+
+    assert processed >= 1
+    assert sorted(kinds.values()) == ["episode", "preference"]
+    assert set(titles.values()) == {None}
+    assert rendered.recent_fact_ids == tuple(episode_ids)
+    for fact_id in episode_ids:
+        assert _line(fact_id, UNTITLED) in item_lines(rendered.recent_text)
+    scene.write(
+        "G21-empty-titles",
+        {
+            "facts": {**scene.facts, "reflected": reflected, "extracted": extracted},
+            "titles": {str(key): value for key, value in sorted(titles.items())},
+            "render": render_record(rendered),
+        },
+    )
+
+
 # --------------------------------------------------------------------------- G22
 async def test_g22_one_place_per_episode_at_any_time(scene):
     """Case 22: before and after each watermark move, every ID is in exactly one block."""
