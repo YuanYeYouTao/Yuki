@@ -9,8 +9,12 @@ worker loop body, real Main turns, the real ``yuki`` CLI (child process) for
 ``show/apply/revert`` and the real scan entry. The model is the only stand-in: the
 extraction, Dream and scan doubles return fixed structured output. A double cannot
 prove that a real model follows the v8 instruction (that is the offline replay of
-§11.2); these cases prove the switch routing, the instruction and schema sent, what
-gets written, and the deterministic clean-up and Dream behaviour.
+§11.2); these cases prove the instruction and schema sent, what gets written, and the
+deterministic clean-up and Dream behaviour.
+
+v8 is the only extraction contract (no runtime switch, owner decision 2026-11-22), so
+the task book's switch cases X2 (switch off is byte-identical to v7), X6 (flip during a
+batch) and X7 (the switch never touches Main) have nothing left to prove and are gone.
 
 Each case writes normalized JSON (instruction / schema digests and versions, written
 facts with ID, kind, category and status, plan files, Dream clusters and operations;
@@ -19,19 +23,14 @@ person/space/conversation IDs replaced by fixture labels, times stripped) to
 byte-identical artifacts.
 
 Failure cases, written before the implementation:
-  X1  with the switch on, extraction still sends the old instruction (or the double's
-      single long-term claim is not the only fact written);
-  X2  with the switch off, the instruction, schema or versions differ from the deployed
-      ones byte for byte, or the model's category is not written as given;
+  X1  extraction still sends the old instruction or versions (or the double's single
+      long-term claim is not the only fact written);
   X3  one batch writes two facts for one meaning (the v8 "one claim per meaning" line
       is missing);
-  X4  with the switch on, a free category is still written, or the output schema still
-      has ``category`` (an extra ``category`` from the model is not ignored);
+  X4  a free category is still written, or the output schema still has ``category``
+      (an extra ``category`` from the model is not ignored);
   X5  Rebuild and live extraction send different v8 paragraphs, or Rebuild does not
       record the v8 versions;
-  X6  flipping the switch while a batch request is in flight mixes variants inside the
-      batch, or the next batch does not follow the new value;
-  X7  the switch changes the recovery-contract hash or the Main system message;
   X8  two automatic synonyms of an explicit fact still coexist after a Dream merge to it
       (or the explicit anchor changes);
   X9  the per-run cluster cap is still 12 (20 pending clusters are not all planned, the
@@ -69,7 +68,6 @@ from tests.support.memory_resident_scene import (
     build_selection,
     normalize,
     run_cli,
-    system_text,
     tool_call,
 )
 
@@ -97,13 +95,6 @@ V8_SENTENCES = (
     "对方表明以后都适用、或描述的是一般做事方式的，才作为长期偏好提取。",
     "同一批里同一个意思只输出一条 claim。",
 )
-
-# Digests of what main 1215ed17 (P2) sends (instruction as sent, schema with sorted keys).
-# X2 proves the switch-off side stays byte-identical to the deployed contract.
-DEPLOYED = {
-    "batch_instruction": "69ff70af0eb8307a6bc31ea5a6294705a5149fb2904de5a8253d9f651550b61c",
-    "batch_schema": "98f0bf0705bcf215c569361a59fc83f4d14e3c74891e4416ea5c056b67ebf848",
-}
 
 
 @pytest.fixture
@@ -160,20 +151,6 @@ def _artifact(scene: ResidentScene, case: str, payload: dict[str, Any]) -> Path:
     path = RESULTS / f"{case}.json"
     path.write_text(normalize(payload, scene.labels()) + "\n", encoding="utf-8")
     return path
-
-
-async def _set_tightened(scene: ResidentScene, enabled: bool) -> None:
-    """Toggle ``memory.extraction_tightened_enabled`` through the real config owner."""
-    change = await scene.chat._runtime_config.set_override(
-        "memory.extraction_tightened_enabled",
-        enabled,
-        scope_type="global",
-        scope_id="",
-        actor_user_id=QQ["A"],
-        trigger_message_id=f"tightening-e2e-{enabled}-{scene._next()}",
-    )
-    assert change.success, change
-    assert (await scene.runtime()).memory.extraction_tightened_enabled is enabled
 
 
 def _batch_reply(request, claims: list[dict[str, Any]]):
@@ -256,41 +233,28 @@ def _claim(content: str, quote: str, *, kind: str = "preference", **extra: Any) 
     }
 
 
-def _version_lines(caplog) -> list[str]:
-    return [
-        record.getMessage()
-        for record in caplog.records
-        if record.getMessage().startswith("memory_extraction_batch_started")
-    ]
-
-
-def _tightened_of(line: str) -> str:
-    fields = dict(part.split("=", 1) for part in line.split()[1:] if "=" in part)
-    return fields["extraction_tightened"]
-
-
 MIXED = "这次 PR #12 先别合，等我看完任务书再说；另外以后汇报都先写结论再写过程"
 LONG_TERM_QUOTE = "以后汇报都先写结论再写过程"
 
 
 # --------------------------------------------------------------------------- X1
-async def test_x01_switch_on_sends_v8_and_writes_only_the_long_term_claim(scene, caplog):
+async def test_x01_extraction_sends_v8_and_writes_only_the_long_term_claim(scene):
     """Case 1: v8 instruction and versions; the double's one long-term claim is all."""
-    from yuki.memory.event_extractor import TIGHTENED_BATCH_EXTRACTION_INSTRUCTION
+    from yuki.memory.event_extractor import BATCH_EXTRACTION_INSTRUCTION
+    from yuki.memory.extraction import EXTRACTION_PROMPT_VERSION, EXTRACTION_SCHEMA_VERSION
 
-    caplog.set_level(logging.INFO, logger="yuki.memory.worker")
-    await _set_tightened(scene, True)
     await scene.event("private:A", "A", MIXED, key="mixed")
     requests, written = await _extract(
         scene, ["mixed"], [_claim("汇报先写结论再写过程", LONG_TERM_QUOTE)]
     )
 
     (request,) = requests
-    assert _instruction(request) == TIGHTENED_BATCH_EXTRACTION_INSTRUCTION.strip()
+    assert _instruction(request) == BATCH_EXTRACTION_INSTRUCTION.strip()
     assert all(sentence in _instruction(request) for sentence in V8_SENTENCES)
-    assert _sha(_instruction(request)) != DEPLOYED["batch_instruction"]
-    (line,) = _version_lines(caplog)
-    assert _tightened_of(line) == "True"
+    assert (EXTRACTION_PROMPT_VERSION, EXTRACTION_SCHEMA_VERSION) == (
+        "memory-v2-extraction-v8",
+        "8",
+    )
     facts = await _facts(scene, written)
     assert [(row["kind"], row["category"]) for row in facts] == [("preference", "preference")]
     _artifact(
@@ -299,38 +263,7 @@ async def test_x01_switch_on_sends_v8_and_writes_only_the_long_term_claim(scene,
         {
             "instruction_sha256": _sha(_instruction(request)),
             "schema_sha256": _schema_sha(request),
-            "extraction_tightened": _tightened_of(line),
-            "facts": facts,
-        },
-    )
-
-
-# --------------------------------------------------------------------------- X2
-async def test_x02_switch_off_is_byte_identical_to_the_deployed_contract(scene, caplog):
-    """Case 2: switch off -> deployed instruction, schema and versions; model category kept."""
-    caplog.set_level(logging.INFO, logger="yuki.memory.worker")
-    await scene.event("private:A", "A", MIXED, key="mixed")
-    requests, written = await _extract(
-        scene,
-        ["mixed"],
-        [_claim("汇报先写结论再写过程", LONG_TERM_QUOTE, category="工作习惯")],
-    )
-
-    (request,) = requests
-    assert _sha(_instruction(request)) == DEPLOYED["batch_instruction"]
-    assert _schema_sha(request) == DEPLOYED["batch_schema"]
-    assert not any(sentence in _instruction(request) for sentence in V8_SENTENCES)
-    (line,) = _version_lines(caplog)
-    assert _tightened_of(line) == "False"
-    facts = await _facts(scene, written)
-    assert [row["category"] for row in facts] == ["工作习惯"]
-    _artifact(
-        scene,
-        "X2",
-        {
-            "instruction_sha256": _sha(_instruction(request)),
-            "schema_sha256": _schema_sha(request),
-            "extraction_tightened": _tightened_of(line),
+            "prompt_version": EXTRACTION_PROMPT_VERSION,
             "facts": facts,
         },
     )
@@ -339,7 +272,6 @@ async def test_x02_switch_off_is_byte_identical_to_the_deployed_contract(scene, 
 # --------------------------------------------------------------------------- X3
 async def test_x03_one_meaning_in_one_batch_is_one_fact(scene):
     """Case 3: two synonymous events in one batch; the v8 double answers once."""
-    await _set_tightened(scene, True)
     await scene.event("private:A", "A", "以后回我消息先说结论", key="s1")
     await scene.event("private:A", "A", "记得先给结论再展开讲", key="s2")
     requests, written = await _extract(
@@ -364,9 +296,8 @@ async def test_x03_one_meaning_in_one_batch_is_one_fact(scene):
 
 
 # --------------------------------------------------------------------------- X4
-async def test_x04_category_comes_from_kind_when_the_switch_is_on(scene):
+async def test_x04_category_comes_from_kind(scene):
     """Case 4: no category in the output schema; an extra one from the model is ignored."""
-    await _set_tightened(scene, True)
     await scene.event(
         "private:A", "A", "我在杭州上班；我喜欢喝乌龙茶；昨天我们一起看了烟火", key="three"
     )
@@ -419,7 +350,6 @@ async def test_x05_rebuild_and_live_send_the_same_v8_paragraph(scene):
     from yuki.memory.rebuild.repository import MemoryRebuildRepository
     from yuki.memory.rebuild.service import MemoryRebuildService, extraction_fingerprint
 
-    await _set_tightened(scene, True)
     event_id = await scene.event("private:A", "A", MIXED, key="mixed")
     worker = scene.harness.processor._memory_worker
     rebuild = MemoryRebuildService(
@@ -428,7 +358,6 @@ async def test_x05_rebuild_and_live_send_the_same_v8_paragraph(scene):
         ledger=scene.harness.ledger,
         extractor=worker.extractor,
         processor=worker.processor,
-        runtime_config=scene.chat._runtime_config,
     )
     rebuild_requests: list[Any] = []
 
@@ -463,8 +392,7 @@ async def test_x05_rebuild_and_live_send_the_same_v8_paragraph(scene):
     assert "category" not in _claim_properties(_schema(rebuilt))["properties"]
     model_name = worker.extractor.model_name
     stored = (await rebuild.repository.get_run(run.public_id)).extraction_fingerprint
-    assert stored == extraction_fingerprint(scene.settings, model_name=model_name, tightened=True)
-    assert stored != extraction_fingerprint(scene.settings, model_name=model_name, tightened=False)
+    assert stored == extraction_fingerprint(scene.settings, model_name=model_name)
     async with scene.database.read_session() as reader:
         from yuki.persistence.models import MemoryRebuildProposalModel
 
@@ -482,94 +410,6 @@ async def test_x05_rebuild_and_live_send_the_same_v8_paragraph(scene):
             "rebuild_schema_sha256": _schema_sha(rebuilt),
             "rebuild_records_v8": True,
             "staged_categories": [item["category"] for item in proposals],
-        },
-    )
-
-
-# --------------------------------------------------------------------------- X6
-async def test_x06_a_batch_keeps_its_starting_snapshot(scene):
-    """Case 6: flip the switch while the batch request is in flight."""
-    await _set_tightened(scene, True)
-    await scene.event("private:A", "A", "我平时用 Vim 写代码", key="first")
-    worker = scene.harness.processor._memory_worker
-    requests: list[Any] = []
-    claims = {
-        "first": _claim("用 Vim 写代码", "我平时用 Vim 写代码", kind="fact", category="编辑器"),
-        "second": _claim("周末去爬山", "我周末常去爬山", kind="fact", category="运动"),
-    }
-
-    def respond(request):
-        requests.append(request)
-        events = json.loads(request.messages[-1].content)["events"]
-        key = "first" if any("Vim" in item["content"] for item in events) else "second"
-        return _batch_reply(request, [claims[key]])
-
-    provider = scene.provider
-    number = len(provider.ownership) + 1
-    provider.arrived[number] = asyncio.Event()
-    provider.release[number] = asyncio.Event()
-    before = max(await scene.fact_ids_after(0), default=0)
-    scene.extraction_responder = respond
-    try:
-        event = scene.records["first"]
-        await worker.enqueue(event.id, event.scope.key)
-        batch = asyncio.create_task(worker.process_once())
-        await provider.wait(number)
-        await _set_tightened(scene, False)
-        provider.release[number].set()
-        assert await batch == 1
-        first_facts = await _facts(scene, await scene.fact_ids_after(before))
-
-        await scene.event("private:A", "A", "我周末常去爬山", key="second")
-        middle = max(await scene.fact_ids_after(0))
-        event = scene.records["second"]
-        await worker.enqueue(event.id, event.scope.key)
-        assert await worker.process_once() == 1
-        second_facts = await _facts(scene, await scene.fact_ids_after(middle))
-    finally:
-        scene.extraction_responder = None
-
-    first_request, second_request = requests
-    assert all(sentence in _instruction(first_request) for sentence in V8_SENTENCES)
-    assert [row["category"] for row in first_facts] == ["fact"]
-    assert _sha(_instruction(second_request)) == DEPLOYED["batch_instruction"]
-    assert [row["category"] for row in second_facts] == ["运动"]
-    _artifact(
-        scene,
-        "X6",
-        {
-            "first_batch": {
-                "instruction_sha256": _sha(_instruction(first_request)),
-                "facts": first_facts,
-            },
-            "second_batch": {
-                "instruction_sha256": _sha(_instruction(second_request)),
-                "facts": second_facts,
-            },
-        },
-    )
-
-
-# --------------------------------------------------------------------------- X7
-async def test_x07_switch_never_touches_main(scene):
-    """Case 7: recovery contract hash and the Main system message are unchanged."""
-    off_contract = await scene.contract()
-    off_turn = await scene.turn("A", "开关关着的一轮")
-    await _set_tightened(scene, True)
-    on_contract = await scene.contract()
-    on_turn = await scene.turn("A", "开关开着的一轮")
-
-    assert off_contract == on_contract
-    assert system_text(off_turn.requests[0]) == system_text(on_turn.requests[0])
-    _artifact(
-        scene,
-        "X7",
-        {
-            "recovery_contract": [off_contract, on_contract],
-            "system_sha256": [
-                _sha(system_text(off_turn.requests[0])),
-                _sha(system_text(on_turn.requests[0])),
-            ],
         },
     )
 

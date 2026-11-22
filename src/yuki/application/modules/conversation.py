@@ -130,7 +130,6 @@ class ConversationModule:
             people=persistence.people,
             model_executor=models,
             concurrency=self._concurrency,
-            runtime_config=self._runtime_config,
         )
         memory_mutations = memory_worker.mutations
         agent_tools = AgentToolService(
@@ -176,7 +175,6 @@ class ConversationModule:
             ledger=persistence.ledger,
             extractor=memory_worker.extractor,
             processor=memory_worker.processor,
-            runtime_config=self._runtime_config,
         )
         memory_rebuild_worker = MemoryRebuildWorker(
             memory_rebuild_service,
@@ -213,7 +211,6 @@ class ConversationModule:
                 models=models,
                 concurrency=self._concurrency,
             ),
-            runtime_config=self._runtime_config,
             resident=ResidentSelection(
                 settings=settings,
                 database=persistence.database,

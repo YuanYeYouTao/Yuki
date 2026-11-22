@@ -710,7 +710,7 @@ async def _resident_select(
 ) -> ResidentSelectionOutcome:
     """Run one selection in this process with the bot's memory_dream model route.
 
-    It needs no running bot and ignores ``memory.resident_enabled``.
+    It needs no running bot.
     """
 
     async with _cli_models(settings, database) as (active, executor):

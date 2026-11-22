@@ -48,9 +48,8 @@ Rebuild 已提交事实与 proposal 回执共同核对，确认已提交不再�
 
 ## 常驻记忆核心集
 
-运行时热配置 `memory.resident_enabled`（全局，默认关闭）同时控制两件事：每轮 system 消息末尾是否渲染常驻记忆段，
-Dream 运行处理完全部簇后是否对到期主人做核心集挑选。关闭后下一轮起生效，表与事实都保留，不需要重启。
-下面的命令都不看这个开关；默认使用当前配置的数据库，也可加 `--database-url`。
+常驻记忆直接生效、无开关：每轮 system 消息末尾渲染常驻记忆段，Dream 运行处理完全部簇后对到期主人做核心集挑选。
+下面的命令默认使用当前配置的数据库，也可加 `--database-url`。
 
 ```bash
 yuki memory resident show --person <person-id> [--content]   # 或 --space <space-id> / --self
@@ -78,9 +77,8 @@ python scripts/verify_resident_check.py --database <sqlite-file> --check check.j
 
 ## 经历目录
 
-运行时热配置 `memory.episode_index_enabled`（全局，默认关闭）只控制每轮是否渲染经历目录与今日新经历；
-经历标题由写经历的模型调用照常写入。下面的命令都不看这个开关；默认使用当前配置的数据库，也可加
-`--database-url`。
+经历目录直接生效、无开关：每轮渲染经历目录与今日新经历，经历标题由写经历的模型调用写入。下面的命令
+默认使用当前配置的数据库，也可加 `--database-url`。
 
 ```bash
 yuki memory episodes render --conversation <conversation-id> [--through-fact-id N]
@@ -103,13 +101,10 @@ python scripts/verify_episode_check.py --database <sqlite-file> --check episodes
 
 ## 提取收紧与当次任务指令清理
 
-运行时热配置 `memory.extraction_tightened_enabled`（全局，默认关闭）控制自动提取与 Rebuild 用哪份合同。
-开启后用 v8 合同（`memory-v2-extraction-v8` / schema 8，live 批量与 Rebuild 共用）：当次任务指令不提取、
-同一批同义只出一条，提取输出不再带 `category`，写入时 `category` 取 kind（fact / preference / episode），
-经历的 `title` 照常给出。关闭时是原 `memory-v2-extraction-v7` / schema 7 合同。live 每个提取批次、Rebuild
-每个抽取页开始时读一次开关，同一批次内不切换；`memory_extraction_batch_started` 日志带本批的
-`extraction_tightened`，Rebuild 运行在规划时把当时的版本记进 `extraction_fingerprint`。开关不影响主 Agent 提示词、
-恢复哈希与工具清单，存量事实的 `category` 不改。
+自动提取与 Rebuild 只有一份合同 v8（`memory-v2-extraction-v8` / schema 8，直接生效、无开关）：当次任务指令
+不提取、同一批同义只出一条，提取输出不带 `category`，写入时 `category` 取 kind（fact / preference / episode），
+经历的 `title` 照常给出。Rebuild 运行在规划时把合同版本记进 `extraction_fingerprint`。合同不影响主 Agent
+提示词、恢复哈希与工具清单，存量事实的 `category` 不改。
 
 Dream 每次运行的簇上限 `MEMORY_DREAM_MAX_CLUSTERS_PER_RUN` 默认 24，与调用预算
 `MEMORY_DREAM_MAX_MODEL_CALLS_PER_RUN` 相同（每簇至少一次调用），P1 挑选步骤另计。积压看
@@ -137,7 +132,7 @@ yuki memory hygiene task-scoped revert --plan plan.json
   单条也可用管理入口的 `restore_fact`。
 - 被清理的事实若在常驻核心集里，下一轮渲染自然不再出现。
 
-v7 与 v8 的离线对照（不写库，调用生产提取模型）：
+当前合同的离线重放（不写库，调用生产提取模型）：
 `python scripts/replay_extraction_tightening.py --source <sqlite-file> --events sets.json --self-name <角色名> --output replay.json`。
 源库只读打开并备份到临时文件，结果只有事件 ID、claim 条数、kind 与正则口径计数。
 

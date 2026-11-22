@@ -12,7 +12,6 @@ from tests.conftest import make_settings
 from tests.support.event_seed import seed_event
 from tests.support.model_executor import InjectedModelExecutor
 
-from yuki.admin.config_service import RuntimeConfigService
 from yuki.domain.conversations import ScopeType
 from yuki.domain.messages import ChatRequest, ChatResponse
 from yuki.identity.canonical_repository import find_identity_binding
@@ -114,9 +113,6 @@ async def _service(
         ledger=ledger,
         model_executor=InjectedModelExecutor(provider),
         concurrency=ConcurrencyManager(),
-        runtime_config=RuntimeConfigService(
-            settings=make_settings(database.url), database=database
-        ),
         people=people,
     )
     service = MemoryRebuildService(
@@ -125,9 +121,6 @@ async def _service(
         ledger=ledger,
         extractor=live.extractor,
         processor=live.processor,
-        runtime_config=RuntimeConfigService(
-            settings=make_settings(database.url), database=database
-        ),
     )
     return settings, ledger, facts, provider, service
 

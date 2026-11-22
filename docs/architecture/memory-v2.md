@@ -40,10 +40,11 @@ external_event 保持原事件类型，不伪装成人类聊天，不自动进�
 Worker、Main Agent、自省和 Dream 的新事实复用 [变更合同](memory-change.md)。提取保留真实主体、
 实际来源引用、原模型 confidence 和原 evidence；不设 retention/importance 最低价值门槛或待确认
 候选评分队列。无事实可记录时允许正常空输出。
-运行时开关 `memory.extraction_tightened_enabled`（默认关闭）开启后，提取指令写明：只为当前这件事给出、
+提取合同为 `memory-v2-extraction-v8` / schema 8（live 批量与 Rebuild 共用，直接生效、无开关）。指令写明：只为当前这件事给出、
 指向某个 PR、issue、分支、文件、任务书、当次交付物或当次会话的要求、决定或安排是当次任务指令，不提取，
 它们留在会话历史与任务记录里；以后都适用或一般做事方式才作为长期偏好；同一批同一个意思只输出一条。
 这是模型按内容判断，不是后端门槛，没有按字段丢弃 claim 的逻辑。跨批的同义条目交给 Dream 现有 merge。
+提取输出不带 `category`（模型多给的忽略），写入取 kind 的值；存量事实的 `category` 不改。
 
 事实正文使用真实身份或名片。历史引用继续匹配原实际来源，不用当前展示名改写旧 quote。
 提取输入带 `bot_name`（当前角色名），Yuki 的原生提及按 `@bot_name` 渲染，她自己的消息署名
@@ -126,7 +127,7 @@ Embedding 请求、缓存命中、错误和已知 usage 分别记录，缺失的
 会话的缓存前缀；它不在 `invariant_contributions()` 里，恢复合同哈希不含它；不新增缓存断点。
 内容变化时，该会话的历史缓存失效一次。
 渲染由 `memory/resident.py` 的 `ResidentMemory` 完成：只用一个只读会话，不调用模型，不写库；
-运行时开关 `memory.resident_enabled` 关闭时不渲染。子 Agent 与插件轮不带常驻段。
+每轮直接渲染，没有运行时开关。子 Agent 与插件轮不带常驻段。
 
 **内容**。会话身份取自 `canonical_conversations` 的 `kind`、`person_id`（取人物根）与 `space_id`，
 不按入口类型区分：
@@ -164,15 +165,14 @@ Dream 每日批次在全部簇处理完后对到期主人运行一次挑选步�
 常驻段之后、system 消息的最后一段可以带“经历目录”（`memory.episode_index`，静态贡献，priority 5），
 当前消息里另有“今天新记下的经历”（`memory.episodes_recent`，TURN 贡献，priority 84，紧跟当前场景资料）。
 两者都不在 `invariant_contributions()` 里，恢复合同哈希不含它们；不新增 system 消息或缓存断点。
-渲染由 `memory/episode_index.py` 的 `EpisodeIndex` 完成：一个只读会话，不调用模型，不写库；运行时开关
-`memory.episode_index_enabled`（默认关闭，与 `memory.resident_enabled` 互不依赖）关闭时不渲染。子 Agent 与
-插件轮不带；渲染失败只在 `ContextAssembler` 一处接住，这一轮少这两段，记 `memory_episode_index_render_failed`。
+渲染由 `memory/episode_index.py` 的 `EpisodeIndex` 完成：一个只读会话，不调用模型，不写库；每轮直接渲染，
+没有运行时开关。子 Agent 与插件轮不带；渲染失败只在 `ContextAssembler` 一处接住，这一轮少这两段，记 `memory_episode_index_render_failed`。
 目录只有标题，正文按 `fact:ID` 用 `search_memory(fact_id=…)` 主动读取；不按相似度挑选，不注入正文。
 
 **标题**存于 `memory_facts.title`（schema `0163`，只有 episode 使用）。由写这条经历的那次模型调用给出：
 自省 `episodes[].title` 必填；提取 claim 的 `title` 在 kind=episode 时保存，其他 kind 丢弃；Dream recompose
 的 episode 输出取该输出的 `focus`，synthesize 沿用锚点标题；Main `save_memory` 不带标题。空标题按无标题存 NULL，
-不会让整次输出校验失败（缺标题不是准入条件）。写入不受开关控制。
+不会让整次输出校验失败（缺标题不是准入条件）。
 标题不进 FTS、embedding 文档或 Dream 的事实签名。
 
 **可见范围**与常驻段同一套证据规则（`memory/resident.py` 的 `evidence_origins`、`private_evidence_visible`、

@@ -1,10 +1,10 @@
-"""Offline replay of the v7 and v8 extraction instructions (memory layering P3 §11.2).
+"""Offline replay of the current (v8) extraction contract (memory layering P3 §11.2).
 
-Runs the production ``memory_extraction`` model route twice per source event, once
-with the deployed instruction (switch off) and once with the tightened one (switch
-on), and only generates claims: nothing is written to memory. The source database is
-opened read-only and copied with SQLite's backup API into a temporary file; the model
-runtime records its invocations in that copy, never in the source.
+Runs the production ``memory_extraction`` model route once per source event with the
+current extraction instruction and only generates claims: nothing is written to memory.
+The source database is opened read-only and copied with SQLite's backup API into a
+temporary file; the model runtime records its invocations in that copy, never in the
+source.
 
 The result file holds event IDs, claim counts, claim kinds and the §11.3 regex count
 only, never claim or chat text; judging whether a claim is the long-term rule happens
@@ -32,10 +32,7 @@ from typing import Any
 from yuki.cli import _cli_models
 from yuki.config import Settings
 from yuki.memory.event_extractor import MemoryEventExtractor
-from yuki.memory.extraction import (
-    EXTRACTION_PROMPT_VERSION,
-    TIGHTENED_EXTRACTION_PROMPT_VERSION,
-)
+from yuki.memory.extraction import EXTRACTION_PROMPT_VERSION
 from yuki.memory.quality.task_scoped import TASK_SCOPED_PATTERN
 from yuki.persistence.database import Database
 from yuki.persistence.event_repository import EventLedgerRepository
@@ -79,34 +76,27 @@ async def _replay(
                     context = await ledger.list_scope_before(
                         event.scope, before_event_id=event.id, limit=8, message_only=True
                     )
-                    row: dict[str, Any] = {"event_id": event_id}
-                    for label, tightened in (("v7", False), ("v8", True)):
-                        extracted = await extractor.extract_batch(
-                            (event,),
-                            context=context,
-                            max_output_tokens=active.memory_batch_max_output_tokens,
-                            self_name=self_name,
-                            tightened=tightened,
-                        )
-                        claims = [item.claim for item in extracted.output.claims]
-                        row[label] = {
+                    extracted = await extractor.extract_batch(
+                        (event,),
+                        context=context,
+                        max_output_tokens=active.memory_batch_max_output_tokens,
+                        self_name=self_name,
+                    )
+                    claims = [item.claim for item in extracted.output.claims]
+                    rows.append(
+                        {
+                            "event_id": event_id,
                             "claims": len(claims),
                             "kinds": sorted(claim.kind.value for claim in claims),
                             "task_scoped_pattern": sum(
                                 bool(TASK_SCOPED_PATTERN.search(claim.content)) for claim in claims
                             ),
                         }
-                    rows.append(row)
+                    )
                 results[name] = rows
     finally:
         await database.close()
-    return {
-        "prompt_versions": {
-            "v7": EXTRACTION_PROMPT_VERSION,
-            "v8": TIGHTENED_EXTRACTION_PROMPT_VERSION,
-        },
-        "sets": results,
-    }
+    return {"prompt_version": EXTRACTION_PROMPT_VERSION, "sets": results}
 
 
 def main() -> None:

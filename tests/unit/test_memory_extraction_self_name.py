@@ -76,7 +76,7 @@ def _extractor() -> tuple[MemoryEventExtractor, FakeLLMProvider]:
 async def test_batch_payload_names_the_bot_and_renders_its_mentions() -> None:
     extractor, provider = _extractor()
 
-    await extractor.extract_batch((CALL,), context=(OWN,), self_name="Yuki", tightened=False)
+    await extractor.extract_batch((CALL,), context=(OWN,), self_name="Yuki")
 
     payload = json.loads(provider.requests[0].messages[-1].content)
     assert payload["bot_name"] == "Yuki"
@@ -88,7 +88,7 @@ async def test_batch_payload_names_the_bot_and_renders_its_mentions() -> None:
 async def test_single_payload_names_the_bot_and_renders_its_mentions() -> None:
     extractor, provider = _extractor()
 
-    await extractor.extract(CALL, context=(OWN,), self_name="Yuki", tightened=False)
+    await extractor.extract(CALL, context=(OWN,), self_name="Yuki")
 
     payload = json.loads(provider.requests[0].messages[-1].content)
     assert payload["bot_name"] == "Yuki"
@@ -99,7 +99,7 @@ async def test_member_called_agent_and_rename() -> None:
     extractor, provider = _extractor()
     member = _event(3, "@Agent 你好", kind="member")
 
-    await extractor.extract_batch((member, CALL), self_name="ゆき", tightened=False)
+    await extractor.extract_batch((member, CALL), self_name="ゆき")
 
     payload = json.loads(provider.requests[0].messages[-1].content)
     assert payload["bot_name"] == "ゆき"

@@ -7,7 +7,8 @@ the watermark is the newest finished Dream run's ``snapshot_max_fact_id`` (P2-Q1
 groups never list person-scope episodes (P2-Q2) nor episodes with tool-receipt
 evidence (P2-Q3); 120 index lines and 20 recent lines (P2-Q4); the grounding rule
 mentions the index (P2-Q5); ``search_memory`` semantics stay (P2-Q6); writers store
-titles whatever the switch (P2-Q7).
+titles (P2-Q7). The index and the recent block render on every Main turn with no
+runtime switch (owner decision 2026-11-22), so G24 keeps only its writer half.
 
 Every case runs real SQLite and real write paths (``MemoryFactService``, the real
 self-reflection over claimed chat batches, the batch extraction worker, Dream, Main
@@ -45,7 +46,7 @@ Failure cases, written before the implementation. The index or the recent block:
       dry runs, touches titled rows, ``updated_at`` or the Dream signature;
   G22 shows one episode in both the index and the recent block;
   G23 leaves Dream outputs without titles;
-  G24 changes any request while the switch is off, or stops writers storing titles.
+  G24 stops writers (self-reflection, extraction) storing titles.
 
 Failure baselines for the leakage cases (§10, P1 task book §15 #20). These pass on the
 old implementation that renders nothing at all, so their red baseline is the renderer
@@ -67,7 +68,6 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import re
 import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -149,11 +149,6 @@ async def _assert_matches_render(scene: EpisodeScene, key: str, turn) -> None:
         assert turn.current.count(rendered.recent_text) == 1
     else:
         assert RECENT_HEADER not in turn.current
-
-
-def _event_free(current: str, text: str) -> str:
-    masked = re.sub(r"#\d+>", "#<event>>", current.replace(text, "<text>"))
-    return re.sub(r"\d{2}:\d{2}:\d{2}", "<time>", masked)
 
 
 def _line(fact_id: int, title: str, day: str | None = None) -> str:
@@ -800,7 +795,7 @@ async def test_g15_render_failure_keeps_the_turn_and_the_resident_segment(
     """Case 15: a failing index renderer drops only its two blocks for this turn."""
     from yuki.memory.episode_index import EpisodeIndex
 
-    scene = await EpisodeScene(database, tmp_path).build(resident_enabled=True)
+    scene = await EpisodeScene(database, tmp_path).build()
     a1 = await scene.event("private:A", "A", "记住：周报周五交，我上周去了杭州", key="a1")
     await scene.fact("rule", "A", "周报周五交", evidence=(a1,), **EXPLICIT)
     await scene.episode("trip", "A", "上周去杭州", title="去杭州", evidence=(a1,))
@@ -849,15 +844,13 @@ async def test_g15_render_failure_keeps_the_turn_and_the_resident_segment(
 
 # --------------------------------------------------------------------------- G16
 async def test_g16_recovery_contract_ignores_index_changes(scene):
-    """Case 16: watermark, new episodes and the switch never move the hash."""
+    """Case 16: watermark and new episodes never move the hash."""
     a1 = await scene.event("private:A", "A", "上周我们去露营了", key="a1")
     await scene.episode("camp", "A", "上周去露营", title="去露营", evidence=(a1,))
     hashes = [await scene.contract()]
     await scene.advance()
     hashes.append(await scene.contract())
     await scene.episode("fire", "A", "露营时生了篝火", title="生篝火", evidence=(a1,))
-    hashes.append(await scene.contract())
-    await scene.set_episode_index_enabled(False)
     hashes.append(await scene.contract())
 
     assert len(set(hashes)) == 1
@@ -1273,15 +1266,6 @@ async def test_g19_plugin_turn_carries_no_index(database, tmp_path):
     provider = FakeLLMProvider()
     env, _harness, chat, source, host = await source_host(database, tmp_path, provider, ())
     install_memory_segments(chat, database)
-    change = await chat._runtime_config.set_override(
-        "memory.episode_index_enabled",
-        True,
-        scope_type="global",
-        scope_id="",
-        actor_user_id="10001",
-        trigger_message_id="episode-plugin",
-    )
-    assert change.success, change
     async with database.read_session() as reader:
         group_event = await reader.scalar(select(ChatEventModel.id).order_by(ChatEventModel.id))
         conversation = await reader.scalar(
@@ -1705,13 +1689,9 @@ async def test_g23_dream_outputs_carry_titles(scene, tmp_path, monkeypatch):
 
 
 # --------------------------------------------------------------------------- G24
-async def test_g24_switch_off_changes_nothing_and_writers_still_title(database, tmp_path):
-    """Case 24: switch off -> requests as without P2; reflection and extraction still title."""
-    from yuki.memory.resident import ResidentMemory
-    from yuki.services.context_assembler import ContextAssembler
-
+async def test_g24_writers_store_titles_and_the_turn_lists_them(database, tmp_path):
+    """Case 24: self-reflection and extraction store titles; the next turn lists them."""
     scene = await EpisodeScene(database, tmp_path).build(
-        episode_index_enabled=False,
         memory_batch_trigger_count=1,
         memory_batch_max_wait_seconds=0,
     )
@@ -1732,7 +1712,6 @@ async def test_g24_switch_off_changes_nothing_and_writers_still_title(database, 
                 "scope_type": "person",
                 "kind": "episode",
                 "memory_key": "diving:first",
-                "category": "experience",
                 "content": "昨天第一次去潜水",
                 "evidence_quote": "我昨天第一次去潜水了",
                 "title": "第一次潜水",
@@ -1745,7 +1724,6 @@ async def test_g24_switch_off_changes_nothing_and_writers_still_title(database, 
                 "scope_type": "person",
                 "kind": "preference",
                 "memory_key": "coffee",
-                "category": "drink",
                 "content": "喜欢喝美式",
                 "evidence_quote": "也很喜欢喝美式",
                 "title": "不该写进偏好的标题",
@@ -1756,19 +1734,7 @@ async def test_g24_switch_off_changes_nothing_and_writers_still_title(database, 
         ],
     )
     extracted = await scene.fact_ids_after(newest)
-    off = await scene.episode_turn("A", "开关关着")
-
-    chat = scene.chat
-    chat._context_assembler = ContextAssembler(
-        settings=chat._settings,
-        ledger=chat._ledger,
-        conversation_scopes=chat._conversation_scopes,
-        resident=ResidentMemory(database),
-    )
-    baseline = await scene.episode_turn("A", "没有经历目录")
-    install_memory_segments(chat, database)
-    await scene.set_episode_index_enabled(True)
-    on = await scene.episode_turn("A", "开关打开")
+    turn = await scene.episode_turn("A", "经历目录")
 
     titles = await scene.titles([*reflected["private:A"], *extracted])
     rows = {fact_id: await scene.fact_row(fact_id) for fact_id in extracted}
@@ -1776,25 +1742,17 @@ async def test_g24_switch_off_changes_nothing_and_writers_still_title(database, 
     preference_rows = [fact_id for fact_id, row in rows.items() if row["kind"] == "preference"]
 
     assert processed >= 1
-    assert off.index == "" and off.recent == ""
-    assert INDEX_HEADER not in request_text(off.requests[0])
-    assert RECENT_HEADER not in request_text(off.requests[0])
-    assert off.system == baseline.system
-    # Only the message itself (event number, time and text) differs.
-    assert _event_free(off.current, "开关关着") == _event_free(baseline.current, "没有经历目录")
     assert titles[reflected["private:A"][0]] == "A 去爬香山"
     assert [titles[item] for item in episode_rows] == ["第一次潜水"]
     assert [titles[item] for item in preference_rows] == [None]
-    assert on.index_ids == [e0]
-    assert set(on.recent_ids) == {*reflected["private:A"], *episode_rows}
+    assert turn.index_ids == [e0]
+    assert set(turn.recent_ids) == {*reflected["private:A"], *episode_rows}
     contract = await scene.contract()
     scene.write(
         "G24",
         {
             "facts": {**scene.facts, "reflected": reflected, "extracted": extracted},
-            "off": turn_record(off, contract, watermark),
-            "baseline": turn_record(baseline, contract, watermark),
-            "on": turn_record(on, contract, watermark),
+            "turn": turn_record(turn, contract, watermark),
             "titles": {str(key): value for key, value in sorted(titles.items())},
         },
     )

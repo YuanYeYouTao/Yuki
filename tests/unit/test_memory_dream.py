@@ -17,7 +17,6 @@ from tests.support.correctness_wire import wire
 from tests.support.event_seed import seed_event
 from tests.support.model_executor import InjectedModelExecutor
 
-from yuki.admin.config_service import RuntimeConfigService
 from yuki.domain.conversations import ScopeType
 from yuki.domain.messages import ChatResponse, ToolCall, ToolFunction
 from yuki.identity.db_models import (
@@ -92,9 +91,8 @@ from yuki.services.concurrency import ConcurrencyManager
 
 
 def _resident_wiring(database, settings):
-    """Dream worker collaborators for the resident selection step (switch off by default)."""
+    """Dream worker collaborators for the resident selection step."""
     return {
-        "runtime_config": RuntimeConfigService(settings=settings, database=database),
         "resident": ResidentSelection(
             settings=settings,
             database=database,

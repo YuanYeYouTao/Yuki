@@ -8,7 +8,6 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from yuki.admin.config_service import RuntimeConfigService
 from yuki.config import Settings
 from yuki.memory.claim_processor import MemoryClaimProcessor, MemoryProcessingContext
 from yuki.memory.enums import (
@@ -68,7 +67,6 @@ class MemoryWorker:
         people: PeopleRepository | None = None,
         model_executor: ModelExecutor,
         concurrency: ConcurrencyManager,
-        runtime_config: RuntimeConfigService,
         validator: MemoryClaimValidator | None = None,
         extractor: MemoryEventExtractor | None = None,
         processor: MemoryClaimProcessor | None = None,
@@ -78,7 +76,6 @@ class MemoryWorker:
         self._jobs = jobs
         self._facts = facts
         self._ledger = ledger
-        self._runtime_config = runtime_config
         models = model_executor
 
         self._concurrency = concurrency
@@ -166,19 +163,16 @@ class MemoryWorker:
         oldest = min(job.created_at for job in jobs)
         age = max(0, int((datetime.now(UTC) - oldest.replace(tzinfo=UTC)).total_seconds()))
         trigger = jobs[0].batch_trigger or "manual"
+        logger.info(
+            "memory_extraction_batch_started batch_id=%s trigger=%s events=%d characters=%d "
+            "oldest_age_seconds=%d",
+            batch_id,
+            trigger,
+            len(jobs),
+            characters,
+            age,
+        )
         try:
-            # One snapshot per batch: a switch flipped mid-request applies to the next batch.
-            tightened = (await self._runtime_config.snapshot()).memory.extraction_tightened_enabled
-            logger.info(
-                "memory_extraction_batch_started batch_id=%s trigger=%s events=%d characters=%d "
-                "oldest_age_seconds=%d extraction_tightened=%s",
-                batch_id,
-                trigger,
-                len(jobs),
-                characters,
-                age,
-                tightened,
-            )
             first_event = jobs[0].event
             context = await self._ledger.list_scope_before(
                 first_event.scope,
@@ -191,7 +185,6 @@ class MemoryWorker:
                 context=context,
                 max_output_tokens=self._settings.memory_batch_max_output_tokens,
                 self_name=self._settings.character_identity.display_name,
-                tightened=tightened,
             )
         except asyncio.CancelledError:
             raise

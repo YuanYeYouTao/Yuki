@@ -13,7 +13,6 @@ from tests.support.model_executor import InjectedModelExecutor
 from tests.unit.test_memory_mutation import _context, _event, _service
 from tests.unit.test_memory_worker_shutdown import _Provider as ExtractionProvider
 
-from yuki.admin.config_service import RuntimeConfigService
 from yuki.identity.db_models import IdentityBindingModel
 from yuki.memory.models import MemoryFactQuery
 from yuki.memory.mutation.models import MemoryMutationRequest
@@ -84,9 +83,6 @@ async def test_native_telegram_and_qq_same_number_write_manual_and_automatic_fac
         ledger=ledger,
         model_executor=InjectedModelExecutor(provider),
         concurrency=ConcurrencyManager(),
-        runtime_config=RuntimeConfigService(
-            settings=make_settings(database.url), database=database
-        ),
     )
     for source in (qq, telegram):
         await worker.enqueue(source.id, source.scope.key)

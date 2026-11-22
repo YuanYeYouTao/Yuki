@@ -1605,9 +1605,6 @@ class RuntimeConfigService:
                     cast(float | int, value("memory.maintenance_interval_seconds"))
                 ),
                 maintenance_batch_limit=int(cast(int, value("memory.maintenance_batch_limit"))),
-                resident_enabled=bool(value("memory.resident_enabled")),
-                episode_index_enabled=bool(value("memory.episode_index_enabled")),
-                extraction_tightened_enabled=bool(value("memory.extraction_tightened_enabled")),
             ),
             reply=ReplyRuntimeConfig(
                 delay_min_seconds=delay_min,

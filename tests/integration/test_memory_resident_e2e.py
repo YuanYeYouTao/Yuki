@@ -7,7 +7,9 @@ docs/architecture/Yuki-记忆分层架构书-2026-11-21.md §8.0. Q16 = b: the g
 the @-part of case 28 are deleted (task book §13, Q16 row); cases 1, 2 and 4 assert
 against the group core section "[本群]". Q13 a/a: subagent and plugin turns carry no
 resident segment. Q14 a: facts without evidence rows render only in the subject's own
-private chat. Q19 b does not change any case here.
+private chat. Q19 b does not change any case here. The segment renders on every Main
+turn with no runtime switch (owner decision 2026-11-22), so §15 #19 (F18b, switch off
+and back on) is gone.
 
 Every case runs a real SQLite database, writes facts and evidence through the real
 ``MemoryFactService`` with evidence on real fixture chat events, and drives real
@@ -33,8 +35,7 @@ Failure cases, written before the implementation. A resident segment that:
   F15 is written for SELF by anyone but the owner CLI, or with a non-SELF fact;
   F16 makes the turn fail when the renderer fails;
   F17 changes inside one Work (requests or continuation) or re-pays its first request;
-  F18 moves the recovery contract hash (core set, explicit fact, flag);
-  F18b renders while the flag is off, or does not come back when it is on again;
+  F18 moves the recovery contract hash (core set, explicit fact);
   F19 shows a third-party fact (CLI or direct row);
   F20 shows a superseded fact instead of its active successor (or an ineligible one);
   F22 hides or reorders contradicting explicit facts, or shows a contested one;
@@ -507,49 +508,9 @@ async def test_f18_recovery_contract_ignores_resident_changes(scene):
     hashes.append(await scene.contract())
     await scene.fact("weekly", "A", "周报周五交", evidence=(a3,), **EXPLICIT)
     hashes.append(await scene.contract())
-    await scene.set_resident_enabled(False)
-    hashes.append(await scene.contract())
 
     assert len(set(hashes)) == 1
     scene.write("F18", {"recovery_contract_sha256": [_sha(value) for value in hashes]})
-
-
-async def test_f18b_flag_off_stops_render_and_selection_and_comes_back(scene):
-    """§15 #19: flag off -> no segment and no automatic selection; on -> both return."""
-    ids = await _owner_private_scene(scene)
-    on_before = await scene.turn("A", "开着")
-    await scene.set_resident_enabled(False)
-    off = await scene.turn("A", "关了")
-    off_selection = await scene.dream_selection_ran()
-    # CLI render ignores the flag (rollout steps 5 and 6 depend on it).
-    cli = await run_cli(
-        scene.database.url,
-        "memory",
-        "resident",
-        "render",
-        "--conversation",
-        scene.conversations["private:A"],
-    )
-    await scene.set_resident_enabled(True)
-    on_after = await scene.turn("A", "又开了")
-    on_selection = await scene.dream_selection_ran()
-
-    assert on_before.segment and on_after.segment == on_before.segment
-    assert off.segment == "" and HEADER not in off.current
-    assert off_selection is False and on_selection is True
-    assert cli.returncode == 0, cli
-    assert on_before.segment in cli.stdout
-    assert str(ids["rule"]) in cli.stdout
-    contract = await scene.contract()
-    scene.write(
-        "F18b",
-        {
-            "on_before": turn_record(on_before, contract),
-            "off": turn_record(off, contract),
-            "on_after": turn_record(on_after, contract),
-            "selection_ran": {"off": off_selection, "on": on_selection},
-        },
-    )
 
 
 # --------------------------------------------------------------------------- F19
@@ -1275,15 +1236,6 @@ async def test_f24_plugin_turn_carries_no_segment(database, tmp_path):
     provider = FakeLLMProvider()
     env, _harness, chat, source, host = await source_host(database, tmp_path, provider, ())
     install_resident(chat, database)
-    change = await chat._runtime_config.set_override(
-        "memory.resident_enabled",
-        True,
-        scope_type="global",
-        scope_id="",
-        actor_user_id="10001",
-        trigger_message_id="resident-plugin",
-    )
-    assert change.success, change
     async with database.read_session() as reader:
         group_event = await reader.scalar(select(ChatEventModel.id).order_by(ChatEventModel.id))
     principle = await scene_free_self_fact(chat, "插件轮不该看到的原则", group_event)
@@ -1418,15 +1370,6 @@ async def test_f26_qq_app_and_acp_private_chats_render_the_same(database, tmp_pa
     await app.app_gateway.start()
     await app.acp_gateway.start()
     await app._freeze_main_manifest()
-    change = await app.runtime_config.set_override(
-        "memory.resident_enabled",
-        True,
-        scope_type="global",
-        scope_id="",
-        actor_user_id="10001",
-        trigger_message_id="resident-entries",
-    )
-    assert change.success, change
     memories = MemoryFactService(MemoryFactRepository(database))
 
     async def remember(name, content, **fields):

@@ -7,7 +7,7 @@ import json
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, computed_field
 
 from yuki.domain.conversations import ScopeType
 from yuki.memory.enums import (
@@ -18,13 +18,11 @@ from yuki.memory.enums import (
 )
 from yuki.persistence.repository_records import EventRecord
 
-EXTRACTION_PROMPT_VERSION = "memory-v2-extraction-v7"
-EXTRACTION_SCHEMA_VERSION = "7"
+# v8: task-scoped instructions are not extracted, one claim per meaning in a batch, and
+# ``category`` is generated from ``kind`` instead of asked for.
+EXTRACTION_PROMPT_VERSION = "memory-v2-extraction-v8"
+EXTRACTION_SCHEMA_VERSION = "8"
 SOURCE_ADAPTATION_VERSION = "3"
-# Behind ``memory.extraction_tightened_enabled``: task-scoped instructions are not
-# extracted and ``category`` is generated from ``kind`` instead of asked for.
-TIGHTENED_EXTRACTION_PROMPT_VERSION = "memory-v2-extraction-v8"
-TIGHTENED_EXTRACTION_SCHEMA_VERSION = "8"
 
 type ExtractionScope = Literal[
     MemoryScopeType.PERSON, MemoryScopeType.PERSON_GROUP, MemoryScopeType.GROUP
@@ -60,13 +58,14 @@ class MemoryExtractionInput(_ExtractionModel):
     conversation_context: tuple[ConversationContextEvent, ...] = ()
 
 
+# No docstring: it would become the schema description sent to the model. A
+# ``category`` from a model is ignored; the computed one below is the kind.
 class MemoryClaim(_ExtractionModel):
     subject_ref: str = Field(min_length=1)
     subject_name: str | None = Field(default=None, min_length=1)
     scope_type: ExtractionScope
     kind: MemoryKind = MemoryKind.FACT
     memory_key: str = Field(min_length=1)
-    category: str = Field(min_length=1)
     content: str = Field(min_length=1)
     title: str | None = Field(
         default=None,
@@ -79,6 +78,13 @@ class MemoryClaim(_ExtractionModel):
     temporal_mode: MemoryTemporalMode = MemoryTemporalMode.PERSISTENT
     valid_from: str | None = None
     valid_until: str | None = None
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def category(self) -> str:
+        """The kind, as for ``save_memory``; not part of the output schema."""
+
+        return self.kind.value
 
 
 ExtractedMemoryClaim = MemoryClaim
@@ -118,57 +124,6 @@ class BatchMemoryClaim(_ExtractionModel):
 
 class BatchMemoryExtractionOutput(_ExtractionModel):
     claims: tuple[BatchMemoryClaim, ...] = Field(default=())
-
-
-class TightenedMemoryClaim(_ExtractionModel):
-    """The v8 claim: no ``category``; the extra field from a model is ignored."""
-
-    subject_ref: str = Field(min_length=1)
-    subject_name: str | None = Field(default=None, min_length=1)
-    scope_type: ExtractionScope
-    kind: MemoryKind = MemoryKind.FACT
-    memory_key: str = Field(min_length=1)
-    content: str = Field(min_length=1)
-    title: str | None = Field(
-        default=None,
-        description="kind=episode 时用一句不超过 20 字的话概括这件事，不写日期；其他 kind 省略。",
-    )
-    evidence_quote: str = Field(min_length=1)
-    importance: int = Field(default=3, ge=1, le=5)
-    confidence: float = Field(default=0.8, ge=0, le=1)
-    source_type: MemorySourceType = MemorySourceType.AUTOMATIC
-    temporal_mode: MemoryTemporalMode = MemoryTemporalMode.PERSISTENT
-    valid_from: str | None = None
-    valid_until: str | None = None
-
-    def claim(self) -> MemoryClaim:
-        """The pipeline claim; its category is the kind, as for ``save_memory``."""
-
-        return MemoryClaim(**self.model_dump(), category=self.kind.value)
-
-
-class TightenedMemoryExtractionOutput(_ExtractionModel):
-    claims: tuple[TightenedMemoryClaim, ...] = ()
-
-    def output(self) -> MemoryExtractionOutput:
-        return MemoryExtractionOutput(claims=tuple(item.claim() for item in self.claims))
-
-
-class TightenedBatchMemoryClaim(_ExtractionModel):
-    source_event_id: int = Field(gt=0)
-    claim: TightenedMemoryClaim
-
-
-class TightenedBatchMemoryExtractionOutput(_ExtractionModel):
-    claims: tuple[TightenedBatchMemoryClaim, ...] = Field(default=())
-
-    def output(self) -> BatchMemoryExtractionOutput:
-        return BatchMemoryExtractionOutput(
-            claims=tuple(
-                BatchMemoryClaim(source_event_id=item.source_event_id, claim=item.claim.claim())
-                for item in self.claims
-            )
-        )
 
 
 def source_event_fingerprint(event: EventRecord) -> str:

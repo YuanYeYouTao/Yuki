@@ -7,12 +7,10 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import event, func, select, update
-from tests.conftest import make_settings
 from tests.support.model_executor import InjectedModelExecutor
 from tests.unit.test_memory_rebuild import _admin, _event, _ExtractionProvider, _service
 from tests.unit.test_memory_v2 import _claim
 
-from yuki.admin.config_service import RuntimeConfigService
 from yuki.domain.messages import ChatResponse
 from yuki.memory.enums import MemoryRebuildRunStatus
 from yuki.memory.extraction import BatchMemoryClaim, BatchMemoryExtractionOutput
@@ -69,9 +67,6 @@ async def test_close_during_real_busy_preserves_original_owner_and_committed_tru
             ledger=ledger,
             model_executor=InjectedModelExecutor(provider),
             concurrency=ConcurrencyManager(),
-            runtime_config=RuntimeConfigService(
-                settings=make_settings(database.url), database=database
-            ),
         )
         assert await worker.enqueue(source.id, "private:1001")
         async with database.immediate_session() as session:

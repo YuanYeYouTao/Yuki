@@ -140,20 +140,15 @@ class EpisodeScene(ResidentScene):
     async def build(  # type: ignore[override]
         self,
         *,
-        episode_index_enabled: bool = True,
-        resident_enabled: bool = False,
         work_enabled: bool = False,
         **settings: Any,
     ) -> EpisodeScene:
         settings.setdefault("memory_self_reflection_enabled", True)
         settings.setdefault("self_memory_enabled", True)
-        await super().build(
-            resident_enabled=resident_enabled, work_enabled=work_enabled, **settings
-        )
+        await super().build(work_enabled=work_enabled, **settings)
         install_memory_segments(self.chat, self.database)
         # The container wires Main's memory writes (save_memory / edit_memory).
         self.chat._tools._memory_mutations = self.harness_mutations()
-        await self.set_episode_index_enabled(episode_index_enabled)
         self.reflection_responder = None
         # The first scan only sets the self-reflection baseline (events after it count).
         from yuki.memory.self_reflection.repository import SelfReflectionRepository
@@ -165,18 +160,6 @@ class EpisodeScene(ResidentScene):
         if self.reflection_responder is not None and _is_reflection(request):
             return self.reflection_responder(request)
         return super()._respond(request)
-
-    async def set_episode_index_enabled(self, enabled: bool) -> None:
-        change = await self.chat._runtime_config.set_override(
-            "memory.episode_index_enabled",
-            enabled,
-            scope_type="global",
-            scope_id="",
-            actor_user_id="10001",
-            trigger_message_id=f"episode-e2e-{enabled}-{self._next()}",
-        )
-        assert change.success, change
-        assert (await self.runtime()).memory.episode_index_enabled is enabled
 
     # --------------------------------------------------------------- episodes
     async def episode(
