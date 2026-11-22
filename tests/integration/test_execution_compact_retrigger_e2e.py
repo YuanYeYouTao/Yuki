@@ -334,7 +334,7 @@ async def test_hard_capacity_the_retained_round_cannot_fit_keeps_capacity_failur
 ):
     """R3: the soft rule never replaces the known hard capacity failure."""
     sends = ["PART_1 " + LARGE, "PART_2 never reached"]
-    facts = await _run(database, tmp_path, monkeypatch, entry, sends, capacity=50000)
+    facts = await _run(database, tmp_path, monkeypatch, entry, sends, capacity=40000)
     RESULTS[f"R3-{entry}"] = facts
     first = facts["first_turn"]
     assert _kinds(first) == ["main"] * (2 if entry == "work" else 1)

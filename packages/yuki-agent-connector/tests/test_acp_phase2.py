@@ -198,9 +198,7 @@ async def test_scoped_session_asks_and_the_connector_decides_only_inside_the_sco
 
 
 @pytest.mark.asyncio
-async def test_codex_style_agent_gets_an_asking_mode_and_a_cancelling_reject_is_reported(
-    tmp_path: Path,
-) -> None:
+async def test_codex_style_agent_gets_an_asking_mode(tmp_path: Path) -> None:
     driver, events, trace = await started(tmp_path, FAKE_ACP_MODES=CODEX_MODES)
     script = {
         "during": [permission("outside", "execute", raw={"command": "make"}, reject="cancel")]
@@ -210,7 +208,6 @@ async def test_codex_style_agent_gets_an_asking_mode_and_a_cancelling_reject_is_
         [mode] = await traced_until(trace, "session/set_mode")
         assert mode["mode"] in {"read-only", "workspace-write"}
         _kind, value = await until(events, lambda kind, value: kind == "permission")
-        assert value["payload"]["reject_ends_prompt"] is True
         await driver.execute(
             {
                 "id": "answer",

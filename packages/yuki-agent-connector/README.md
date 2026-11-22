@@ -1,13 +1,13 @@
 # Yuki Agent Connector
 
-Connector **0.9.3 / wire protocol 5** connects an existing computer to Yuki through
+Connector **0.9.4 / wire protocol 5** connects an existing computer to Yuki through
 one outbound WSS connection. It provides native Codex, Claude SDK and ACP
 connections, and optional local Shell/file capabilities. It does not
 install the Bot, create another business task system or mirror native histories.
 
 Desktop includes this locked Python runtime for the Connector. No user Python
 installation is required. Independent CLI installations use Python 3.12:
-`uv tool install path/to/yuki_agent_connector-0.9.3-py3-none-any.whl`.
+`uv tool install path/to/yuki_agent_connector-0.9.4-py3-none-any.whl`.
 
 ## Installation and ownership
 
@@ -222,6 +222,18 @@ permission mode `auto` with only SendMessage forced to ask, Codex gets
 scope), ACP keeps the agent's own mode; whatever the agent still asks is
 approved except questions and cross-session messages. A Claude process opened
 in auto mode accepts only full-scope inputs (`scope_conflict` otherwise).
+
+ACP (0.9.4): an agent advertising `_session/steering` (top-level
+`_meta.steering.supported`, e.g. codex-acp 2.9.0, claude-agent-acp 0.109.1) is
+declared `steer`; a steer goes only to Yuki's running prompt with
+`idleBehavior: "promptRequired"` (`turn_not_running` when the agent did not take
+it), and without the extension steer/queue stay unsupported. A rejection's effect
+is whatever the agent reports (the prompt's `stopReason`, a failed tool call), not
+inferred from an option ID; Yuki's `deny` selects the agent's one-time reject.
+Prompt receipts carry the session `cwd`; resuming a session this connector no
+longer holds uses session/list when offered, else the cwd recorded when the
+session was created here (`cwd_unknown` without a record).
+
 Codex thread settings apply to the thread's next
 turns: a turn that starts before Yuki's queued input (for example the user's own)
 also runs with the narrowed settings until Yuki's turn ends or the item is

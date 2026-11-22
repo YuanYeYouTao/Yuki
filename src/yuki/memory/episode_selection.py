@@ -337,6 +337,7 @@ class EpisodeComparator:
                     output_model=EpisodeMemorableOutput,
                     temperature=0.1,
                     max_output_tokens=self._settings.memory_dream_max_output_tokens,
+                    validation_retries=1,
                 ),
                 translate_cancellation=False,
             )
@@ -463,7 +464,11 @@ class EpisodeSelection:
                         plan.offerable,
                     )
                 except (EpisodeSelectionRejected, StructuredTaskError) as exc:
-                    calls += getattr(exc, "model_calls", 1)
+                    calls += (
+                        exc.model_calls
+                        if isinstance(exc, EpisodeSelectionRejected)
+                        else exc.attempts
+                    )
                     code = getattr(exc, "code", None) or (
                         f"StructuredTaskError:{getattr(exc, 'reason_code', '')}"
                     )
@@ -675,7 +680,9 @@ class EpisodeGeneration:
                     reasons.append(comparison.reason)
                     leavers = leavers[len(comparison.offered) :]
             except (EpisodeSelectionRejected, StructuredTaskError) as exc:
-                calls += getattr(exc, "model_calls", 1)
+                calls += (
+                    exc.model_calls if isinstance(exc, EpisodeSelectionRejected) else exc.attempts
+                )
                 code = getattr(exc, "code", None) or f"StructuredTaskError:{exc}"
                 rejected.append(IndexOutcome(owner, code))
                 continue

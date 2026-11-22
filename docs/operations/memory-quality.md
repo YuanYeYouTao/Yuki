@@ -63,7 +63,8 @@ yuki memory resident check > check.json
 python scripts/verify_resident_check.py --database <sqlite-file> --check check.json
 ```
 
-- 挑选沿用 `memory_dream` 模型路由。Dream 内每个到期主人（群核心集与人物画像）至多一次结构化调用，
+- 挑选沿用 `memory_dream` 模型路由。Dream 内每个到期主人（群核心集、经历目录比较与人物画像）一次结构化调用；
+  与 Dream 簇处理相同，输出未通过结构校验（如画像条目超过 40 字）时带校验错误重试一次，两次请求都计入调用次数，
   每次运行至多 `MEMORY_RESIDENT_MAX_SELECTIONS_PER_RUN` 个主人（默认 24），群核心集按已看水位、再按主人 ID
   排在前面，人物画像随后按上次尝试时间排队（规则见 [Memory 人物画像](../architecture/memory-v2.md#人物画像)）；
   没轮到的留到下次。调用次数单独计数写进 `memory_resident_selection_finished` 日志（同时记名单窗口、

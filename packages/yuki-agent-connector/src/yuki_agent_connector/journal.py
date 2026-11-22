@@ -346,6 +346,17 @@ class Journal:
         row = self.db.execute("SELECT receipt FROM operations WHERE id=?", (key,)).fetchone()
         return json.loads(row[0]) if row else {"status": "not_found"}
 
+    def session_cwd(self, instance_id: str, session_id: str) -> str | None:
+        """The cwd a native response of this instance recorded for the session."""
+        row = self.db.execute(
+            "SELECT json_extract(response, '$.result.cwd') FROM operations "
+            "WHERE json_extract(command, '$.instance_id')=? "
+            "AND json_extract(response, '$.result.session_id')=? "
+            "AND json_extract(response, '$.result.cwd') IS NOT NULL LIMIT 1",
+            (instance_id, session_id),
+        ).fetchone()
+        return cast(str, row[0]) if row else None
+
     def annotate(self, key: str, facts: dict[str, Any]) -> dict[str, Any]:
         """Attach execution evidence without changing its native lifecycle."""
         self.db.execute("BEGIN IMMEDIATE")
