@@ -13,6 +13,7 @@ only loadSession).
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 sequence = 100
@@ -60,6 +61,11 @@ def run(session, steps):
     for step in steps:
         if "say" in step:
             say(session, step["say"])
+        elif "wait" in step:
+            # Hold the turn until the test creates this file (e.g. after a detach).
+            deadline = time.monotonic() + 10
+            while not Path(step["wait"]).exists() and time.monotonic() < deadline:
+                time.sleep(0.01)
         elif "steer" in step:
             # Wait for the client's steer while this prompt is in flight.
             message = json.loads(sys.stdin.readline())
