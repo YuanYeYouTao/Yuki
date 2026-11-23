@@ -289,16 +289,20 @@ class Delegations:
         Same input (key, shape) and notification watermark as the ordinary subtask
         result path, so the wake that delivers the parent's wait already carries the
         card (taskbook §5.2 P3) and the maintenance pass has nothing left to publish.
+        The input lives in the parent's conversation: a resumer may be in another one.
         """
+        parent = work.alias("parent")
         row = (
             (
                 await session.execute(
                     select(
                         work.c.revision,
                         work.c.parent_work_id,
-                        work.c.conversation_id,
-                        work.c.generation,
-                    ).where(work.c.id == record_id)
+                        parent.c.conversation_id,
+                        parent.c.generation,
+                    )
+                    .outerjoin(parent, parent.c.id == work.c.parent_work_id)
+                    .where(work.c.id == record_id)
                 )
             )
             .mappings()

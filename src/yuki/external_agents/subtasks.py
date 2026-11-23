@@ -394,7 +394,23 @@ async def manage_external(
             )
         latest = await _latest_operation(control, identity)
         async with database.read_session() as reader:
-            prior = await reader.scalar(select(work.c.state).where(work.c.id == identity))
+            prior, prior_parent, conversation_id = (
+                await reader.execute(
+                    select(work.c.state, work.c.parent_work_id, work.c.conversation_id).where(
+                        work.c.id == identity
+                    )
+                )
+            ).one()
+        # The resumed run is the resumer's own execution (#709): its results, its wait
+        # and its completion's deferral belong to the Work that resumed, never to an
+        # earlier parent that did not start it. A Work tree stays in one conversation
+        # (as at creation; purge and hard boundaries act per conversation), so a resume
+        # from another conversation keeps the record's parent.
+        resumer = (
+            control.current["id"]
+            if control.current is not None and control.lease.conversation_id == conversation_id
+            else prior_parent
+        )
         async with database.immediate_session() as writer:
             await control.repository._assert_lease(writer, control.lease)
             reopened = await writer.execute(
@@ -407,12 +423,16 @@ async def manage_external(
                 .values(
                     state="waiting_external",
                     reason="native_executor",
+                    parent_work_id=resumer,
                     revision=work.c.revision + 1,
                     updated=time.time(),
                 )
             )
             if revision is not None and not reopened.rowcount:
                 raise ValueError("version_conflict")
+            if reopened.rowcount and prior_parent not in (None, resumer):
+                # The earlier parent no longer owns this record's runs.
+                await control.repository.resettle_deferred(writer, prior_parent)
         native: dict[str, Any] = {
             "action": "prompt",
             "instance_id": executor["instance_id"],
@@ -433,7 +453,12 @@ async def manage_external(
                 await writer.execute(
                     update(work)
                     .where(work.c.id == identity, work.c.state == "waiting_external")
-                    .values(state=prior, revision=work.c.revision + 1, updated=time.time())
+                    .values(
+                        state=prior,
+                        parent_work_id=prior_parent,
+                        revision=work.c.revision + 1,
+                        updated=time.time(),
+                    )
                 )
             _dispatched(result)
         return {"id": identity, "status": "running", "dispatch": result.get("status")}

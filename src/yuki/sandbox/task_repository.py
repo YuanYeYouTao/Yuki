@@ -311,9 +311,10 @@ class SandboxTaskRepository:
                     completion_json=payload,
                     updated_at=datetime.now(UTC),
                 )
-                .returning(SandboxTaskRunModel.request_id)
+                .returning(SandboxTaskRunModel.request_id, SandboxTaskRunModel.source_json)
             )
-            if changed.scalar_one_or_none() is not None:
+            ended = changed.first()
+            if ended is not None:
                 session.add(
                     SandboxTaskContinuationModel(
                         request_id=request_id,
@@ -323,6 +324,11 @@ class SandboxTaskRepository:
                         updated_at=datetime.now(UTC),
                     )
                 )
+                owner = json.loads(ended.source_json).get("work_id")
+                if isinstance(owner, str):
+                    from yuki.runtime.work_repository import WorkRepository
+
+                    await WorkRepository.resettle_deferred(session, owner)
                 return
             existing = await session.get(SandboxTaskRunModel, request_id)
             if existing is None:
