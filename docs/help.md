@@ -154,7 +154,7 @@ compact 检查点、raw history、本轮资料、Prompt compiler、工具合同�
 `/ai admin group current enable`）恢复。两者改的是同一个 Space `enabled`，不另存状态。关闭后该群
 的普通消息、@ 与前缀呼叫、`/ai` 命令、插件直达命令与 `/ai plugin run` 都不入账、不执行，超级管理员
 也没有聊天例外；插件 `messages.send_*`、`onebot.send_*`、通知与后台回合发往该群时被拒绝。已接纳
-的 Work、已有发送回执和原事件保持原样。只有 `/ai on` 仍在群内处理，非超级管理员的恢复请求不会启用该群。
+的 Work、已有发送回执和原事件保持原样。只有超级管理员的 `/ai on` 仍在群内处理；非超级管理员发送 `/ai on` 与其他入站一样静默拒绝。
 恢复的具体行为见[身份与群接入合同](architecture/canonical-runtime.md)。按原内部编号查询路由与归属，不手工改库或复活已结束的账号阶段。
 
 ### Provider 已登录但没有连接

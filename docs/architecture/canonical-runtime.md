@@ -195,7 +195,8 @@ admission 再确认原连接与 pin。探测或 CAS 前取消不安装路由；�
 群开关只有 Space `enabled` 一处。群内 `/ai off` / `/ai on` 是 `/ai admin group current
 disable|enable` 的简写，由 `parse_command` 归一到同一管理命令，不新增状态。Space 关闭时，
 Processor 在入账前按 `group_disabled` 拒绝该群全部入站：普通消息、@ 与前缀呼叫、`/ai` 命令、
-插件直达命令和 `/ai plugin run` 都不入账、不进 Main 或插件，超管也不例外。出站同样核这一开关：
+插件直达命令和 `/ai plugin run` 都不入账、不进 Main 或插件，超管也不例外；非超管的
+`/ai on` 不回复，同样在入账前拒绝。出站同样核这一开关：
 Social 发送（含 Automation 与插件 `messages.send_*`）、插件 `onebot.send_*` 的投递校验、插件通知
 与后台回合的目标核验都拒绝已关闭 Space；已提交的回执按原 operation 读取，不重发、不改写。
 群内超管的 `/ai on`（`/ai admin group current enable`）使用共同的确定性控制入口，不是绕过 ingest 的聊天事件：原生平台入口

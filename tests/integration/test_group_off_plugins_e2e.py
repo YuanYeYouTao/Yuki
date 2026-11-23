@@ -20,7 +20,8 @@ F3  group A off: ``/ai plugin run fixture play ...`` is not executed, nothing is
 F4  group A off: a superuser's ``!ai`` prefix call is not answered by Main and records
     nothing (there is no superuser chat exception in a closed group).
 F5  group A off: an ordinary member's message and ``!ai`` call get nothing.
-F6  group A off: a non-superuser's ``/ai on`` does not enable the group and calls no model.
+F6  group A off: a non-superuser's ``/ai on`` does not enable the group, calls no model and
+    gets no reply (it is rejected before admission like any other inbound).
 F7  group A off: a superuser's ``/ai on`` enables Space A again without chat event or model;
     the next direct plugin command in A runs again.
 F8  other group B stays on throughout: its direct plugin command runs and is answered.
@@ -342,7 +343,7 @@ async def test_ai_off_closes_group_for_chat_and_plugins(scene):
         }, (key, closed)
     f6 = facts["F6_member_ai_on"]
     assert f6["space_enabled"] is False and f6["model_requests"] == 0, f6
-    assert f6["plugin_calls"] == [] and f6["chat_events"] == 0, f6
+    assert f6["plugin_calls"] == [] and f6["chat_events"] == 0 and f6["sent"] == [], f6
     f8, f9 = facts["F8_other_group_plugin_command"], facts["F9_private_plugin_command"]
     assert f8["plugin_calls"] == ["养成"] and f8["sent"] == ["played 养成"], f8
     assert f9["plugin_calls"] == ["养成"] and f9["sent"] == ["played 养成"], f9

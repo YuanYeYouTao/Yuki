@@ -61,6 +61,7 @@ async def test_merged_disabled_source_cannot_borrow_root_for_telegram_recovery(
         space_id = space.id
         events_before = list(await session.scalars(select(ChatEventModel.id)))
     before_requests = len(env.model.requests)
+    sends_before = sum(method == "sendMessage" for method, _ in env.wire)
     await env.gateway.receive(update(3, chat=-10042, text="/ai admin group current enable"))
     await drain(env)
     async with database.read_session() as session:
@@ -75,8 +76,7 @@ async def test_merged_disabled_source_cannot_borrow_root_for_telegram_recovery(
         ) is None
         assert (await session.get(CanonicalPersonModel, root.id)).enabled
     assert len(env.model.requests) == before_requests
-    sent_texts = [params["text"] for method, params in env.wire if method == "sendMessage"]
-    assert sent_texts[-1].startswith("无法恢复")
+    assert sum(method == "sendMessage" for method, _ in env.wire) == sends_before
 
 
 async def test_processor_native_telegram_can_register_first_group(telegram_env, database):
