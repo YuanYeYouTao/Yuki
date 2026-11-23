@@ -55,6 +55,9 @@ Host 将实际允许的 CandidateKind 集合传给独立库的 allowed_kinds，
 原全部种类，空集仅排除来源候选；intrinsic 仍由独立的 intrinsic_allowed 控制。
 两个开关不切换 proposer，不改变 epoch、公式、原候选与反馈。禁用期间原采样时间继续前进，
 重开不会补抽之前的时间。新 SELF 仍需原 master/scene 授权；明确真人入口及已接纳 Work 独立。
+控制器之外另有按显式节奏的定时唤醒（`conversation.self_wakeup_interval_seconds`，默认关闭），
+它不走连续机会率、不看群热度，同样受 master 与 `proactive_wakeup_enabled` 约束，见
+[语义参与](semantic-participation.md#定时唤醒与无群场景541)。
 
 ## 状态与反馈
 

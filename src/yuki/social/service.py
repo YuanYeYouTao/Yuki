@@ -231,8 +231,7 @@ class SocialService:
             return
         if context.automation_run_id is not None:
             if (
-                not context.space_id
-                or not context.presence_id
+                not context.presence_id
                 or context.trigger_event_id is not None
                 or context.caused_by_event_id is not None
                 or context.inbound is not None
@@ -261,7 +260,6 @@ class SocialService:
                     or owner.canonical_creator_person_id is not None
                     or owner.canonical_conversation_id != context.conversation_id
                     or owner.canonical_presence_id != context.presence_id
-                    or conversation.kind != "space"
                     or conversation.space_id != context.space_id
                 ):
                     raise SocialError("self_automation_scene_changed")
@@ -286,7 +284,6 @@ class SocialService:
             return
         if (
             not context.initiative_run_id
-            or not context.space_id
             or not context.presence_id
             or context.trigger_event_id is not None
             or context.caused_by_event_id is not None

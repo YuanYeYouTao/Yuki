@@ -20,6 +20,7 @@ from yuki.domain.tool_actor import ToolActor
 from yuki.identity.db_models import (
     CanonicalPersonModel,
     CanonicalSpaceModel,
+    IdentityBindingModel,
     PresenceModel,
     SpaceBindingModel,
 )
@@ -89,13 +90,17 @@ class MessageTaskSource:
 
 @dataclass(frozen=True)
 class SelfTaskSource:
-    """Accepted SELF scene; it deliberately has no person or message anchor."""
+    """Accepted SELF scene; it deliberately has no person or message anchor.
+
+    A group wake targets its group; a wake in a private Conversation (#541) has no Space
+    and targets that Conversation's counterpart account.
+    """
 
     request_id: str
     conversation_id: str
     generation: int
     run_id: str
-    target_space_id: str
+    target_space_id: str | None
     presence_id: str
     bot_user_id: str
     binding_id: str
@@ -114,7 +119,7 @@ class SelfTaskSource:
         return ToolActor(
             user_id="",
             bot_user_id=self.bot_user_id,
-            group_id=self.external_target_id,
+            group_id=self.external_target_id if self.target_space_id else None,
             origin=TurnOrigin.SELF_INITIATIVE,
             instruction=self.content,
             execution_id=execution_id,
@@ -133,7 +138,8 @@ class SelfTaskSource:
             generation=self.generation,
             space_id=self.target_space_id,
             presence_id=self.presence_id,
-            group_id=self.external_target_id,
+            group_id=self.external_target_id if self.target_space_id else None,
+            user_id=None if self.target_space_id else self.external_target_id,
             bot_user_id=self.bot_user_id,
             instruction=self.content,
             platform=self.platform,
@@ -378,6 +384,10 @@ async def recover_automation_source(
             if space is None or not space.enabled or binding is None:
                 raise ValueError("task_space_binding_unavailable")
             target = source.get("current_group_id") or ""
+        elif owner.creator_kind == "self":
+            # A SELF schedule made in a private Conversation (#541) targets its counterpart.
+            counterpart = await session.get(IdentityBindingModel, conversation.identity_binding_id)
+            target = counterpart.external_account_id if counterpart is not None else ""
         else:
             target = actor_user
         content = await session.scalar(select(work.c.goal).where(work.c.id == request_id))
@@ -435,7 +445,7 @@ async def recover_self_source(
         if (
             run is None
             or conversation is None
-            or conversation.kind != "space"
+            or conversation.kind != ("space" if run.space_id else "private")
             or run.conversation_id != conversation.id
             or type(source.get("generation")) is not int
             or run.generation != source["generation"]
@@ -445,9 +455,9 @@ async def recover_self_source(
             or run.presence_id != source.get("presence_id")
         ):
             raise ValueError("self_task_source_changed")
-        space = await session.get(CanonicalSpaceModel, run.space_id)
+        space = await session.get(CanonicalSpaceModel, run.space_id) if run.space_id else None
         presence = await session.get(PresenceModel, run.presence_id)
-        if space is None or not space.enabled:
+        if run.space_id is not None and (space is None or not space.enabled):
             raise ValueError("task_space_disabled")
         if (
             presence is None
@@ -455,21 +465,31 @@ async def recover_self_source(
             or presence.external_account_id != source.get("bot_user_id")
         ):
             raise ValueError("task_presence_disabled")
-        binding = await _original_space_binding(
-            session, conversation, presence, source.get("group_id")
-        )
-        if binding is None or not source.get("group_id"):
-            raise ValueError("task_space_binding_unavailable")
+        if run.space_id is None:
+            # A wake in a private Conversation: its counterpart is the original target.
+            binding_row: Any = await session.get(
+                IdentityBindingModel, conversation.identity_binding_id
+            )
+            target = source.get("user_id")
+            if binding_row is None or binding_row.external_account_id != target:
+                raise ValueError("task_private_binding_unavailable")
+        else:
+            binding_row = await _original_space_binding(
+                session, conversation, presence, source.get("group_id")
+            )
+            target = source.get("group_id")
+            if binding_row is None or not target:
+                raise ValueError("task_space_binding_unavailable")
         recovered = SelfTaskSource(
             request_id,
             conversation.id,
             run.generation,
             run.id,
-            space.id,
+            run.space_id,
             presence.id,
             presence.external_account_id,
-            binding.id,
-            source["group_id"],
+            binding_row.id,
+            target,
             source["instruction"],
             presence.platform,
             thread_id=conversation.thread_id,

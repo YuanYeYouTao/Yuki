@@ -30,13 +30,14 @@ class AutomationScene(StrictModel):
     @model_validator(mode="after")
     def _valid_principal(self) -> AutomationScene:
         if self.principal_kind == "self":
+            # SELF may schedule from a group or a private Conversation (#541): the group and
+            # Space are present together or absent together.
             if (
                 self.creator_user_id
-                or not self.current_group_id
                 or not self.canonical_conversation_id
                 or self.conversation_generation is None
                 or not self.canonical_presence_id
-                or not self.canonical_space_id
+                or bool(self.current_group_id) != bool(self.canonical_space_id)
             ):
                 raise ValueError("invalid_self_automation_authority")
         elif self.principal_kind != "person":

@@ -1306,6 +1306,8 @@ class MemoryMutationService:
                 if receipt is None:
                     raise MemoryMutationRejected("initiative_tool_evidence_required")
                 context = replace(context, evidence_tool_receipt_id=receipt.id)
+                # The current scene's visibility: its group, or (a wake in a private
+                # Conversation, #541) that Conversation's counterpart.
                 target = self._resolve_visibility(
                     request,
                     ResolvedSubject(
@@ -1315,6 +1317,14 @@ class MemoryMutationService:
                         SelfMemoryVisibility.GROUP,
                         None,
                         source.group_id,
+                    )
+                    if source.space_id
+                    else ResolvedSubject(
+                        MemoryScopeType.SELF,
+                        None,
+                        None,
+                        SelfMemoryVisibility.PRIVATE,
+                        source.user_id,
                     ),
                     None,
                     fact=fact,
@@ -1326,18 +1336,19 @@ class MemoryMutationService:
                 or receipt.initiative_run_id != source.initiative_run_id
                 or receipt.trigger_event_id is not None
                 or receipt.canonical_space_id != source.space_id
-                or receipt.canonical_person_id is not None
+                or receipt.canonical_person_id != source.person_id
                 or receipt.bot_user_id != source.bot_user_id
             ):
                 raise MemoryMutationRejected("initiative_evidence_source_mismatch")
             quote = (request.evidence_quote or "").strip()
             if not quote or quote not in receipt.result_excerpt:
                 raise MemoryMutationRejected("evidence_quote_not_in_tool_receipt")
+            scene = SelfMemoryVisibility.GROUP if source.space_id else SelfMemoryVisibility.PRIVATE
+            private = target.visibility_type is SelfMemoryVisibility.PRIVATE
             if (
                 target.scope_type is not MemoryScopeType.SELF
-                or target.visibility_type
-                not in {SelfMemoryVisibility.GLOBAL, SelfMemoryVisibility.GROUP}
-                or target.visibility_user_id is not None
+                or target.visibility_type not in {SelfMemoryVisibility.GLOBAL, scene}
+                or target.visibility_user_id != (source.user_id if private else None)
                 or (
                     target.visibility_type is SelfMemoryVisibility.GROUP
                     and target.visibility_group_id != source.group_id
@@ -1346,6 +1357,8 @@ class MemoryMutationService:
                 raise MemoryMutationRejected("initiative_memory_scope_forbidden")
             if target.visibility_type is SelfMemoryVisibility.GROUP:
                 target = replace(target, canonical_visibility_space_id=source.space_id)
+            if private:
+                target = replace(target, canonical_visibility_person_id=source.person_id)
             owners = await self._facts.requested_target_owners(target, session=session)
         context = replace(
             context,
@@ -1354,7 +1367,7 @@ class MemoryMutationService:
             trigger_actor_user_id=source.bot_user_id,
             executed_by_bot_user_id=source.bot_user_id,
             conversation_key=source.partition,
-            config_scope=MemoryConfigScope(space_id=source.space_id),
+            config_scope=MemoryConfigScope(person_id=source.person_id, space_id=source.space_id),
         )
         self._validate_self_request(request, target, None, fact=fact, merge_fact=merge_fact)
         await self._validate_fact_requirements(
@@ -1763,7 +1776,7 @@ class MemoryMutationService:
                     raise MemoryMutationRejected("memory_resolution_snapshot_changed") from None
                 if (
                     receipt.canonical_space_id != origin.space_id
-                    or receipt.canonical_person_id is not None
+                    or receipt.canonical_person_id != origin.person_id
                     or receipt.bot_user_id != origin.bot_user_id
                 ):
                     raise MemoryMutationRejected("memory_resolution_snapshot_changed")

@@ -1334,14 +1334,7 @@ class ChatService:
         return await TurnMemorySession.open_self_origin(
             initiative_run_id=trigger.run_id,
             canonical_conversation_id=trigger.conversation_id,
-            identity=ConversationScope.group(
-                trigger.bot_user_id,
-                trigger.group_id,
-                platform=trigger.platform,
-                presence_id=trigger.presence_id,
-                conversation_id=trigger.conversation_id,
-                thread_id=trigger.thread_id,
-            ),
+            identity=trigger.scope(),
             partition_lookup=self._memory_partition_lookup,
         )
 
@@ -1427,14 +1420,7 @@ class ChatService:
         memory = await self.open_self_memory_session(trigger)
         return await self.generate_origin_turn(
             content=trigger.instruction,
-            identity=ConversationScope.group(
-                trigger.bot_user_id,
-                trigger.group_id,
-                platform=trigger.platform,
-                presence_id=trigger.presence_id,
-                conversation_id=trigger.conversation_id,
-                thread_id=trigger.thread_id,
-            ),
+            identity=trigger.scope(),
             runtime=runtime,
             turn_token=turn_token,
             turn_snapshot=turn_snapshot,

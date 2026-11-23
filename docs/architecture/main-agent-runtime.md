@@ -137,12 +137,17 @@ SELF 及当前真实授权核验；创建时的 USER 身份不永久封顶。每
 SELF 使用数据库内唯一的 `PrincipalRef(self, self)`，不携带真人 user/person。自主入口的
 `ToolActor` / `TurnAuthority` 使用可信 `initiative_run_id`；SELF 定时入口使用真实
 `automation_run_id` 与 `scheduled_automation`，沿同一时间扫描、唯一到期发生和共同 Main 工具合同执行。`SelfInitiativeTrigger` 固定原 Conversation、
-generation、Space、Presence 与群传输目标。目标成员和资料来源都不授予其私人权限。
+generation、Presence 与传输目标：群里的唤醒带 Space 和群，私聊里的唤醒（定时唤醒，#541）没有 Space，目标是该私聊的对方账号。
+SELF 不必属于任何群；群里醒来只是恰好在某个群里醒。目标成员和资料来源都不授予其私人权限。
 `ConversationTurnSnapshot` 使用原 event、initiative run 或 automation run 三者之一；无事件工作不得借
-最近真人消息补锚点。SELF主入口除常驻记忆段外按需读取当前群及该群可见的SELF Memory；主动SELF写入沿原initiative和原执行的真实工具回执，不借真人事件。
+最近真人消息补锚点。SELF主入口除常驻记忆段外按需读取当前场景可见的SELF Memory：群里是当前群及该群可见范围，
+私聊里是 global 与可见人物为对方的 private；主动SELF写入沿原initiative和原执行的真实工具回执，不借真人事件，
+默认可见范围是当前场景（群里为本群，私聊里为对方），私聊场景的工具回执归该私聊对方的 Person 所有（`0168`）。
 每次模型请求、工具执行和发送准备仍复核原 run 与场景权限。SELF 自动化保留原
-Conversation、Space、Presence 和群绑定；每次新到期发生使用该会话的当前 generation，
-已接纳 Work 则保留原发生代次。SELF 的社交调用沿共同目标选择、资料授权和发送回执处理，不设来源专属四动作、当前群或提及名单。
+Conversation、Presence 和群绑定或私聊入口（在私聊里创建的安排没有 Space，到期后省略 target 的发送仍回原私聊）；
+每次新到期发生使用该会话的当前 generation，
+已接纳 Work 则保留原发生代次。SELF 的社交调用沿共同目标选择、资料授权和发送回执处理，不设来源专属四动作、当前群或提及名单；
+私聊场景里省略 target 的 `send` 发给该私聊的对方。
 固定工具声明不随主体改动，执行处拒绝不获准的能力；详见 [语义参与接入](semantic-participation.md)。
 
 模型侧只用 `send` 发送可见内容：省略 target 时发到当前群或私聊，显式 target 可指定

@@ -7,7 +7,7 @@ import json
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import func, literal, select, text
+from sqlalchemy import func, literal, or_, select, text
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from yuki.conversation.autonomy_db_models import InitiativeRunModel
@@ -134,7 +134,7 @@ class ToolReceiptRepository:
                     "trigger_event_id": None,
                     "initiative_run_id": initiative_run_id,
                     "bot_user_id": source.bot_user_id,
-                    "canonical_person_id": None,
+                    "canonical_person_id": source.person_id,
                     "canonical_space_id": source.space_id,
                     "conversation_key_hash": hashlib.sha256(source.partition.encode()).hexdigest(),
                 }
@@ -146,12 +146,13 @@ class ToolReceiptRepository:
                             "EXISTS ("
                             + self_execution_origin_sql(":self_execution_id")
                             + " AND ic.generation=:self_generation AND ip.status='active' "
-                            "AND isp.enabled=1)"
+                            "AND (ic.space_id IS NULL OR isp.enabled=1))"
                         ).bindparams(
                             self_execution_id=execution_id, self_generation=source.generation
                         )
                     )
                 else:
+                    # A wake in a private Conversation (#541) has no Space to keep enabled.
                     guards.append(
                         select(InitiativeRunModel.id)
                         .join(
@@ -159,21 +160,24 @@ class ToolReceiptRepository:
                             CanonicalConversationModel.id == InitiativeRunModel.conversation_id,
                         )
                         .join(PresenceModel, PresenceModel.id == InitiativeRunModel.presence_id)
-                        .join(
+                        .outerjoin(
                             CanonicalSpaceModel,
                             CanonicalSpaceModel.id == InitiativeRunModel.space_id,
                         )
                         .where(
                             InitiativeRunModel.id == initiative_run_id,
                             InitiativeRunModel.conversation_id == source.canonical_conversation_id,
-                            InitiativeRunModel.space_id == source.space_id,
+                            InitiativeRunModel.space_id.is_(source.space_id),
                             InitiativeRunModel.presence_id == source.presence_id,
                             InitiativeRunModel.generation == CanonicalConversationModel.generation,
-                            CanonicalConversationModel.kind == "space",
-                            CanonicalConversationModel.space_id == source.space_id,
-                            CanonicalConversationModel.person_id.is_(None),
+                            CanonicalConversationModel.kind
+                            == ("space" if source.space_id else "private"),
+                            CanonicalConversationModel.space_id.is_(source.space_id),
                             PresenceModel.enabled.is_(True),
-                            CanonicalSpaceModel.enabled.is_(True),
+                            or_(
+                                InitiativeRunModel.space_id.is_(None),
+                                CanonicalSpaceModel.enabled.is_(True),
+                            ),
                         )
                         .exists()
                     )

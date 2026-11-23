@@ -232,8 +232,8 @@ async def claim_initiative(
                         continue
                 scope = (
                     MemoryToolReceiptModel.initiative_run_id == initiative.id,
-                    MemoryToolReceiptModel.canonical_space_id == source.space_id,
-                    MemoryToolReceiptModel.canonical_person_id.is_(None),
+                    MemoryToolReceiptModel.canonical_space_id.is_(source.space_id),
+                    MemoryToolReceiptModel.canonical_person_id.is_(source.person_id),
                     MemoryToolReceiptModel.id > cursor_at,
                 )
                 query = select(MemoryToolReceiptModel).where(*scope)
@@ -294,10 +294,10 @@ async def claim_initiative(
                     id=0,
                     conversation_key_hash=partition_hash,
                     bot_user_id=source.bot_user_id,
-                    canonical_person_id=None,
+                    canonical_person_id=source.person_id,
                     canonical_space_id=source.space_id,
-                    external_person_id=None,
-                    external_space_id=source.group_id,
+                    external_person_id=source.user_id or None,
+                    external_space_id=source.group_id or None,
                     last_event_id=0,
                     latest_event_id=0,
                     pending_events=0,
@@ -399,7 +399,7 @@ async def claim_initiative(
                     .values(
                         conversation_key_hash=partition_hash,
                         bot_user_id=source.bot_user_id,
-                        canonical_person_id=None,
+                        canonical_person_id=source.person_id,
                         canonical_space_id=source.space_id,
                         scheduled_slot=slot,
                         trigger_reason="self_tool_receipts",

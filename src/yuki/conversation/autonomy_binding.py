@@ -15,6 +15,8 @@ class AutonomyOwner(StrEnum):
     OFF = "off"
     LEGACY = "legacy"
     SEMANTIC = "semantic"
+    # The explicit-cadence wake; it has no group controller or binding row.
+    TIMER = "timer"
 
 
 class InitiativeSourceKind(StrEnum):
@@ -124,7 +126,8 @@ class AcceptedInitiative:
     proposal_id: str
     conversation_id: str
     generation: int
-    space_id: str
+    # None when SELF woke in a private Conversation instead of a group.
+    space_id: str | None
     presence_id: str
     controller_epoch_at_acceptance: int
     sources: tuple[InitiativeSource, ...]
@@ -137,9 +140,7 @@ class AcceptedInitiative:
     thread_key: str | None = None
 
     def __post_init__(self) -> None:
-        if not all(
-            (self.run_id, self.proposal_id, self.conversation_id, self.space_id, self.presence_id)
-        ):
+        if not all((self.run_id, self.proposal_id, self.conversation_id, self.presence_id)):
             raise ValueError("initiative_requires_host_identity")
         if self.generation < 1 or self.controller_epoch_at_acceptance < 0:
             raise ValueError("initiative_requires_nonnegative_version")
@@ -151,12 +152,12 @@ class AcceptedInitiative:
             self.sources
             or self.support_refs
             or self.target_person_id is not None
-            or self.owner is not AutonomyOwner.SEMANTIC
+            or self.owner is AutonomyOwner.LEGACY
         ):
-            raise ValueError("intrinsic_initiative_requires_self_group")
+            raise ValueError("intrinsic_initiative_requires_self_scene")
         if self.trigger_kind not in {"source", "intrinsic"}:
             raise ValueError("initiative_trigger_kind_invalid")
         if self.thread_key is not None and not self.thread_key:
             raise ValueError("initiative_thread_key_invalid")
-        if self.owner not in {AutonomyOwner.LEGACY, AutonomyOwner.SEMANTIC}:
+        if self.owner is AutonomyOwner.OFF:
             raise ValueError("initiative_requires_controller_owner")

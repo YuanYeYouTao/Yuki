@@ -424,7 +424,7 @@ class AutomationService:
         session: AsyncSession | None = None,
     ) -> tuple[str, PermissionLevel]:
         if actor.principal_kind == "self":
-            if not actor.group_id or not actor.conversation_id or not actor.presence_id:
+            if not actor.conversation_id or not actor.presence_id:
                 raise PermissionError("self_automation_scene_required")
             permission = PermissionLevel.SELF
             return "self", permission
@@ -450,7 +450,8 @@ class AutomationService:
         from yuki.conversation.canonical_db_models import CanonicalConversationModel
         from yuki.identity.db_models import PresenceModel, SpaceBindingModel
 
-        if not actor.conversation_id or not actor.presence_id or not actor.group_id:
+        # SELF schedules from the scene it is in: a group, or (#541) a private Conversation.
+        if not actor.conversation_id or not actor.presence_id:
             raise PermissionError("self_automation_scene_required")
         async with optional_session(self._repository._database, session, write=False) as session:
             if actor.origin is TurnOrigin.SCHEDULED_AUTOMATION:
@@ -464,7 +465,7 @@ class AutomationService:
                     raise PermissionError("self_automation_source_changed")
             conversation = await session.get(CanonicalConversationModel, actor.conversation_id)
             presence = await session.get(PresenceModel, actor.presence_id)
-            if conversation is None or not conversation.space_id:
+            if conversation is None or bool(conversation.space_id) != bool(actor.group_id):
                 raise PermissionError("self_automation_scene_changed")
             if actor.origin is TurnOrigin.SCHEDULED_AUTOMATION and (
                 owner is None
@@ -484,20 +485,23 @@ class AutomationService:
                     presence_id=actor.presence_id,
                     session=session,
                 )
-            binding = await session.scalar(
-                select(SpaceBindingModel).where(
-                    SpaceBindingModel.space_id == conversation.space_id,
-                    SpaceBindingModel.platform == actor.platform,
-                    SpaceBindingModel.status == "active",
-                    SpaceBindingModel.external_space_id == actor.group_id,
+            bound = conversation.space_id is None or (
+                await session.scalar(
+                    select(SpaceBindingModel.id).where(
+                        SpaceBindingModel.space_id == conversation.space_id,
+                        SpaceBindingModel.platform == actor.platform,
+                        SpaceBindingModel.status == "active",
+                        SpaceBindingModel.external_space_id == actor.group_id,
+                    )
                 )
+                is not None
             )
             if (
                 presence is None
                 or not presence.enabled
                 or presence.platform != actor.platform
                 or presence.external_account_id != actor.bot_user_id
-                or binding is None
+                or not bound
             ):
                 raise PermissionError("self_automation_scene_changed")
             return {

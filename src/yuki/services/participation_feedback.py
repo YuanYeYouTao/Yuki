@@ -733,6 +733,13 @@ async def _feedback_current(
     return True
 
 
+def _proof_space(fact: _RunFacts, ref: str) -> str:
+    kind = _SOCIAL_PROOF_FIELDS.index("target_kind")
+    target = _SOCIAL_PROOF_FIELDS.index("target_id")
+    proofs = fact.social_proofs[ref].values()
+    return next(str(values[target]) for values in proofs if values[kind] == "space")
+
+
 async def _commit_pending(service: SemanticParticipationService, run_id: str) -> _RunFacts | None:
     # Each <=64-ref feedback page is its own atomic transaction, as before.
     # Hot producers cannot monopolize a tick; remaining refs stay in factual tables.
@@ -750,7 +757,9 @@ async def _commit_pending(service: SemanticParticipationService, run_id: str) ->
         targets = tuple(
             sorted(
                 {
-                    fact.run.space_id if target == "group" else target
+                    # "group" is the run's own Space; a wake without a group (#541) names
+                    # the Space its proof actually sent to.
+                    (fact.run.space_id or _proof_space(fact, ref)) if target == "group" else target
                     for ref in batch
                     if ref in fact.actual
                     for target in fact.actual[ref].actual_targets
