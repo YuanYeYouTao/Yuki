@@ -194,7 +194,14 @@ admission 再确认原连接与 pin。探测或 CAS 前取消不安装路由；�
 或反向删除可能已提交的路由。数值日志分别报告初读、探测准备、恢复和 fresh recheck，
 恢复包含 CAS，不能将其耗时称作纯数据库锁等待。
 
-群内超管的 `/ai admin group current enable` 使用共同的确定性控制入口，不是绕过 ingest 的聊天事件：原生平台入口
+群开关只有 Space `enabled` 一处。群内 `/ai off` / `/ai on` 是 `/ai admin group current
+disable|enable` 的简写，由 `parse_command` 归一到同一管理命令，不新增状态。Space 关闭时，
+Processor 在入账前按 `group_disabled` 拒绝该群全部入站：普通消息、@ 与前缀呼叫、`/ai` 命令、
+插件直达命令和 `/ai plugin run` 都不入账、不进 Main 或插件，超管也不例外；非超管的
+`/ai on` 不回复，同样在入账前拒绝。出站同样核这一开关：
+Social 发送（含 Automation 与插件 `messages.send_*`）、插件 `onebot.send_*` 的投递校验、插件通知
+与后台回合的目标核验都拒绝已关闭 Space；已提交的回执按原 operation 读取，不重发、不改写。
+群内超管的 `/ai on`（`/ai admin group current enable`）使用共同的确定性控制入口，不是绕过 ingest 的聊天事件：原生平台入口
 验证真实事件连接与同平台管理员 Binding，恢复服务保留健康接入 pin，否则仅接受唯一通过实时成员
 探针的候选。群启用、必要的两张群路由变更、审计和幂等回执在同一个 `BEGIN IMMEDIATE` 中提交；
 重验身份、路由 revision 与连接快照，冲突整笔退出。命令及回执不进聊天账本、模型或Memory，不修改 ConversationGeneration。普通消息、插件和其他管理命令仍受原围栏限制。

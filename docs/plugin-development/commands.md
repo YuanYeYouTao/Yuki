@@ -49,4 +49,7 @@ PLUGIN_DIRECT_COMMAND_BINDINGS={"*":"io.github.example.game:play"}
 
 直达绑定只接受已批准、已启用、正在运行的命令。前缀可以是 `/github` 这类独立命令；Host 会拒绝空白、控制字符、与 `AI_PREFIX` 重叠，以及相同或互为前缀的配置。命令声明的 `USER` / `TRUSTED` / `MODERATOR` / `SUPERUSER` 权限仍在执行时根据真实发送者校验。匹配只是明确触发信号；准入、持久去重、入站账本、命令限流、参数校验、真实 `ToolRuntime`、权限、调用作用域和超时都与普通确定性命令相同。
 
-已配置但暂时不可用的绑定会被消费并返回稳定错误，不会落入自主群评分或 Main Agent。SUPERUSER 直达命令只有真实超级用户能执行，普通用户会收到权限不足。
+已配置但暂时不可用的绑定会被消费并返回稳定错误，不会落入自主群评分或 Main Agent。
+
+群被 `/ai off` 关闭（Space `enabled` 为 false）后，Host 在入账前拒绝该群全部入站，直达命令和
+`/ai plugin run` 都不会调用插件，也不回复；其他群和私聊不受影响。插件无需也不应自行判断群开关。SUPERUSER 直达命令只有真实超级用户能执行，普通用户会收到权限不足。

@@ -228,15 +228,14 @@ async def test_group_recovery_uses_platform_person_and_current_superuser(telegra
         space_id = space.id
         space.enabled = False
     before_requests = len(env.model.requests)
+    sends_before = sum(method == "sendMessage" for method, _ in env.wire)
     await env.gateway.receive(update(3, chat=-10042, text="/ai admin group current enable"))
     await drain(env)
     async with database.read_session() as session:
         space = await session.get(CanonicalSpaceModel, space_id)
         assert not space.enabled
     assert len(env.model.requests) == before_requests
-    assert [p["text"] for method, p in env.wire if method == "sendMessage"][-1].startswith(
-        "无法恢复"
-    )
+    assert sum(method == "sendMessage" for method, _ in env.wire) == sends_before
 
 
 async def test_group_recovery_keeps_original_merged_actor(telegram_env, database):

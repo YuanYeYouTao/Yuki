@@ -96,10 +96,8 @@ class NativeGroupRecovery:
                 ),
                 event_type=message.event_type,
             )
-        except RegistryClosed:
+        except (RegistryClosed, PermissionError):
             return None
-        except PermissionError:
-            return "无法恢复：没有可用的超级管理员控制主体。"
         except RouteSendError as exc:
             if exc.category == "not_ingest":
                 return None  # Another healthy ingest Presence owns this fanout event.
