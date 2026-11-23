@@ -11,13 +11,19 @@ native agent runs in its own full-access mode (0.9.2, 2026-11-20 task book).
 from __future__ import annotations
 
 import os
+import re
 import shlex
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import Any
 
 # A command prefix cannot vouch for what a shell runs after these.
 _SHELL_CONTROL = frozenset(";&|<>`$()\n\r")
+# Every literal occurrence splits, quoted or not: a quoted separator only makes an
+# extra cut, never a missing one, whatever the shell's quoting rules (#647 D1).
+_SEPARATORS = re.compile(r"&&|\|\||;")
+# Characters a shell may expand or unescape in a ``cd`` target, quoted or not.
+_CD_EXPANDS = frozenset("~*?[{^#\\")
 # Side-effect tools a narrowed scope makes Claude (SDK or claude-agent-acp) ask about.
 # `ask` wins over the user's own allow rules while setting sources stay loaded (§15
 # E6). MCP tools are side effects no scope grants: always reported (#650).
@@ -70,16 +76,42 @@ class Scope:
         return any(target == root or root in target.parents for root in self.write_paths)
 
     def runs(self, command: str | list[str]) -> bool:
+        """Every segment between ``&&``, ``||`` and ``;`` is inside (#647 D1)."""
         text = command if isinstance(command, str) else shlex.join(command)
-        text = text.strip()
-        if not text:
+        if not text.strip():
             return False
         # "*" is the owner granting every command, shell control included.
         if "*" in self.commands:
             return True
-        if _SHELL_CONTROL & set(text):
+        try:
+            shlex.split(text)
+        except ValueError:
             return False
-        return any(text == prefix or text.startswith(f"{prefix} ") for prefix in self.commands)
+        return all(self._runs_segment(part.strip(" \t")) for part in _SEPARATORS.split(text))
+
+    def _runs_segment(self, text: str) -> bool:
+        """One command between ``&&``, ``||`` and ``;``: a granted prefix or an inside ``cd``."""
+        # A trailing backslash escapes the separator's first character in a POSIX
+        # shell: `\||` is a literal `|` and a pipe, `\&&` a literal `&` and `&`.
+        if not text or text.endswith("\\") or _SHELL_CONTROL & set(text):
+            return False
+        if any(text == prefix or text.startswith(f"{prefix} ") for prefix in self.commands):
+            return True
+        if not text.startswith("cd ") or _CD_EXPANDS & set(text):
+            return False
+        try:
+            words = shlex.split(text)
+        except ValueError:
+            # A quoted separator cut the segment mid-quote.
+            return False
+        # Absolute only: the shell's own cwd (Claude's Bash keeps it across calls) and
+        # CDPATH are unknown here. No `..`: the shell resolves it before symlinks.
+        target = PurePath(words[1]) if len(words) == 2 else PurePath()
+        return (
+            target.is_absolute()
+            and ".." not in target.parts
+            and self.writes(str(target), str(target))
+        )
 
     def covers(self, path: str) -> bool:
         """Whether the whole directory is writable (an agent mode may then write it)."""
