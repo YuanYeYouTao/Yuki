@@ -1,5 +1,7 @@
 # 架构文档入口
 
+2026-11-23 [订阅 OAuth 登录调研与任务书](Yuki-订阅OAuth登录任务书-2026-11-23.md)：#493，走官方 Sign in with ChatGPT 计划用量路线（公共 `/v1/responses`，SSE、`store:false`）；SIWC 条款禁止用一人的订阅回答他人请求，故只在执行处放行凭据所属 Person 本人的私聊请求，群聊与他人请求跳过（0 次物理请求，沿 #713 下一跳）；不借用本机 Codex 登录；Bot 持有并刷新凭据，回调首版粘贴交回。只写文档，未实施，Q1（做不做）须所有者表态。
+
 2026-11-23 [长期在意与跨会话感知调研](Yuki-长期在意与跨会话感知调研-2026-11-23.md)：#541、#289 的调研与任务书，未实施。对照 OpenAI dots 的只读主动研究；推荐把“在意的事”作为 SELF 记忆事实渲染进常驻段（至多 5 条），用一个默认关闭的 SELF 只读定时入口去看、经主动私聊告知；跨会话方向推荐转达带来源标签与私聊里一行群指针，私聊内容不自动进群；另记录主 Agent `read_chat` 不按提问者收窄范围的现状，待所有者拍板（§8 五问）。
 
 2026-11-23 [模型 fallback 链调研与任务书](Yuki-模型fallback链任务书-2026-11-23.md)：用途级显式备用 Profile 链按 §9 推荐实施（[现行合同](model-providers.md#显式备用链)），无迁移，默认空链；看门狗复用组件事实（键 `component:model_fallback:<task>:<profile>`），E2E 产物 `test-results/model-fallback-chain-e2e.json`。其中 §9 Q12 已先行实施：Profile 可选 `connect_timeout_seconds` 只限建立连接，未设置取 10 秒且不超过 `timeout_seconds`，不进入 Profile revision；Responses 回复中途断开（`RemoteProtocolError` 等）不再以裸 httpx 异常冒出，统一为 `LLMUnavailableError`，走现有传输失败与回执路径（[现行合同](model-providers.md#传输超时与断连)）。
