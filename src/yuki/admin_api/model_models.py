@@ -73,6 +73,8 @@ class ModelDocument(BaseModel):
     schema_version: int
     profiles: dict[str, ModelProfileDocument]
     routes: dict[str, str]
+    # Ordered fallback profiles per task; returned so a Desktop save keeps them.
+    fallbacks: dict[str, list[str]] = Field(default_factory=dict)
     search_backend: Literal["model", "tavily"] | None = None
     search_connection: str | None = None
     semantic_observation: SemanticObservation | None = None

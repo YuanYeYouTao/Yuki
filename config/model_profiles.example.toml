@@ -70,3 +70,10 @@ memory_self_reflection = "background_tasks"
 memory_dream = "background_tasks"
 plugin_agent_session = "primary_agent"
 utility_structured = "background_tasks"
+
+# Optional, explicit fallback chain per task (default: none). A fallback is tried only
+# when the previous profile certainly did not accept the request (connection, proxy or
+# pool failure, HTTP 429/5xx/401/403, missing key) and the request carries no provider
+# continuation; it must support the head's tools, structured mode and native search.
+# [fallbacks]
+# chat_agent = ["another_profile"]

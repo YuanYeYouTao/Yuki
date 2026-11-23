@@ -22,10 +22,12 @@ from yuki.domain.messages import ChatRequest, ChatResponse
 from yuki.execution_trace.phases import current_model_phases, model_detail
 from yuki.execution_trace.recorder import record_http_response, record_trace, trace_span
 from yuki.llm.base import (
+    LLMAuthenticationError,
     LLMConfigurationError,
     LLMError,
     LLMInvalidResponseError,
     LLMProvider,
+    LLMRateLimitError,
     LLMTimeoutError,
     LLMUnavailableError,
     LLMUnsupportedFeatureError,
@@ -42,6 +44,19 @@ from yuki.model_runtime.request_accounting import (
     current_provider_attempts,
 )
 from yuki.runtime.work_activation import current_work_control
+
+# The request never reached the provider (connect, proxy tunnel, local pool wait) or the
+# provider explicitly refused it. A read/write failure, a cut reply or a gateway timeout
+# (HTTP 504) may have been accepted and billed, so they are not here.
+NOT_ACCEPTED_ERRORS: tuple[type[BaseException], ...] = (
+    httpx.ConnectError,
+    httpx.ConnectTimeout,
+    httpx.ProxyError,
+    httpx.PoolTimeout,
+    RetryableProviderError,
+    LLMRateLimitError,
+    LLMAuthenticationError,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -240,6 +255,7 @@ class JSONHTTPProvider(LLMProvider):
             if phases is not None:
                 phases.attempts += 1
             response: httpx.Response | None = None
+            billed = False
             try:
                 with model_detail("transport"):
                     response = await self._client.send(prepared.request)
@@ -250,6 +266,16 @@ class JSONHTTPProvider(LLMProvider):
                         payload = response.json()
                     except ValueError:
                         payload = {}
+                    # Any nonzero count in the rejection's own usage object (whatever the
+                    # dialect, before decoding) means the provider worked on the request.
+                    raw_usage = (
+                        payload.get("usage", payload.get("usageMetadata"))
+                        if isinstance(payload, dict)
+                        else None
+                    )
+                    billed = isinstance(raw_usage, dict) and any(
+                        type(value) is int and value > 0 for value in raw_usage.values()
+                    )
                     diagnostics = (
                         self._usage_diagnostics(payload) if isinstance(payload, dict) else {}
                     )
@@ -262,6 +288,13 @@ class JSONHTTPProvider(LLMProvider):
                         exc.diagnostics = {**exc.diagnostics, "usage": usage}
                     raise
             except BaseException as exc:
+                if (
+                    attempts is not None
+                    and isinstance(exc, NOT_ACCEPTED_ERRORS)
+                    and getattr(exc, "diagnostics", {}).get("http_status") != 504
+                    and not billed
+                ):
+                    attempts.not_accepted += 1
                 if finish is not None:
                     await finish("failed", None)
                 if isinstance(exc, Exception):

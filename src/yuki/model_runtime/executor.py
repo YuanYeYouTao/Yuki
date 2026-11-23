@@ -33,7 +33,16 @@ from yuki.execution_trace.phases import (
 )
 from yuki.execution_trace.recorder import TraceRecorder, record_trace, trace_span
 from yuki.llm.anthropic_messages import AnthropicMessagesProvider
-from yuki.llm.base import LLMError, LLMUnsupportedFeatureError
+from yuki.llm.base import (
+    LLMAuthenticationError,
+    LLMConfigurationError,
+    LLMError,
+    LLMProvider,
+    LLMRateLimitError,
+    LLMTimeoutError,
+    LLMUnavailableError,
+    LLMUnsupportedFeatureError,
+)
 from yuki.llm.gemini import GeminiProvider
 from yuki.llm.vendor_policy import supports_native_search, wire_options
 from yuki.model_runtime.capacity import ModelCapacity, estimate_request_tokens
@@ -55,8 +64,52 @@ from yuki.model_runtime.request_accounting import (
     current_provider_attempts,
 )
 from yuki.model_runtime.routes import ModelRouter
+from yuki.runtime.work_activation import current_work_control
 
 logger = logging.getLogger(__name__)
+
+# Logical failures that may continue to the next fallback hop, and only when every
+# physical attempt of the hop was counted as not accepted upstream (or none was made).
+_NOT_ACCEPTED_FAILURES = (
+    LLMUnavailableError,
+    LLMTimeoutError,
+    LLMRateLimitError,
+    LLMAuthenticationError,
+    LLMConfigurationError,
+)
+
+
+def _failure_category(exc: BaseException) -> str:
+    status = exc.diagnostics.get("http_status") if isinstance(exc, LLMError) else None
+    if type(status) is int:
+        return f"HTTP{status}"
+    return type(exc.__cause__ if exc.__cause__ is not None else exc).__name__
+
+
+def _chain_diagnostics(
+    exc: BaseException, hops: list[dict[str, object]], physical: int, unknown_usage: int
+) -> None:
+    """A failure after several hops reports every hop and the chain's physical total."""
+    diagnostics = getattr(exc, "diagnostics", None)
+    if len(hops) < 2 or not isinstance(diagnostics, dict):
+        return
+    exc.diagnostics = {  # type: ignore[attr-defined]
+        **diagnostics,
+        "fallback_hops": list(hops),
+        "physical_request_count": physical,
+        "unknown_usage_request_count": unknown_usage,
+    }
+
+
+def _effective_capabilities(profile: ModelProfile) -> frozenset[ModelCapability]:
+    if not supports_native_search(
+        profile.provider.casefold(),
+        profile.protocol.value,
+        profile.wire_options,
+        has_functions=ModelCapability.TOOLS in profile.capabilities,
+    ):
+        return profile.capabilities - {ModelCapability.NATIVE_WEB_SEARCH}
+    return profile.capabilities
 
 
 def _profile_request(request: ChatRequest, profile: ModelProfile) -> ChatRequest:
@@ -92,6 +145,8 @@ class PreparedModelInput:
     request: ChatRequest
     input_tokens: int
     profile: ModelProfile | None = None
+    # The caller's request before the head profile's defaults, for a fallback hop.
+    source: ChatRequest | None = None
 
 
 @dataclass(slots=True, weakref_slot=True)
@@ -109,6 +164,39 @@ def _json_hash(value: object) -> str:
         default=str,
     )
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def _serialized_profile(profile: ModelProfile) -> dict[str, Any]:
+    """The provider-facing settings of one profile, as fingerprinted for continuations."""
+    # Capacity policy and connect timing are not serialized to the provider and
+    # must not split a previously submitted prefix when operators tune them.
+    excluded = {"max_input_tokens", "context_window_tokens", "connect_timeout_seconds"}
+    if profile.max_output_tokens_limit is None:
+        excluded.add("max_output_tokens_limit")
+    if profile.wire_options is None:
+        excluded.add("wire_options")
+    if not profile.headers:
+        excluded.add("headers")
+    if profile.search_mode is None:
+        excluded.add("search_mode")
+    if profile.search_connection is None:
+        excluded.add("search_connection")
+    serialized = profile.model_dump(mode="json", exclude=excluded)
+    wire_provider = profile.provider.casefold()
+    if wire_provider != "fake":
+        if profile.protocol is ModelProtocol.GEMINI:
+            wire_provider = GeminiProvider.provider_name
+            serialized["provider"] = wire_provider
+        elif profile.protocol is ModelProtocol.ANTHROPIC_MESSAGES:
+            wire_provider = AnthropicMessagesProvider.provider_name
+            serialized["provider"] = wire_provider
+    serialized["capabilities"] = sorted(item.value for item in profile.capabilities)
+    if profile.protocol is not ModelProtocol.RESPONSES:
+        # Native serializers fix the wire dialect independently of the
+        # connection label; Chat still uses its selected vendor preset.
+        effective_wire_options = wire_options(wire_provider, profile.wire_options)
+        serialized["wire_options"] = effective_wire_options.model_dump(mode="json")
+    return serialized
 
 
 class BackgroundModelPreempted(RuntimeError):
@@ -446,10 +534,6 @@ class TaskModelExecutor:
         if request.response_format is not None:
             required.add(ModelCapability.STRUCTURED_OUTPUT)
         if request.native_tools:
-            if ModelCapability.NATIVE_WEB_SEARCH not in self.capabilities(task):
-                raise LLMUnsupportedFeatureError(
-                    "native web search is unavailable in the effective model contract"
-                )
             required.add(ModelCapability.NATIVE_WEB_SEARCH)
         if any(
             message.images
@@ -460,63 +544,191 @@ class TaskModelExecutor:
         ):
             required.add(ModelCapability.IMAGE_INPUT)
         router, pool = self._runtime()
-        _route, profile = router.route(task, required_capabilities=frozenset(required))
-        phases = current_model_phases.get()
-        if phases is not None:
-            phases.metadata.update(
-                profile_id=profile.id,
-                provider=profile.provider,
-                protocol=profile.protocol.value,
-                model=profile.model,
-            )
-        for continuation in (
+        route = router.catalog.routes[task]
+        continuations = (
             *((request.continuation,) if request.continuation is not None else ()),
             *(
                 message.response_item
-                for message in request.messages
+                for message in (
+                    *request.messages,
+                    *(item for item in request.continuation_items if isinstance(item, ChatMessage)),
+                )
                 if message.response_item is not None
             ),
-        ):
-            if (
+        )
+        # Provider state belongs to the profile that produced it: a request carrying it
+        # stays on that hop. Only a request without it may walk the explicit chain.
+        chain = route.chain if not continuations else (continuations[0].profile_id,)
+        if chain[0] not in route.chain:
+            raise ValueError("continuation cannot be routed to a different model profile")
+        source = (
+            prepared_capacity.source
+            if prepared_capacity is not None
+            and prepared_capacity.request is request
+            and prepared_capacity.source is not None
+            else request
+        )
+        phases = current_model_phases.get()
+        hops: list[dict[str, object]] = []
+        if phases is not None and len(route.chain) > 1:
+            phases.metadata["route_hops"] = hops
+        physical = unknown_usage = 0
+        failure: Exception | None = None
+        for index, profile_id in enumerate(chain):
+            profile = router.catalog.profiles[profile_id]
+            if phases is not None:
+                phases.metadata.update(
+                    profile_id=profile.id,
+                    provider=profile.provider,
+                    protocol=profile.protocol.value,
+                    model=profile.model,
+                )
+            refusal = self._hop_refusal(profile, route.required_capabilities | required)
+            skipped = "skipped_capability"
+            if refusal is None and any(
                 continuation.profile_id != profile.id
                 or continuation.protocol != profile.protocol.value
+                for continuation in continuations
             ):
                 raise ValueError("continuation cannot be routed to a different model profile")
+            reused = (
+                prepared_capacity is not None
+                and prepared_capacity.request is request
+                and prepared_capacity.profile is profile
+            )
+            normalized = request if reused else _profile_request(source, profile)
+            if refusal is None:
+                refusal = self._capacity_refusal(
+                    profile,
+                    normalized,
+                    prepared_capacity.input_tokens
+                    if reused and prepared_capacity is not None
+                    else None,
+                )
+                skipped = "skipped_capacity"
+            if refusal is not None:
+                if index == 0:
+                    # The head (or the continuation's owner) keeps today's errors: a
+                    # request the selected profile cannot take never selects another.
+                    raise refusal
+                hops.append({"profile_id": profile.id, "outcome": skipped})
+                continue
+            if physical:
+                # Like a transport retry: another paid attempt of the same logical request.
+                work = current_work_control.get()
+                if work is not None:
+                    await work.reserve_request(auxiliary=True)
+            attempts = ProviderAttemptCounter()
+            try:
+                response = await self._execute_profile(
+                    task,
+                    profile,
+                    pool,
+                    normalized,
+                    attempts,
+                    chained=len(route.chain) > 1,
+                    priority=priority,
+                    canonical_conversation_id=canonical_conversation_id,
+                    request_kind=request_kind,
+                )
+            except (Exception, asyncio.CancelledError) as exc:
+                physical += attempts.requests
+                unknown_usage += attempts.unknown_usage_requests
+                switchable = (
+                    isinstance(exc, _NOT_ACCEPTED_FAILURES)
+                    and attempts.requests == attempts.not_accepted
+                )
+                hops.append(
+                    {
+                        "profile_id": profile.id,
+                        "outcome": "failed_not_accepted" if switchable else "failed",
+                        "category": _failure_category(exc),
+                        "physical": attempts.requests,
+                    }
+                )
+                if not switchable or isinstance(exc, asyncio.CancelledError):
+                    _chain_diagnostics(exc, hops, physical, unknown_usage)
+                    raise
+                assert isinstance(exc, Exception)
+                if failure is None or attempts.requests:
+                    # The raised error is the last hop that actually dispatched.
+                    failure = exc
+                if index + 1 < len(chain):
+                    logger.warning(
+                        "model_fallback task=%s from=%s to=%s reason=%s",
+                        task.value,
+                        profile.id,
+                        chain[index + 1],
+                        hops[-1]["category"],
+                    )
+                continue
+            hops.append({"profile_id": profile.id, "outcome": "success"})
+            return response
+        assert failure is not None
+        _chain_diagnostics(failure, hops, physical, unknown_usage)
+        raise failure
+
+    @staticmethod
+    def _hop_refusal(
+        profile: ModelProfile, required: frozenset[ModelCapability] | set[ModelCapability]
+    ) -> Exception | None:
+        if (
+            ModelCapability.NATIVE_WEB_SEARCH in required
+            and ModelCapability.NATIVE_WEB_SEARCH not in _effective_capabilities(profile)
+        ):
+            return LLMUnsupportedFeatureError(
+                "native web search is unavailable in the effective model contract"
+            )
+        unavailable = set(required).difference(profile.capabilities)
+        if unavailable:
+            names = ", ".join(sorted(item.value for item in unavailable))
+            return ValueError(f"profile {profile.id} does not support: {names}")
+        return None
+
+    @staticmethod
+    def _capacity_refusal(
+        profile: ModelProfile, normalized: ChatRequest, estimated: int | None
+    ) -> Exception | None:
         if (
             profile.max_output_tokens_limit is not None
-            and (request.max_output_tokens or profile.default_max_output_tokens)
+            and (normalized.max_output_tokens or profile.default_max_output_tokens)
             > profile.max_output_tokens_limit
         ):
-            raise LLMUnsupportedFeatureError("request exceeds configured provider output limit")
+            return LLMUnsupportedFeatureError("request exceeds configured provider output limit")
         capacity = ModelCapacity(
             input_tokens=profile.max_input_tokens,
             context_tokens=profile.context_window_tokens,
             output_tokens=profile.default_max_output_tokens,
         )
-        budget = capacity.input_budget(output_tokens=request.max_output_tokens)
-        reused = (
-            prepared_capacity is not None
-            and prepared_capacity.request is request
-            and prepared_capacity.profile is profile
-        )
-        normalized_input = request if reused else _profile_request(request, profile)
-        if budget is not None:
+        budget = capacity.input_budget(output_tokens=normalized.max_output_tokens)
+        if budget is None:
+            return None
+        if estimated is None:
             with model_detail("token_estimation"):
-                estimated = (
-                    prepared_capacity.input_tokens
-                    if reused and prepared_capacity is not None
-                    else estimate_request_tokens(normalized_input)
-                )
-            if estimated > budget:
-                raise LLMUnsupportedFeatureError(
-                    "request exceeds configured provider input capacity"
-                )
-        provider = (
-            pool.get(profile, timeout_seconds=self._self_reflection_timeout_seconds)
-            if task is ModelTask.MEMORY_SELF_REFLECTION
-            else pool.get(profile)
-        )
-        normalized = normalized_input
+                estimated = estimate_request_tokens(normalized)
+        if estimated > budget:
+            return LLMUnsupportedFeatureError("request exceeds configured provider input capacity")
+        return None
+
+    async def _execute_profile(
+        self,
+        task: ModelTask,
+        profile: ModelProfile,
+        pool: ModelClientPool,
+        normalized: ChatRequest,
+        attempts: ProviderAttemptCounter,
+        *,
+        chained: bool,
+        priority: ModelExecutionPriority,
+        canonical_conversation_id: str | None,
+        request_kind: ModelRequestKind | None,
+    ) -> ChatResponse:
+        """One logical call on one profile: its own transport retries and invocation row.
+
+        Without a chain a missing credential raises before any record, as before; in a
+        chain it is this hop's recorded 0-request failure and may continue the chain.
+        """
+        provider = None if chained else self._provider(task, profile, pool)
         if profile.protocol is ModelProtocol.RESPONSES:
             logger.info(
                 "responses_request_routed task=%s profile_id=%s provider=%s protocol=%s "
@@ -536,9 +748,10 @@ class TaskModelExecutor:
         native_search_requested = any(
             tool.type is NativeToolType.WEB_SEARCH for tool in normalized.native_tools
         )
-        attempts = ProviderAttemptCounter()
         attempt_token = current_provider_attempts.set(attempts)
         try:
+            if provider is None:
+                provider = self._provider(task, profile, pool)
             response = await self._execute_provider(
                 provider,
                 normalized,
@@ -604,7 +817,7 @@ class TaskModelExecutor:
                     native_search_requested=native_search_requested,
                     canonical_conversation_id=canonical_conversation_id,
                     request_kind=request_kind,
-                    request_chain_id=request.request_chain_id,
+                    request_chain_id=normalized.request_chain_id,
                 )
             raise
         finally:
@@ -669,9 +882,18 @@ class TaskModelExecutor:
                 native_search_requested=native_search_requested,
                 canonical_conversation_id=canonical_conversation_id,
                 request_kind=request_kind,
-                request_chain_id=request.request_chain_id,
+                request_chain_id=normalized.request_chain_id,
             )
         return response
+
+    def _provider(
+        self, task: ModelTask, profile: ModelProfile, pool: ModelClientPool
+    ) -> LLMProvider:
+        return (
+            pool.get(profile, timeout_seconds=self._self_reflection_timeout_seconds)
+            if task is ModelTask.MEMORY_SELF_REFLECTION
+            else pool.get(profile)
+        )
 
     async def _record_invocation(self, **values: Any) -> None:
         if self._invocations is None:
@@ -851,48 +1073,28 @@ class TaskModelExecutor:
         return route.profile_id
 
     def profile_revision(self, task: ModelTask) -> str:
-        """Fingerprint routing/serialization settings without exposing configuration."""
-        route, profile = self._runtime()[0].route(task)
-        # Capacity policy and connect timing are not serialized to the provider and
-        # must not split a previously submitted prefix when operators tune them.
-        excluded = {"max_input_tokens", "context_window_tokens", "connect_timeout_seconds"}
-        if profile.max_output_tokens_limit is None:
-            excluded.add("max_output_tokens_limit")
-        if profile.wire_options is None:
-            excluded.add("wire_options")
-        if not profile.headers:
-            excluded.add("headers")
-        if profile.search_mode is None:
-            excluded.add("search_mode")
-        if profile.search_connection is None:
-            excluded.add("search_connection")
-        serialized = profile.model_dump(mode="json", exclude=excluded)
-        wire_provider = profile.provider.casefold()
-        if wire_provider != "fake":
-            if profile.protocol is ModelProtocol.GEMINI:
-                wire_provider = GeminiProvider.provider_name
-                serialized["provider"] = wire_provider
-            elif profile.protocol is ModelProtocol.ANTHROPIC_MESSAGES:
-                wire_provider = AnthropicMessagesProvider.provider_name
-                serialized["provider"] = wire_provider
-        serialized["capabilities"] = sorted(item.value for item in profile.capabilities)
-        serialized_route = route.model_dump(mode="json")
+        """Fingerprint routing/serialization settings without exposing configuration.
+
+        Covers the whole chain: a changed fallback must not receive a persisted
+        continuation of its previous configuration. An empty chain keeps the original
+        fingerprint, so enabling nothing splits no existing Work chain.
+        """
+        router = self._runtime()[0]
+        route, profile = router.route(task)
+        serialized_route = route.model_dump(mode="json", exclude={"fallback_profile_ids"})
         serialized_route["required_capabilities"] = sorted(
             item.value for item in route.required_capabilities
         )
-        if profile.protocol is not ModelProtocol.RESPONSES:
-            # Native serializers fix the wire dialect independently of the
-            # connection label; Chat still uses its selected vendor preset.
-            effective_wire_options = wire_options(wire_provider, profile.wire_options)
-            serialized["wire_options"] = effective_wire_options.model_dump(
-                mode="json",
-            )
-        return _json_hash(
-            {
-                "route": serialized_route,
-                "profile": serialized,
-            }
-        )
+        fingerprint: dict[str, object] = {
+            "route": serialized_route,
+            "profile": _serialized_profile(profile),
+        }
+        if route.fallback_profile_ids:
+            fingerprint["fallbacks"] = [
+                _serialized_profile(router.catalog.profiles[profile_id])
+                for profile_id in route.fallback_profile_ids
+            ]
+        return _json_hash(fingerprint)
 
     def model_name(self, task: ModelTask) -> str:
         _route, profile = self._runtime()[0].route(task)
@@ -913,7 +1115,9 @@ class TaskModelExecutor:
     def prepare_capacity(self, task: ModelTask, request: ChatRequest) -> PreparedModelInput:
         _route, profile = self._runtime()[0].route(task)
         normalized = _profile_request(request, profile)
-        return PreparedModelInput(normalized, estimate_request_tokens(normalized), profile)
+        return PreparedModelInput(
+            normalized, estimate_request_tokens(normalized), profile, source=request
+        )
 
     def structured_output_mode(self, task: ModelTask) -> StructuredOutputMode:
         _route, profile = self._runtime()[0].route(task)
@@ -929,15 +1133,7 @@ class TaskModelExecutor:
 
     def capabilities(self, task: ModelTask) -> frozenset[ModelCapability]:
         _route, profile = self._runtime()[0].route(task)
-
-        if not supports_native_search(
-            profile.provider.casefold(),
-            profile.protocol.value,
-            profile.wire_options,
-            has_functions=ModelCapability.TOOLS in profile.capabilities,
-        ):
-            return profile.capabilities - {ModelCapability.NATIVE_WEB_SEARCH}
-        return profile.capabilities
+        return _effective_capabilities(profile)
 
     async def close(self) -> None:
         self._closing = True

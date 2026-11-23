@@ -1484,6 +1484,7 @@ def main() -> None:
             result = {
                 task.value: {
                     "profile_id": route.profile_id,
+                    "fallback_profile_ids": list(route.fallback_profile_ids),
                     "required_capabilities": sorted(
                         item.value for item in route.required_capabilities
                     ),

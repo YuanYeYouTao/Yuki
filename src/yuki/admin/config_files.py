@@ -286,6 +286,7 @@ class ConfigFileService:
                     for task in ModelTask
                     if isinstance(routes.get(task.value), str)
                 },
+                "fallbacks": raw.get("fallbacks", {}),
             }
             semantic_section, semantic_valid = self._semantic_from_raw(loaded)
             if semantic_section is not None:
@@ -414,6 +415,10 @@ class ConfigFileService:
                         previous_secret_bytes,
                         encode_model_secrets(saved_keys),
                     )
+                if "fallbacks" not in document and "fallbacks" in existing:
+                    # An older client does not know the field; only an explicit value
+                    # (an empty mapping clears it) changes the saved chain.
+                    document["fallbacks"] = existing["fallbacks"]
                 old_profiles = existing.get("profiles", {})
                 if not isinstance(old_profiles, dict):
                     raise ValueError("invalid previous profiles")

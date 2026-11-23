@@ -9,7 +9,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from yuki.model_runtime.connections import (
     ASRConnection,
@@ -20,8 +20,10 @@ from yuki.model_runtime.connections import (
 from yuki.model_runtime.models import (
     ModelCapability,
     ModelProfile,
+    ModelProtocol,
     ModelRoute,
     ModelTask,
+    StructuredOutputMode,
 )
 from yuki.model_runtime.search_defaults import normalize_model_search_document
 from yuki.web.models import WebMode
@@ -57,6 +59,8 @@ class _ProfileDocument(BaseModel):
     schema_version: Literal[3]
     profiles: dict[str, dict[str, Any]]
     routes: dict[str, str]
+    # Optional ordered fallback profiles per task; absent or empty means none.
+    fallbacks: dict[str, list[str]] = Field(default_factory=dict)
     search_backend: Literal["tavily", "model"] | None = None
     search_connection: str | None = None
     embedding: EmbeddingConnection | None = None
@@ -108,6 +112,42 @@ class ModelProfileCatalog(BaseModel):
                 raise ValueError(
                     f"model route {task.value} requires unsupported capabilities: {names}"
                 )
+            if len(set(route.chain)) != len(route.chain):
+                raise ValueError(
+                    f"model route {task.value} fallbacks must be distinct and differ from "
+                    "its head profile"
+                )
+            # Requests are built for the head's structured mode, so every fallback must
+            # accept it. Native search is not required: a request carrying provider-native
+            # tools skips a fallback without them at run time.
+            required = set(route.required_capabilities)
+            if profile.structured_output_mode is StructuredOutputMode.FUNCTION_TOOL:
+                required.add(ModelCapability.TOOLS)
+            elif profile.structured_output_mode is StructuredOutputMode.JSON_SCHEMA:
+                required.add(ModelCapability.STRUCTURED_OUTPUT)
+            for fallback_id in route.fallback_profile_ids:
+                fallback = self.profiles.get(fallback_id)
+                if fallback is None:
+                    raise ValueError(
+                        f"model route {task.value} fallback references unknown profile "
+                        f"{fallback_id}"
+                    )
+                if (
+                    fallback.protocol is ModelProtocol.CHAT_COMPLETIONS
+                    and profile.protocol is not ModelProtocol.CHAT_COMPLETIONS
+                ):
+                    # Plain Chat tool calls carry no continuation, so the chain's next
+                    # request would return to a head that cannot replay that history.
+                    raise ValueError(
+                        f"model route {task.value} fallback {fallback_id} uses chat_completions "
+                        "but the head does not"
+                    )
+                lacking = required.difference(fallback.capabilities)
+                if lacking:
+                    names = ", ".join(sorted(item.value for item in lacking))
+                    raise ValueError(
+                        f"model route {task.value} fallback {fallback_id} lacks: {names}"
+                    )
         return self
 
 
@@ -162,8 +202,15 @@ def normalize_model_profile_document(
         ModelProfile.model_validate(
             {"id": profile_id, **_resolve_profile_environment(payload, environment=environment)}
         )
+    unknown = set(validated.fallbacks).difference(task.value for task in ModelTask)
+    if unknown:
+        raise ValueError(f"fallbacks name unknown model tasks: {', '.join(sorted(unknown))}")
+    normalized = validated.model_dump(exclude_none=True)
+    normalized["fallbacks"] = {task: ids for task, ids in validated.fallbacks.items() if ids}
+    if not normalized["fallbacks"]:
+        del normalized["fallbacks"]
     return normalize_model_search_document(
-        validated.model_dump(exclude_none=True),
+        normalized,
         environment=environment,
         web_mode=validated.search.mode
         if validated.search is not None and validated.search.mode is not None
@@ -208,9 +255,13 @@ def parse_model_profile_catalog(
                 task=ModelTask(task_name),
                 profile_id=profile_id,
                 required_capabilities=_DEFAULT_REQUIREMENTS[ModelTask(task_name)],
+                fallback_profile_ids=tuple(document.fallbacks.get(task_name, ())),
             )
             for task_name, profile_id in raw_routes.items()
         }
+        unknown = set(document.fallbacks).difference(task.value for task in routes)
+        if unknown:
+            raise ValueError(f"fallbacks name unrouted model tasks: {', '.join(sorted(unknown))}")
         return ModelProfileCatalog(
             profiles=profiles,
             routes=routes,

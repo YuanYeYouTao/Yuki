@@ -309,6 +309,21 @@ class ModelInvocationRepository:
             {key: combined(groups) for key, groups in by_profile.items()},
         )
 
+    async def latest_success_profile(self, task: ModelTask) -> str | None:
+        """The task's latest successful profile, via ``ix_model_invocations_task_created``."""
+        statement = (
+            select(ModelInvocationModel.profile_id)
+            .where(
+                ModelInvocationModel.task == task.value,
+                ModelInvocationModel.success.is_(True),
+            )
+            .order_by(ModelInvocationModel.created_at.desc(), ModelInvocationModel.id.desc())
+            .limit(1)
+        )
+        async with self._database.read_session() as session:
+            profile_id: str | None = await session.scalar(statement)
+        return profile_id
+
     async def recent_errors(self, *, limit: int) -> tuple[ModelInvocationRecord, ...]:
         if limit <= 0:
             raise ValueError("limit must be positive")

@@ -28,6 +28,7 @@ ASR 可明确选择 `chat_completions` 或 `audio_transcriptions`，Embedding �
 
 模型由 `ModelTask → ModelProfile → Provider` 显式绑定。Provider 是连接名称，协议由 Profile 显式选择；
 主 Agent、插件、自动化、记忆、媒体与 Work 共用原执行层，不按消息内容自动选择模型。
+每个用途还可显式配置一条有序备用链，只在请求确定未被受理时使用，见[显式备用链](#显式备用链)。
 部署向导可选择主模型供应商和协议；多个 Profile 可分别配置 endpoint、密钥环境变量和任务路由。
 默认示例仍是 DeepSeek，不会自动覆盖部署中的 `.env`、模型路由或人格提示词。
 部署文件统一为 `webui-config/model_profiles.toml`，API Key sidecar 与它同目录；旧部署
@@ -317,6 +318,49 @@ Chat Completions、Claude Messages、Gemini 沿用原有的全部传输错误有
 失败路径：带原生服务端工具且已有物理派发时改为 `LLMNativeToolError`，journal 停在
 `dispatched`，不自动重放；普通请求与读超时相同，journal 存 `paired`，Work 进入可重试的
 provider 失败，沿原 Work 与累计预算继续。
+
+## 显式备用链
+
+`model_profiles.toml` 的可选 `[fallbacks]` 按用途列出有序备用 Profile，例如
+`chat_agent = ["backup"]`；缺省或空列表就是没有备用，行为与没有该段时相同，无运行开关。
+链只挂在 `ModelTask` 路由上；独立视觉、ASR、Embedding 与搜索连接没有备用链。
+
+切换只在执行器（`TaskModelExecutor`）里发生，适配器只多记一个“未受理”计数：
+
+- 只在请求**确定未被上游受理**时切到下一跳：本跳每一次物理尝试都是连接失败、连接超时、
+  代理拒绝 CONNECT、本地连接池等待超时，或上游明确返回 429、5xx（504 除外）、401/403
+  且回复未报告非零用量；以及 0 次物理请求的密钥缺失。每跳先按自身 `max_retries` 做有界传输重试，耗尽后才切换。
+- 504 网关超时、读超时、读写中断、回复中途断开等结果未知的失败不切换（504 仍按现有传输
+  重试规则在本跳内重发），沿上文的传输失败与回执路径；
+  400/404 等请求形状问题、空回答、截断、畸形工具调用、内容拒绝与容量超限也不切换。
+  取消、被新 Turn 取代和后台让路不是 Provider 故障。于是一次逻辑请求最多只有一跳可能计费。
+- 只有不带 ProviderContinuation（`continuation`、消息或 `continuation_items` 里的私有项）的请求走链（新链首请求、结构化任务的每次调用、公共 compact）。
+  带续接状态的请求只发给产生它的那个 Profile（必须仍在链内），失败照常失败，不把私有状态发往
+  别处；链内跟随由续接状态决定，没有计时、冷却或健康探测。每条新链都先试链首。
+- 链首（或续接所属 Profile）不满足请求能力或容量时照旧报错，不因此改选别的 Profile；
+  只有切换途中的备用跳在缺能力（含原生搜索）或已知容量放不下时记为跳过。
+- 密钥缺失只在该用途配了链时记一行 0 次物理请求的失败调用；未配链时照旧直接报错、不记录。
+- 每跳是一次独立逻辑调用，单独写 `model_invocations` 行；第二跳起若之前已有物理派发，
+  按辅助请求计入原 Work 根预算（与传输重试同一入口），预算耗尽即停止。Main 的派发守卫与
+  journal `dispatched` 只记一次，冷恢复沿原回执，不因配了链而重新派发。
+- 全部跳失败时抛出最后一个真正派发过（物理请求数大于 0）的跳的原异常，诊断附 `fallback_hops`，
+  `physical_request_count` 为各跳之和。日志记一行 `model_fallback task= from= to= reason=`。
+
+请求按链首生成（结构化模式、原生搜索、工具），所以读配置时要求每个备用 Profile 满足该用途的
+默认能力和链首结构化模式所需能力（`function_tool` 需 `tools`，`json_schema` 需
+`structured_output`）；备用不得重复或等于链首，用途名必须已知。链首不是 Chat Completions 时，
+备用也不能是 Chat Completions：Chat 的普通工具调用不产生续接状态，同链下一次请求会回到链首，
+而 Responses 等链首不接受这种工具历史。不要求原生搜索：链首是原生搜索时也可以配置没有
+`native_web_search` 的备用，带原生搜索工具的请求在运行时跳过它。不比较上下文窗口：备用窗口较小只在单次请求放不下时跳过；Main 的
+容量规划仍按链首，备用的上下文窗口建议不小于自动整理触发值加输出额度。
+
+Profile revision 覆盖整条链：改链或改备用 Profile 后，持久 Work 下次激活显式开新链；链为空时
+revision 与没有备用链时相同。Admin 快照回传 `fallbacks`，Desktop 原样保存不会丢链；提交的文档不含该字段（旧客户端）
+时保留已存链，显式空映射才清除；热保存后
+新请求立即用新链，已 pin 的激活保持原链。`yuki model routes` 显示 `fallback_profile_ids`。
+空链在保存时不写 `[fallbacks]` 段；本功能之前的代码会拒绝含该段的文件，回滚代码前须先删掉该段。
+看门狗对配了链的用途读最近一次成功调用：落在备用上时报告 `component:model_fallback:<task>:<profile>`，
+链首再次成功即清除，不设时间窗。
 
 ## 用量与 HTTP 请求口径
 

@@ -7,7 +7,11 @@ from yuki.model_runtime.profiles import ModelProfileCatalog
 
 
 class ModelRouter:
-    """Resolve one task without fallback or model-name guessing."""
+    """Resolve a task's head profile without model-name guessing.
+
+    The route's explicit ``fallback_profile_ids`` are walked only by the executor,
+    after a not-accepted failure; nothing here chooses by content or health.
+    """
 
     def __init__(self, catalog: ModelProfileCatalog) -> None:
         self._catalog = catalog

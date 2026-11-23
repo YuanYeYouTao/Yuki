@@ -132,6 +132,10 @@ trace_snapshot、transport、响应准备和 retry budget/backoff 是嵌套明�
 HTTP transport 含 httpx 自身连接池/调度，不等于精确网络服务时间。physical_attempt_count
 只计实际 HTTP post。配置/容量拒绝可为零，native 工具不确定运输按原单次请求合同处理。
 旧记录没有 phase_version/分段时标 unknown，不反推历史分段。
+用途配了[备用链](model-providers.md#显式备用链)时，`model_phases` 另含 `route_hops`：按顺序列出
+本次 execute 经过的每一跳 `profile_id`、`outcome`（`success`/`failed_not_accepted`/`failed`/
+`skipped_capability`/`skipped_capacity`），失败跳另有 `category`（如 `ConnectError`、`HTTP503`）
+与该跳物理次数；`profile_id` 等路由字段取最后一跳。不保存请求正文。
 
 conversation_lock 记录 coordinator 与 conversation 的 request→acquire 单调等待；固定
 runtime_lock_timing 日志还报告等待中取消/拒绝。chat_processing 原起点仍在取得锁之后，
