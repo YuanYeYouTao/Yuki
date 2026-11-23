@@ -11,7 +11,9 @@ Failure cases written before the implementation:
   refused wholesale instead of kept to its scope);
 - D5: a later scoped prompt on the still-loaded session is judged by the old scope
   (scopes stack) instead of its own;
-- D6: ``release`` no longer closes the session after the turn.
+- D6: ``release`` no longer closes the session after the turn;
+- D7: the retained scope auto-approves a permission request of the detached turn
+  (only a delegation owning the turn may; with no watch left it is deny-only).
 
 Artifact: test-results/connector-stability/acp-detach-scope-<release>-<platform>.json
 (the trace of every callback and whether it ran).
@@ -66,6 +68,8 @@ async def test_acp_detach_mid_turn_keeps_the_scope(tmp_path: Path, release: bool
             {"say": "started"},
             {"wait": str(gate)},
             *_steps(work, outside, inside, escape, "during"),
+            # Inside the scope: auto-approved while owned, not after the detach.
+            acp.permission("edit-in", "edit", locations=[str(work / "edit.py")]),
         ],
         # Released, the session closes after the turn: no agent-initiated turn follows.
         "after": [] if release else _steps(work, outside, inside, escape, "after"),
@@ -91,6 +95,21 @@ async def test_acp_detach_mid_turn_keeps_the_scope(tmp_path: Path, release: bool
             }
         )
         gate.write_text("go")
+        _, unowned = await acp.until(
+            events, lambda kind, value: kind == "permission" and value["payload"].get("unowned")
+        )
+        await driver.execute(
+            {
+                "id": "deny",
+                "action": "respond",
+                "session_id": session_id,
+                "arguments": {
+                    "connection_id": driver.owner,
+                    "permission_id": unowned["payload"]["permission_id"],
+                    "option_id": "deny",
+                },
+            }
+        )
         await acp.until(
             events,
             lambda kind, value: kind == "work_finished" and value["operation_id"] == "scoped",
@@ -133,6 +152,12 @@ async def test_acp_detach_mid_turn_keeps_the_scope(tmp_path: Path, release: bool
                 for path in (*work.iterdir(), *outside.iterdir(), *later.iterdir())
             ),
             "escape_ran": escape_ran.exists(),
+            "permission": {
+                "options": unowned["payload"]["options"],
+                "outcome": [
+                    row["outcome"] for row in acp.traced(trace, "session/request_permission")
+                ],
+            },
             "inside_ran": inside_ran.exists(),
             "session_closed": [row["session"] for row in acp.traced(trace, "session/close")],
             "prompted_sessions": [row["session"] for row in acp.traced(trace, "session/prompt")],
@@ -164,6 +189,10 @@ async def test_acp_detach_mid_turn_keeps_the_scope(tmp_path: Path, release: bool
                 else ["work/during-in.txt", "work/after-in.txt", "later/second-in.txt"]
             ),
             "escape_ran": False,
+            "permission": {
+                "options": ["deny"],
+                "outcome": [{"outcome": "selected", "optionId": "reject"}],
+            },
             "inside_ran": True,
             "session_closed": [session_id] if release else [],
             # D5 replaces the scope on the same loaded session, not on a new one.

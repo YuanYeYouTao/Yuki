@@ -64,7 +64,9 @@ def run(session, steps):
         elif "wait" in step:
             # Hold the turn until the test creates this file (e.g. after a detach).
             deadline = time.monotonic() + 10
-            while not Path(step["wait"]).exists() and time.monotonic() < deadline:
+            while not Path(step["wait"]).exists():
+                if time.monotonic() > deadline:
+                    raise SystemExit("the gate never opened")
                 time.sleep(0.01)
         elif "steer" in step:
             # Wait for the client's steer while this prompt is in flight.
