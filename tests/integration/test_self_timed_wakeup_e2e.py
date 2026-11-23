@@ -411,7 +411,11 @@ async def test_w4_w5_w6_w11_w13_private_wake_sends_and_remembers(database, tmp_p
 
         for label, statement, parameters in (
             ("scenes", SCENES_SQL, {}),
-            ("admitted", ADMITTED_SQL, {"scenes": "[]", "proposal": "timer:1:1"}),
+            (
+                "admitted",
+                ADMITTED_SQL,
+                {"scenes": json.dumps([[run.conversation_id, 1]]), "proposal": "timer:1:1"},
+            ),
         ):
             rows = (await reader.execute(text("EXPLAIN QUERY PLAN " + statement), parameters)).all()
             plans[label] = [str(row[-1]) for row in rows]
@@ -473,11 +477,16 @@ async def test_w4_w5_w6_w11_w13_private_wake_sends_and_remembers(database, tmp_p
     assert len(statements) <= 4
     # The scene query reads the (one row per person) route table once per slot; the
     # Conversation and the slot's prior run are index lookups.
-    assert any("uq_canonical_conversations_binding" in step for step in plans["scenes"])
+    # Planner wording differs across SQLite versions; the facts are index searches, no scans.
+    assert any("SEARCH c " in step and "INDEX" in step for step in plans["scenes"]), plans
     assert any(
-        "autoindex_autonomy_initiative_runs" in step and "proposal_id=?" in step
-        for step in plans["admitted"]
-    )
+        "SEARCH autonomy_initiative_runs" in step and "INDEX" in step for step in plans["admitted"]
+    ), plans
+    assert not any(
+        step.startswith(("SCAN c", "SCAN autonomy_initiative_runs"))
+        for plan in plans.values()
+        for step in plan
+    ), plans
 
 
 async def test_w7_w8_same_slot_restart_and_lost_dispatch(database, tmp_path):
