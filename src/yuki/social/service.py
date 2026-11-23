@@ -1141,6 +1141,7 @@ class SocialService:
                         platform=route.platform,
                         space_binding_id=route.binding_id if target.kind == "space" else None,
                         participant_assignment_ids=(route.binding_id, route.presence_id),
+                        sender_external_id=route.sender_account_id,
                         conversation_id=route.conversation_id,
                         operations=operations,
                     )

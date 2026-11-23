@@ -56,7 +56,7 @@ CROSS JOIN accounts ON accounts.id = observation.account_id
     + _CURRENT_ASSIGNMENT
     + """
 WHERE observation.name = requested.value AND {scope}
- AND accounts.platform = :platform AND {observed}
+ AND accounts.platform = :platform AND accounts.external_account_id <> :sender AND {observed}
 """
 )
 _GROUP_NAMES = sql(
@@ -67,31 +67,25 @@ _GROUP_NAMES = sql(
 _PRIVATE_NAMES = sql(
     _NAME_QUERY.format(scope="observation.space_binding_id IS NULL", observed=_PRIVATE_ACCOUNTS)
 )
-_GROUP_CONVERSATION = """
-SELECT id FROM canonical_conversations
-WHERE kind = 'space' AND space_binding_id = :scope AND thread_id IS NULL
-"""
-_PRIVATE_CONVERSATION = """
-SELECT id FROM canonical_conversations
-WHERE kind = 'private' AND thread_id IS NULL
- AND identity_binding_id IN (SELECT value FROM json_each(:participants))
- AND entry_presence_id IN (SELECT value FROM json_each(:participants))
-"""
-_RECENT_QUERY = """
+# Excluding the sender leaves one private candidate, so only a group can be ambiguous.
+_GROUP_RECENT = sql(
+    """
 SELECT accounts.id
 FROM json_each(:accounts) requested
 CROSS JOIN accounts ON accounts.id = requested.value
 LEFT JOIN chat_events recent ON recent.id = (
  SELECT id FROM chat_events
- WHERE canonical_conversation_id = COALESCE(:conversation_id, ({conversation}))
+ WHERE canonical_conversation_id = COALESCE(:conversation_id, (
+  SELECT id FROM canonical_conversations
+  WHERE kind = 'space' AND space_binding_id = :scope AND thread_id IS NULL
+ ))
   AND sender_user_id = accounts.external_account_id
   AND suppression_status = 'keeper' AND event_kind = 'message'
  ORDER BY occurred_at DESC, id DESC LIMIT 1
 )
 ORDER BY recent.occurred_at DESC, recent.id DESC, accounts.id
 """
-_GROUP_RECENT = sql(_RECENT_QUERY.format(conversation=_GROUP_CONVERSATION))
-_PRIVATE_RECENT = sql(_RECENT_QUERY.format(conversation=_PRIVATE_CONVERSATION))
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -184,10 +178,14 @@ async def prepare_for_entry(
     platform: str,
     space_binding_id: str | None,
     participant_assignment_ids: tuple[str, ...] = (),
+    sender_external_id: str,
     operations: PlatformSocialOperations,
     conversation_id: str | None = None,
 ) -> PreparedContent:
-    """Resolve only names present in this text, within the physical entry's accounts."""
+    """Resolve only names present in this text, within the physical entry's accounts.
+
+    A name never selects the sending account itself; ``@{account:UUID}`` stays explicit.
+    """
     positions = _positions(text)
     exact_ids = {item.account_id for item in positions if item.account_id is not None}
     prefixes = _prefixes(text, positions)
@@ -198,6 +196,7 @@ async def prepare_for_entry(
         "scope": space_binding_id,
         "participants": json.dumps(participant_assignment_ids),
         "conversation_id": conversation_id,
+        "sender": sender_external_id,
     }
     exact: dict[str, NameTarget] = {}
     if exact_ids:
@@ -239,8 +238,7 @@ async def prepare_for_entry(
     if ambiguous:
         # One indexed top-1 lookup per truly ambiguous physical account, not a history scan.
         ordered = await session.scalars(
-            _GROUP_RECENT if space_binding_id is not None else _PRIVATE_RECENT,
-            {**parameters, "accounts": json.dumps(tuple(ambiguous))},
+            _GROUP_RECENT, {**parameters, "accounts": json.dumps(tuple(ambiguous))}
         )
         preference = {account_id: index for index, account_id in enumerate(ordered)}
     return _render_content(text, positions, matches, exact, operations.native_mention, preference)

@@ -251,62 +251,6 @@ async def test_natural_name_uses_the_destination_conversation_not_the_invoking_o
     assert row.canonical_conversation_id == target_message.conversation_id
 
 
-async def test_cross_target_private_name_uses_the_original_participants_history(env):
-    private = await append_message(
-        env,
-        "10002",
-        "Ice",
-        at=datetime.now(UTC),
-        message_id="private-member",
-        group_id=None,
-        mentions=(MessageMention("yuki", 0, 6, 10, env.bot.self_id, "Ice"),),
-    )
-    async with env.db.read_session() as session:
-        member = await session.scalar(
-            select(IdentityBindingModel)
-            .join(AccountModel)
-            .where(AccountModel.platform == "qq", AccountModel.external_account_id == "10002")
-        )
-    assert await env.router.cas_takeover_person(member.person_id) == "taken"
-    target = {"person_id": member.person_id}
-    route = await env.router.resolve_send_for_person(member.person_id)
-    assert route.conversation_id is None
-    await send(env, "先前的私聊回复", target=target, call_id="private-history")
-    physical_member = await account(env, "10002")
-    physical_yuki = await account(env, env.bot.self_id)
-    # Pick the larger UUID so missing history cannot pass through stable-ID fallback.
-    if physical_member.id > physical_yuki.id:
-        await append_message(
-            env,
-            "10002",
-            "Ice",
-            at=datetime.now(UTC) + timedelta(seconds=1),
-            message_id="private-latest-member",
-            group_id=None,
-        )
-        await send(env, "源群的最近回复", call_id="group-history")
-        selected, native = physical_member, "10002"
-    else:
-        await append_message(
-            env,
-            "10002",
-            "Ice",
-            at=datetime.now(UTC) + timedelta(seconds=1),
-            message_id="source-group-latest-member",
-        )
-        selected, native = physical_yuki, env.bot.self_id
-    result = await send(env, "@ Ice 私聊里的称呼", target=target, call_id="private-mention")
-    assert result["status"] == "succeeded"
-    assert [item["account_id"] for item in result["mentioned_accounts"]] == [selected.id]
-    sent = [params for method, params in env.bot.calls if method == "send_private_msg"]
-    assert len(sent) == 2 and sent[-1]["user_id"] == 10002
-    assert sent[-1]["message"][0] == {"type": "at", "data": {"qq": native}}
-    async with env.db.read_session() as session:
-        row = await session.get(ChatEventModel, result["event_id"])
-    assert row.canonical_conversation_id == private.conversation_id
-    assert row.canonical_conversation_id != env.source.conversation_id
-
-
 async def test_recipient_transfer_after_preparation_does_not_block_the_real_source(
     env, monkeypatch
 ):
@@ -502,6 +446,7 @@ async def test_real_indexed_preparation_reads_while_another_writer_is_active(env
                         "@Diana 看看，@ Diana，再@Diana",
                         platform=route.platform,
                         space_binding_id=route.binding_id,
+                        sender_external_id=route.sender_account_id,
                         conversation_id=route.conversation_id,
                         operations=env.router.operations(route),
                     ),
