@@ -78,7 +78,7 @@ async def test_snapshot_restore_and_idle_sleep_over_client_api(backend):
     client, headers = backend
     record = {}
     meta = (await client.get("client/v1/meta")).json()["data"]
-    assert meta["api_revision"] == 14 and "computer_snapshots" in meta["capabilities"]
+    assert meta["api_revision"] == 15 and "computer_snapshots" in meta["capabilities"]
     view = (await client.get("client/v1/computer", headers=headers)).json()["data"]
     assert view["snapshots"] == [] and view["snapshot_keep"] == 3
     assert view["idle_sleep_minutes"] == 30 and view["last_restore"] is None

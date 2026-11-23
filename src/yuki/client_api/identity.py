@@ -590,6 +590,80 @@ class ClientIdentityService:
                 request_id=request_id,
             )
 
+    async def _delete(
+        self,
+        session: AsyncSession,
+        *,
+        device_id: str,
+        issuer_id: str,
+        source: str,
+        request_id: str,
+        principal: ClientPrincipal | None = None,
+    ) -> dict[str, Any]:
+        """Delete a revoked chat credential row; facts keep its ID as a plain string.
+
+        Connector devices anchor native instances, operations and events through
+        ``ON DELETE CASCADE``, so deleting them would erase original execution receipts.
+        """
+        operation = "client.delete"
+        bound = fingerprint(operation, device_id, {})
+        old = await self.replay(session, issuer_id, request_id, bound, principal=principal)
+        if old is not None:
+            return old
+        device = await session.get(ClientDeviceModel, device_id)
+        if device is None or (
+            principal is not None
+            and not await same_person_id(session, device.person_id, principal.person_id)
+        ):
+            raise ClientError("not_found")
+        if device.revoked_at is None or device.purpose != "chat":
+            raise ClientError("precondition_failed")
+        await session.delete(device)
+        result: dict[str, JsonValue] = {"device_id": device_id, "deleted": True}
+        await self.receipts.record_personal_command(
+            session,
+            principal_id=issuer_id,
+            principal_kind=source,
+            person_id=device.person_id,
+            request_id=request_id,
+            operation=operation,
+            operation_ref=device_id,
+            payload_hash=bound,
+            resource_id=device_id,
+            result=result,
+            request_person_id=principal.request_person_id if principal is not None else None,
+            request_conversation_id=(
+                principal.request_conversation_id if principal is not None else None
+            ),
+        )
+        return {**result, "replay": False}
+
+    async def delete(
+        self, principal: ClientPrincipal, device_id: str, request_id: str
+    ) -> dict[str, Any]:
+        async with self.database.immediate_session() as session:
+            current = await self.require_principal(session, principal)
+            return await self._delete(
+                session,
+                device_id=device_id,
+                issuer_id=current.device_id,
+                source="device",
+                request_id=request_id,
+                principal=current,
+            )
+
+    async def delete_for_operator(
+        self, device_id: str, principal_id: str, request_id: str
+    ) -> dict[str, Any]:
+        async with self.database.immediate_session() as session:
+            return await self._delete(
+                session,
+                device_id=device_id,
+                issuer_id=principal_id,
+                source="control",
+                request_id=request_id,
+            )
+
     async def transfer_for_operator(
         self,
         binding_id: str,

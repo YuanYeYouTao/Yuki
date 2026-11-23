@@ -1,3 +1,3 @@
 """The single public personal API contract version."""
 
-CLIENT_API_REVISION = 14
+CLIENT_API_REVISION = 15

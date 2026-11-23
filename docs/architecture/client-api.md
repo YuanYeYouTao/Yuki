@@ -45,7 +45,8 @@ Client API revision 7 退出 `/client/v1/executors`、`/executor/v1` 和 `local_
 
 ## 角色资料与单 SOUL
 
-`GET /meta` 公开当前角色名称、API revision `14` 和实际能力声明，不推断未实现的客户端功能。
+`GET /meta` 公开当前角色名称、API revision `15` 和实际能力声明，不推断未实现的客户端功能。
+revision 15 只加 `POST /devices/{id}/delete`（见[配对与账号绑定](#配对与账号绑定)），Desktop 按实际 revision 决定是否显示删除入口，最低修订不变。
 revision 14 只加字段与两个端点：Work 增 `parent_work_id` 与 `delegation`（委派或观察记录的卡片：`executor{device_id, agent, label, session}`、`relationship`、`state`（running／waiting／unknown／终态）、`status_line`、`pending[]`（`permission_id`、`kind`、`tool`、`options`、`operation_id`、`received_at`、`answer_at`：`yuki_or_user` 或观察记录的 `native_terminal`）、`last_event_at`）；`GET /delegations?group=active|ended` 列出本人所有设备上的委派与观察（Work 投影）；`/works/{id}/steps` 中 `start_subtask`／`message_task`／`manage_task` 步骤的 `detail` 增 `subtask_id`（及委派的 `relationship`），供步骤跳到子任务并显示其实时状态；`POST /works/{id}/native-requests/{permission_id}/answer` 见上文。取消委派沿原 `POST /works/{id}/cancel`（取消原生回合并结束关系，观察记录即停止观察）。旧 Desktop 仍可用：委派与观察作为普通 Work 显示，`agent_target` 继续接受、按新工具术语渲染；Desktop 最低修订不变。
 revision 13 为 `/works/{id}/steps` 的每步新增 `kind`、`tool`、`action`、`detail`（见上文），只加字段；旧字段 `category`／`label` 保留，缺少新字段的旧服务端由 Desktop 退回旧分类显示，Desktop 最低修订不变。
 revision 12 为 Yuki 自己的电脑增加整机快照：`GET /computer` 增 `snapshots`（`id`、`state`、`created_at`、
@@ -112,6 +113,7 @@ reset 的 sha256/size 明确为 null。同一 UUID 按原个人入口命名空�
 | `GET /me` | 设备 Bearer；当前 Person、凭据来源、实际 App 入口、原请求 namespace、绑定与设备列表 |
 | `POST /link-codes {request_id?}` | 设备 Bearer；为本人签发新码，明文仅首次返回 |
 | `DELETE /devices/{id}` | 设备 Bearer；撤销本人的指定设备，其他设备继续可用 |
+| `POST /devices/{id}/delete {request_id}` | 设备 Bearer；删除本人已撤销的聊天设备记录；未撤销返回 `precondition_failed`（先撤销），Connector 设备同样拒绝 |
 | `POST /messages {request_id, text, attachments:[media_id,...], agent_target?}` | App 普通消息；返回内部 event_id、conversation_id 与 replay |
 | `GET /requests/{request_id}` | 原消息／命令查询，先核本人归属，不重新派发 |
 
@@ -132,6 +134,7 @@ App／ACP 新入站携带原认证 Binding 的 Person 与实际 Conversation，�
 原 input 回执可重放；新补充可显式选择本人另一个合法 App 入口，接续原 Work，保持原来源与预算。
 设备 token 只存哈希；码、token 和密钥不写聊天账本、Main、Memory 或命令回执。
 配对响应丢失时原码已使用，重新签发码；未领取的设备可从设备列表撤销。
+已撤销的聊天设备可再从列表删除：只删 `client_devices` 这一行凭据。没有外键指向聊天设备；聊天事件、命令回执与审计、绑定码签发者等以字符串保存原设备 ID，原样保留，本人其他设备仍可按原 `request_id` 查询。Connector 设备经 `ON DELETE CASCADE` 挂着原生实例、操作与事件，删除会抹掉原执行回执，所以撤销后只退出列表、不删除。同一 `request_id` 重放原结果，新请求对已删设备返回 `not_found`。operator 对应 `POST /admin/v1/devices/{id}/delete`（`yuki admin client delete <id>`），沿用 `identity.client.revoke` 资格。
 未知设备与他人设备均返回 `not_found`；失效凭据统一返回 `unauthenticated`。
 
 新平台账号可经其认证网关私聊发送 `/ai link <code>`，在普通入账和自动建 Person 前兑换。
