@@ -11,10 +11,15 @@ Failure cases written before the implementation:
 
 ACP 1.0 requires these paths to be absolute, so a relative one is refused, scoped or
 not; the path a scope judges is then the path that is used.
+
+The started command reports its working directory through this Python, not ``pwd``:
+on Windows the ``pwd`` found on PATH is Git's MSYS one, which prints ``/c/...``.
 """
 
 from __future__ import annotations
 
+import shlex
+import sys
 from pathlib import Path
 
 import pytest
@@ -27,12 +32,18 @@ async def test_acp_callbacks_refuse_relative_paths(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, scoped: bool
 ) -> None:
     work = tmp_path / "work"
-    work.mkdir()
+    # ``sub`` exists under the session cwd too: a relative cwd wrongly joined to it
+    # would start there and report it, instead of failing on a missing directory.
+    (work / "sub").mkdir(parents=True)
     # The connector process's own cwd, outside the session and its scope.
     process = tmp_path / "process"
     (process / "sub").mkdir(parents=True)
     (process / "existing.txt").write_text("connector-side")
     monkeypatch.chdir(process)
+    # Outside the session cwd and the connector's cwd: prints where it was started.
+    where = tmp_path / "where.py"
+    where.write_text("import os\nprint(os.getcwd())\n")
+    probe = {"terminal": sys.executable, "args": [str(where)], "output": True}
     driver, events, trace = await acp.started(tmp_path, FAKE_ACP_MODES=acp.CLAUDE_MODES)
     script = {
         "during": [
@@ -40,12 +51,13 @@ async def test_acp_callbacks_refuse_relative_paths(
             {"write": str(work / "abs.txt")},
             {"read": "existing.txt"},
             {"read": str(work / "abs.txt")},
-            {"terminal": "pwd", "args": ["-P"], "cwd": "sub", "output": True},
-            {"terminal": "pwd", "args": ["-P"], "output": True},
-            {"terminal": "pwd", "args": ["-P"], "cwd": str(tmp_path), "output": True},
+            {**probe, "cwd": "sub"},
+            probe,
+            {**probe, "cwd": str(tmp_path)},
         ]
     }
-    scope = {"scope": {"write_paths": [str(work)], "commands": ["pwd"]}} if scoped else {}
+    commands = [shlex.join([sys.executable])]
+    scope = {"scope": {"write_paths": [str(work)], "commands": commands}} if scoped else {}
     try:
         await driver.execute(acp.prompt("callbacks", script, cwd=str(work), **scope))
         await acp.until(
@@ -60,9 +72,11 @@ async def test_acp_callbacks_refuse_relative_paths(
             "reads": [
                 (row["path"], row["error"]) for row in acp.traced(trace, "fs/read_text_file")
             ],
+            # Where each command really started (resolved; case-insensitive on Windows).
             "terminals": [
-                (row["cwd"], row["error"], row.get("output", "").strip())
+                (row["cwd"], row["error"], output and Path(output).resolve())  # noqa: ASYNC240
                 for row in acp.traced(trace, "terminal/create")
+                for output in [row.get("output", "").strip()]
             ],
         }
         assert observed == {
@@ -71,8 +85,8 @@ async def test_acp_callbacks_refuse_relative_paths(
             "reads": [("existing.txt", True), (str(work / "abs.txt"), False)],
             "terminals": [
                 ("sub", True, ""),
-                (None, False, str(work.resolve())),
-                (str(tmp_path), False, str(tmp_path.resolve())),  # noqa: ASYNC240
+                (None, False, work.resolve()),
+                (str(tmp_path), False, tmp_path.resolve()),  # noqa: ASYNC240
             ],
         }
     finally:
