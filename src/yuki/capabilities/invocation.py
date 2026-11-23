@@ -29,10 +29,6 @@ class InvocationIdentity:
     chain_id: str
     request_sequence: int
     provider_call_id: str
-    parent_operation_id: str | None = None
-    child_ordinal: int | None = None
-    engine_call_id: str | None = None
-    feed_index: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,11 +66,9 @@ class Invocation:
             # Invalid input still has a stable conflict fingerprint, never a
             # different identity or an implicit coercion into valid arguments.
             pass
-        identity = asdict(self.identity)
-        identity["parent_effect_key"] = identity.pop("parent_operation_id")
         return {
             "version": 1,
-            **identity,
+            **asdict(self.identity),
             "tool_id": self.call.function.name,
             "arguments_digest": hashlib.sha256(arguments.encode()).hexdigest(),
             "manifest_revision": self.context.manifest_revision,
@@ -95,19 +89,6 @@ def direct_operation_id(chain_id: str, request_sequence: int, provider_call_id: 
         separators=(",", ":"),
     ).encode()
     return "invocation:v1:" + hashlib.sha256(encoded).hexdigest()
-
-
-def child_operation_id(parent_operation_id: str, child_ordinal: int) -> str:
-    """A composition child's Host identity: parent + Host admission ordinal."""
-    candidate = f"{parent_operation_id}/c{child_ordinal}"
-    if len(candidate.encode()) <= 256:
-        return candidate
-    encoded = json.dumps(
-        ["yuki.invocation.child.v1", parent_operation_id, child_ordinal],
-        ensure_ascii=False,
-        separators=(",", ":"),
-    ).encode()
-    return "invocation:child:v1:" + hashlib.sha256(encoded).hexdigest()
 
 
 def direct_invocations(

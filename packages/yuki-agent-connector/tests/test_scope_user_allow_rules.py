@@ -22,6 +22,11 @@ Failure cases written before the implementation:
 - A5: a session opened with the override refuses later unscoped or full prompts;
 - R1/R2 (opt-in, real agents): the real Claude CLI or claude-agent-acp writes a file
   outside the scope through a user-allowed tool without a reported request.
+
+Written before the hook runs (#650 follow-up, 0.9.9):
+- H1/H2 (opt-in, real agents): a user PreToolUse hook answering ``allow`` lets the
+  real Claude CLI or claude-agent-acp run a Bash command that writes outside the
+  scope without a reported request (the hook's allow passing over the `ask` rules).
 """
 
 from __future__ import annotations
@@ -45,6 +50,7 @@ from yuki_agent_connector.drivers.acp import ACPDriver
 
 FULL: dict[str, Any] = {"write_paths": ["/"], "network": True, "commands": ["*"]}
 MCP_SERVER = Path(__file__).parent / "fakes" / "mcp_touch_server.py"
+ALLOW_HOOK = Path(__file__).parent / "fakes" / "allow_hook.py"
 ARTIFACT = Path(__file__).resolve().parents[1] / "test-results" / "scope-user-allow-rules"
 
 
@@ -252,8 +258,9 @@ async def test_a5_session_opened_with_the_override_accepts_later_prompts(
 # --- Real agents (opt-in) -------------------------------------------------------------
 
 
-def project_with_user_rules(root: Path, allow: list[str]) -> Path:
-    """A project whose local settings stand in for the user's own allow rules."""
+def project_with_user_rules(root: Path, allow: list[str], *, hook: bool = False) -> Path:
+    """A project whose local settings stand in for the user's own allow rules (and,
+    with ``hook``, for the user's own PreToolUse hook that allows every tool)."""
     project = root / "project"
     (project / ".claude").mkdir(parents=True)
     (project / "work").mkdir()
@@ -262,10 +269,21 @@ def project_with_user_rules(root: Path, allow: list[str]) -> Path:
             {"mcpServers": {"yukiprobe": {"command": sys.executable, "args": [str(MCP_SERVER)]}}}
         )
     )
-    (project / ".claude" / "settings.local.json").write_text(
-        json.dumps({"permissions": {"allow": allow}, "enableAllProjectMcpServers": True})
-    )
+    settings: dict[str, Any] = {"permissions": {"allow": allow}, "enableAllProjectMcpServers": True}
+    if hook:
+        command = f"{sys.executable} {ALLOW_HOOK} {root / 'hook.log'}"
+        settings["hooks"] = {
+            "PreToolUse": [{"matcher": "*", "hooks": [{"type": "command", "command": command}]}]
+        }
+    (project / ".claude" / "settings.local.json").write_text(json.dumps(settings))
     return project
+
+
+def hook_calls(root: Path) -> list[str]:
+    log = root / "hook.log"
+    if not log.exists():
+        return []
+    return [json.loads(line)["tool"] for line in log.read_text().splitlines()]
 
 
 async def run_and_deny(
@@ -433,3 +451,136 @@ async def test_r2_real_claude_agent_acp_reports_user_allowed_tools(tmp_path: Pat
     )
     assert len(reported) == 2
     assert not bash_target.exists() and not mcp_target.exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(
+    not os.environ.get("YUKI_REAL_CLAUDE") or shutil.which("claude") is None,
+    reason="one real paid Claude run; set YUKI_REAL_CLAUDE=1",
+)
+async def test_h1_real_claude_reports_a_command_the_user_hook_allows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real_options = claude_module.ClaudeAgentOptions
+    opened: list[Any] = []
+
+    def isolated(**kwargs: Any) -> Any:
+        options = real_options(
+            **{**kwargs, "setting_sources": ["project", "local"], "model": "haiku"}
+        )
+        opened.append(options)
+        return options
+
+    monkeypatch.setattr(claude_module, "ClaudeAgentOptions", isolated)
+    project = project_with_user_rules(tmp_path, [], hook=True)
+    target = tmp_path / "outside.txt"
+    events: asyncio.Queue[tuple[str, dict[str, Any]]] = asyncio.Queue()
+
+    async def emit(kind: str, payload: dict[str, Any]) -> None:
+        events.put_nowait((kind, payload))
+
+    claude_cli = str(shutil.which("claude"))
+    driver = claude_module.ClaudeDriver(
+        Instance("claude", "claude", "Claude", claude_cli, cwd=str(project)), emit
+    )
+    await driver.start()
+    try:
+        await driver.execute(
+            {
+                "id": "real-hook",
+                "action": "prompt",
+                "arguments": {
+                    "prompt": (
+                        f"With the Bash tool run exactly: touch {target}\n"
+                        "Then reply DONE. Use no other tool; if it is not permitted, stop."
+                    ),
+                    "cwd": str(project),
+                    "scope": {"write_paths": [str(project / "work")], "commands": ["pytest"]},
+                },
+            }
+        )
+        seen = await run_and_deny(driver, events, "real-hook")
+    finally:
+        await driver.stop()
+    reported = [value["payload"]["tool"] for kind, value in seen if kind == "permission"]
+    write_artifact(
+        "real-claude-hook.json",
+        {
+            "claude_cli": claude_cli,
+            "settings": opened[0].settings,
+            "hooks": opened[0].hooks is not None,
+            "user_hook_stand_in": "PreToolUse * -> allow",
+            "hook_calls": hook_calls(tmp_path),
+            "reported_tools": reported,
+            "outside_file_written": target.exists(),
+            "event_kinds": [kind for kind, _ in seen],
+        },
+    )
+    assert "Bash" in hook_calls(tmp_path)
+    assert reported == ["Bash"]
+    assert not target.exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(
+    not os.environ.get("YUKI_REAL_CLAUDE_AGENT_ACP"),
+    reason="one real paid claude-agent-acp run; set YUKI_REAL_CLAUDE_AGENT_ACP=<executable>",
+)
+async def test_h2_real_claude_agent_acp_reports_a_command_the_user_hook_allows(
+    tmp_path: Path,
+) -> None:
+    project = project_with_user_rules(tmp_path, [], hook=True)
+    target = project / "bash.txt"  # inside the cwd, outside the scope's write path
+    events: asyncio.Queue[tuple[str, dict[str, Any]]] = asyncio.Queue()
+
+    async def emit(kind: str, payload: dict[str, Any]) -> None:
+        events.put_nowait((kind, payload))
+
+    agent = os.environ["YUKI_REAL_CLAUDE_AGENT_ACP"]
+    driver = ACPDriver(
+        Instance(
+            "acp",
+            "acp",
+            "claude-agent-acp",
+            agent,
+            cwd=str(project),
+            env={"ANTHROPIC_MODEL": "haiku"},
+        ),
+        emit,
+    )
+    await driver.start()
+    try:
+        await driver.execute(
+            {
+                "id": "real-acp-hook",
+                "action": "prompt",
+                "arguments": {
+                    "prompt": (
+                        f"With Bash run exactly: touch {target}\n"
+                        "Then reply DONE. Use no other tool; if it is not permitted, stop."
+                    ),
+                    "cwd": str(project),
+                    "scope": {"write_paths": [str(project / "work")], "commands": ["pytest"]},
+                },
+            }
+        )
+        seen = await run_and_deny(driver, events, "real-acp-hook")
+    finally:
+        await driver.stop()
+    reported = [
+        value["payload"]["tool"].get("kind") for kind, value in seen if kind == "permission"
+    ]
+    write_artifact(
+        "real-claude-agent-acp-hook.json",
+        {
+            "agent": agent,
+            "user_hook_stand_in": "PreToolUse * -> allow",
+            "hook_calls": hook_calls(tmp_path),
+            "reported": reported,
+            "bash_file_written": target.exists(),
+            "event_kinds": [kind for kind, _ in seen],
+        },
+    )
+    assert "Bash" in hook_calls(tmp_path)
+    assert reported == ["execute"]
+    assert not target.exists()

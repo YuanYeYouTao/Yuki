@@ -279,7 +279,6 @@ class Scene:
         self.chat._tools._web_provider = _web_fixture(False)
         state = ShortState(WorkspaceStore(self.tmp_path / "state"))
         self.chat.runtime.runner.main_contract = MainAgentContract(self.chat, state)
-        self.chat.runtime.runner.code_mode_settings = settings
         self.chat._tools.short_state = state
         self.chat._tools.social_service = self.env.service
         self.env.service.runtime_config = self.chat._runtime_config

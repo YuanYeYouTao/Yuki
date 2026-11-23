@@ -117,7 +117,6 @@ async def _runtime(
         chat._models,
         harness.concurrency,
         main_contract=contract,
-        code_mode_settings=harness.settings,
     )
     runtime = AgentRuntime(
         origin=TurnOrigin.USER_MESSAGE,

@@ -6,7 +6,7 @@ Failure cases were written before the code, from docs/architecture/Computer-Useä
 X1 (out of range at the Bot: failed, not uncertain), R1, R9, X2 (echo and the original
 receipt), V3, D10 (own-computer actions never reach a Connector), D1â€“D4, D11 (capability
 facts against an older Connector, including one that reconnects older), X7 (contract 38, one
-manifest for direct and Code Mode). Only the operating system's screen is replaced
+frozen manifest). Only the operating system's screen is replaced
 (packages/yuki-agent-connector/tests/fakes/screen_connector.py).
 
 Artifacts: test-results/computer-use/manifest.json, capability-gating.json.
@@ -15,7 +15,6 @@ Artifacts: test-results/computer-use/manifest.json, capability-gating.json.
 import json
 from pathlib import Path
 
-import pytest
 from tests.conftest import build_harness, make_settings
 from tests.integration.test_device_computer_e2e import (
     RETINA,
@@ -200,14 +199,11 @@ async def test_limits_echo_and_capability_facts(bridge, database, tmp_path):
         write("capability-gating.json", record)
 
 
-@pytest.mark.parametrize("code_enabled", [False, True])
-async def test_contract_38_manifest(database, tmp_path, code_enabled):
-    """X7: one frozen manifest with the new computer contract in direct and Code Mode."""
+async def test_contract_38_manifest(database, tmp_path):
+    """X7: one frozen manifest with the new computer contract."""
     harness = build_harness(database, make_settings(database.url))
     chat = harness.processor._chat
-    contract = MainAgentContract(
-        chat, ShortState(WorkspaceStore(tmp_path / "short-state")), code_enabled=code_enabled
-    )
+    contract = MainAgentContract(chat, ShortState(WorkspaceStore(tmp_path / "short-state")))
     tools = {tool.name: tool for tool in await contract.definitions()}
     computer = tools["computer"].parameters
     assert {"scale", "region", "element", "repeat"} <= set(computer["properties"])
@@ -216,14 +212,11 @@ async def test_contract_38_manifest(database, tmp_path, code_enabled):
     assert computer["properties"]["scale"]["type"] == "integer"
     assert "enum" not in computer["properties"]["scale"]
     assert contract.revision
-    path = ARTIFACTS / "manifest.json"
-    existing = json.loads(path.read_text()) if path.exists() else {}
-    existing["code" if code_enabled else "direct"] = {
-        "revision": contract.revision,
-        "computer": tools["computer"].parameters,
-        "computer_description": tools["computer"].description,
-    }
-    write("manifest.json", existing)
-    if len(existing) == 2:
-        # The same declaration under both calling syntaxes.
-        assert existing["direct"]["computer"] == existing["code"]["computer"]
+    write(
+        "manifest.json",
+        {
+            "revision": contract.revision,
+            "computer": tools["computer"].parameters,
+            "computer_description": tools["computer"].description,
+        },
+    )

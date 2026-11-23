@@ -9,7 +9,6 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy import func, select
-from tests.integration.test_codemode_lifecycle_recovery import FakeEngine
 from tests.support.automation_unified_delivery_helpers import sent, setup_run
 from tests.unit.test_app_messages import admin as admin
 from tests.unit.test_app_messages import app_env as app_env
@@ -17,7 +16,6 @@ from tests.unit.test_app_messages import drain
 from tests.unit.test_client_api import bearer, pair, person_and_code
 
 from yuki.automation.models import RunStatus
-from yuki.codemode.driver import CodeHost
 from yuki.domain.messages import ChatResponse, ToolCall, ToolFunction
 from yuki.persistence.models import (
     ChatEventModel,
@@ -28,7 +26,6 @@ from yuki.persistence.models import (
 from yuki.persistence.people_repository import PeopleRepository
 from yuki.persistence.web_repository import WebSearchSourceRepository
 from yuki.plugin_host.facades import HostPluginContext, PluginFacadeServices, PluginInvocation
-from yuki.services.main_agent_contract import MainAgentContract
 from yuki.tool_results.artifacts import ToolArtifactRepository
 from yuki.web.base import WebSearchError
 from yuki.web.models import WebMode, WebSearchResponse, WebSearchSource
@@ -62,94 +59,6 @@ def _web_fixture(page_fails):
         else AsyncMock(return_value=replace(source, relevant_content="historical page")),
     )
     return web
-
-
-def _enable_fake_code(chat, settings, calls, monkeypatch):
-    """Real Runner/CodeHost/Core invocations; only the Python VM is emulated."""
-    settings.code_mode_enabled = True
-    runner = chat.runtime.runner
-    runner.main_contract = MainAgentContract(chat, runner.main_contract.state, code_enabled=True)
-    runner.code_mode_settings = settings
-    original = runner._code_host
-
-    def create(*args, **kwargs):
-        host = original(*args, **kwargs)
-        assert isinstance(host, CodeHost)
-        host.worker = SimpleNamespace(execution_digest=lambda: "search-separation-fake-engine")
-        host.engine_factory = lambda *_args: FakeEngine(calls=calls)
-        return host
-
-    monkeypatch.setattr(runner, "_code_host", create)
-
-
-@pytest.mark.parametrize("page_fails", [False, True])
-async def test_code_composition_calls_real_search_reader_and_social_once(
-    database, tmp_path, monkeypatch, page_fails
-):
-    case = await setup_run(database, tmp_path, mode="silent")
-    case.settings.web_mode = WebMode.TAVILY
-    web = _web_fixture(page_fails)
-    case.chat._tools._web_provider = web
-    old_url = "https://archive.example/code-selected-history"
-    calls = [
-        ("yuki_web_search", {"query": "research"}),
-        ("yuki_read_webpage", {"url": old_url}),
-        ("yuki_send", {"text": "保留搜索结果并完成交付。"}),
-    ]
-    _enable_fake_code(case.chat, case.settings, calls, monkeypatch)
-    script = "\n".join(f"await {name}({args!r})" for name, args in calls)
-
-    def respond(_request):
-        if len(case.provider.requests) == 1:
-            return ChatResponse(
-                "",
-                0,
-                tool_calls=(
-                    ToolCall(
-                        "accept-original-work",
-                        ToolFunction("manage_task", '{"action":"start","goal":"完成研究并交付"}'),
-                    ),
-                ),
-            )
-        if len(case.provider.requests) == 2:
-            return ChatResponse(
-                "",
-                0,
-                tool_calls=(
-                    ToolCall(
-                        "original-composition",
-                        ToolFunction("execute_code", json.dumps({"code": script})),
-                    ),
-                ),
-            )
-        return "完成。"
-
-    case.provider._responder = respond
-    case.clock.advance(2)
-    result = await case.dispatch()
-    assert result.status is RunStatus.SUCCEEDED, result
-    assert len(case.provider.requests) == 3
-    assert web.search.await_count == 1, [
-        message.content
-        for request in case.provider.requests
-        for message in request.messages
-        if message.role == "tool"
-    ]
-    web.extract.assert_awaited_once_with(old_url, "读取用户指定的网页")
-    assert len(sent(case.env)) == 1
-    assert {tool.name for tool in case.provider.requests[0].tools}.isdisjoint({"yuki_web_search"})
-    from yuki.runtime.work_schema_v1 import effects
-
-    async with database.read_session() as session:
-        rows = (await session.execute(select(effects))).mappings().all()
-    children = [
-        row
-        for row in rows
-        if json.loads(row["receipt_json"]).get("outcome", {}).get("tool")
-        in {"web_search", "read_webpage", "send"}
-    ]
-    assert len(children) == 3 and all(row["state"] in {"accepted", "failed"} for row in children)
-    assert sum(row["kind"] == "code_composition" for row in rows) == 1
 
 
 @pytest.mark.parametrize("page_fails", [False, True])

@@ -91,11 +91,10 @@ async def test_memory_read_result_keeps_complete_fact_and_evidence_without_polic
         "search_memory", json.dumps({"fact_id": fact.id, "query": "x"}), runtime
     )
     assert mixed.model_payload()["error"] == "invalid_arguments"
-    # Use the deployed builder in either tool mode; no frozen policy prose
-    # or new per-result teaching mechanism is introduced.
-    for code_enabled in (False, True):
-        prompt = PromptComposer(settings.model_copy(update={"code_mode_enabled": code_enabled}))
-        assert sum(m.content.count(MEMORY_GROUNDING_RULE) for m in prompt.static_messages()) == 1
+    # Use the deployed builder; no frozen policy prose or new per-result
+    # teaching mechanism is introduced.
+    prompt = PromptComposer(settings)
+    assert sum(m.content.count(MEMORY_GROUNDING_RULE) for m in prompt.static_messages()) == 1
 
 
 def test_original_memory_receipt_still_decodes_its_data():

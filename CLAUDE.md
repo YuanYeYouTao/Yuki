@@ -14,8 +14,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 uv sync --all-extras --managed-python      # 安装依赖（含 dev）
 uv run ruff check .                        # lint（line-length 100）
 uv run mypy --platform linux src           # strict mypy，包为 yuki 与 yuki_plugin_sdk
-uv run pytest tests/unit -q -m "not native_worker"         # 与 CI 一致的单元套件
-uv run pytest tests/integration -q -m "not native_worker"  # 集成套件
+uv run pytest tests/unit -q                                 # 与 CI 一致的单元套件
+uv run pytest tests/integration -q                          # 集成套件
 uv run pytest tests/unit/test_xxx.py::test_name -q         # 单个测试
 uv run yuki init-db                        # alembic upgrade head（迁移在 migrations/versions）
 uv run yuki --help                         # 管理 CLI：plugin / model / runtime / memory 等
@@ -23,7 +23,7 @@ uv run yuki-bot                            # 启动服务（NoneBot2 + FastAPI�
 ```
 
 - pytest 使用 `asyncio_mode = "auto"`，`pythonpath` 已含 `src` 与 `packages/yuki-agent-connector/src`。
-- `native_worker` 标记需要真实 Monty Code Mode worker（`scripts/build_monty_distribution.sh`），只在 CI 的 native job 跑；`qwen_embedding_integration` 需要真实 DashScope API。
+- `qwen_embedding_integration` 标记需要真实 DashScope API。
 - 有头桌面测试（`test_computer_*` 等）在 CI 里跑在 `deploy/sandbox/Dockerfile.environment-desktop` 镜像中，需要 `YUKI_TEST_CHROMIUM`。
 - 部分测试需要 `ffmpeg`/`ffprobe`。
 - `packages/yuki-agent-connector` 是独立发布的本机连接器，有自己的 `uv.lock`，在该目录下单独 `uv sync` / `ruff` / `mypy src` / `pytest`。
@@ -42,7 +42,7 @@ uv run yuki-bot                            # 启动服务（NoneBot2 + FastAPI�
 
 **统一主 Agent**：聊天、SELF 自主行动、定时任务、插件和长任务共用同一主 Agent loop（`agent_core/loop.py`），提示词装配在 `prompting/`，人格只来自 `character/SOUL.md`。`runtime/` 管 Work（任务/激活/预算/journal/父子工作者/投递回执），恢复按原执行 ID 和持久回执处理，不重置预算、不重发。
 
-**工具**：`capabilities/`、`executor/`、`codemode/`（Tool Kernel）。部署冻结一份完整工具清单；direct 模式直接声明全部工具，可选 Code Mode（Monty 沙箱）复用同一清单和执行器。权限在执行处核验，目录查询不改已提交声明。
+**工具**：`capabilities/`、`executor/`（Tool Kernel）。部署冻结一份完整工具清单并直接声明全部工具。权限在执行处核验。
 
 **模型**：`llm/` 实现 Chat Completions、Responses、Claude Messages、Gemini 协议方言；`model_runtime/` 管 Profile 与用途路由。不按内容隐式切换 Provider 或增加付费调用。
 
