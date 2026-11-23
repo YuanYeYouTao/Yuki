@@ -15,7 +15,8 @@ async def model_fallback_facts(
     """Report, per task with a configured chain, whether its latest success was a fallback.
 
     State only, no time window: the head's next success clears it. A task without a
-    success yet, or whose latest success is outside the current chain, is undetermined.
+    success yet is undetermined; any other latest profile (including one a hot reload
+    removed from the chain) means the head is not the one answering.
     """
     facts: dict[str, dict[str, object]] = {}
     for task, route in executor.router.catalog.routes.items():
@@ -23,11 +24,7 @@ async def model_fallback_facts(
             continue
         latest = await invocations.latest_success_profile(task)
         facts[f"model_fallback:{task.value}"] = {
-            "healthy": True
-            if latest == route.profile_id
-            else False
-            if latest in route.fallback_profile_ids
-            else None,
+            "healthy": None if latest is None else latest == route.profile_id,
             "state": latest or "unknown",
             "durable": True,
         }

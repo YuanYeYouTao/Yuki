@@ -53,6 +53,17 @@ F28 an Admin save whose document omits ``fallbacks`` (an older client) erases th
     an explicit empty ``fallbacks`` must still clear it;
 F29 a misspelled task with an empty list in ``[fallbacks]`` is accepted.
 
+Added after Codex review round 2 (each failed before its fix):
+
+F30 a Claude Messages head's 503 reporting only ``input_tokens`` (no cache counters,
+    which the usage decoder leaves unknown) still switches;
+F31 after a hot reload removed the fallback that last succeeded, the watchdog leaves the
+    task undetermined instead of reporting that the head is not answering;
+F32 a Chat Completions fallback is accepted for a head of another protocol: its plain
+    tool calls carry no continuation, so the chain's next request returns to the head,
+    which (Responses) refuses that tool history (owner decision 2026-11-23: refuse at
+    configuration time, no other follow state).
+
 F7 (empty answer, truncation, content rejection) is the same non-switch rule as the
 HTTP 400 case of F5; F22 (public compact) has no continuation and follows F2, an
 execution compact carries one and follows F8.
@@ -158,6 +169,7 @@ EXPECTED = (
     "F25_usage_reported_no_switch",
     "F26_continuation_items_pinned",
     "F27_last_dispatched_error",
+    "F30_partial_usage_no_switch",
 )
 KEY_ENV = "MODEL_FALLBACK_E2E_KEY"
 MISSING_KEY_ENV = "MODEL_FALLBACK_E2E_ABSENT_KEY"
@@ -1064,6 +1076,7 @@ max_retries = 0
 default_temperature = 0.5
 default_max_output_tokens = 64
 capabilities = {backup_capabilities}
+{backup_extra}
 
 [routes]
 chat_agent = "head"
@@ -1082,15 +1095,23 @@ def _toml(
     *,
     backup_capabilities: str = '["tools"]',
     head_extra: str = 'capabilities = ["tools"]',
+    backup_extra: str = "",
 ) -> str:
     return _BASE_TOML.format(
-        fallbacks=fallbacks, backup_capabilities=backup_capabilities, head_extra=head_extra
+        fallbacks=fallbacks,
+        backup_capabilities=backup_capabilities,
+        head_extra=head_extra,
+        backup_extra=backup_extra,
     )
 
 
 INVALID_CHAINS = {
     "unknown_task": _toml('[fallbacks]\nnot_a_task = ["backup"]'),
     "unknown_task_empty_list": _toml("[fallbacks]\nchat_agnet = []"),
+    "chat_fallback_for_responses_head": _toml(
+        '[fallbacks]\nchat_agent = ["backup"]',
+        head_extra='protocol = "responses"\ncapabilities = ["tools"]',
+    ),
     "unknown_profile": _toml('[fallbacks]\nchat_agent = ["missing"]'),
     "head_repeated": _toml('[fallbacks]\nchat_agent = ["head"]'),
     "duplicate": _toml('[fallbacks]\nchat_agent = ["backup", "backup"]'),
@@ -1108,6 +1129,7 @@ NATIVE_HEAD_PLAIN_FALLBACK = _toml(
     '[fallbacks]\nchat_agent = ["backup"]',
     head_extra='protocol = "responses"\nsearch_mode = "native"\n'
     'capabilities = ["tools", "native_web_search"]',
+    backup_extra='protocol = "responses"',
 )
 
 
@@ -1231,7 +1253,18 @@ async def test_watchdog_fact_follows_latest_success(database):
         pool=ModelClientPool(injected_profiles={}),
     )
     assert await model_fallback_facts(no_chain, invocations) == {}
+    # F31: head reloaded to a chain without the fallback that answered last.
+    head_success_rows = await _rows(database)
+    executor.apply_catalog(
+        _catalog(_profile("head", head_url), _profile("other", head_url)),
+        ModelClientPool(injected_profiles={}),
+    )
+    await _record_success(invocations, "fallback")
+    reloaded = await model_fallback_facts(executor, invocations)
+    assert reloaded[chat] == {"healthy": False, "state": "fallback", "durable": True}
+    assert len(head_success_rows) == 3
     RESULTS["F23_watchdog_fact"] = {
+        "after_reload_removed_fallback": reloaded[chat],
         "before": before[chat],
         "during": during[chat],
         "after": after[chat],
@@ -1308,4 +1341,54 @@ async def test_a_zero_request_last_hop_keeps_the_dispatched_error(database):
     RESULTS["F27_last_dispatched_error"] = {
         "error": type(error).__name__,
         "fallback_hops": error.diagnostics["fallback_hops"],
+    }
+
+
+async def _record_success(invocations: ModelInvocationRepository, profile_id: str) -> None:
+    await invocations.record(
+        task=ModelTask.CHAT_AGENT,
+        profile_id=profile_id,
+        provider="openai",
+        model=f"model-{profile_id}",
+        success=True,
+        prompt_tokens=None,
+        completion_tokens=None,
+        total_tokens=None,
+        cached_prompt_tokens=None,
+        latency_seconds=0.0,
+        error_category=None,
+    )
+
+
+async def test_partial_native_usage_on_rejection_never_switches(database):
+    # Claude Messages reports input tokens without cache counters on this rejection.
+    head_upstream = _Upstream(
+        _Status(503, {"type": "error", "usage": {"input_tokens": 12, "output_tokens": 0}})
+    )
+    fallback_upstream = _Upstream(CHAT_REPLY)
+    async with head_upstream as head_url, fallback_upstream as fallback_url:
+        executor = _executor(
+            database,
+            _profile(
+                "head",
+                head_url,
+                protocol="anthropic_messages",
+                provider="anthropic",
+                thinking_enabled=False,
+            ),
+            _profile(
+                "fallback",
+                fallback_url,
+                protocol="anthropic_messages",
+                provider="anthropic",
+                thinking_enabled=False,
+            ),
+        )
+        error, _ = await _outcome(executor)
+        await executor.close()
+    assert isinstance(error, LLMUnavailableError)
+    assert head_upstream.requests == 1 and fallback_upstream.requests == 0
+    RESULTS["F30_partial_usage_no_switch"] = {
+        "error": type(error).__name__,
+        "fallback_requests": fallback_upstream.requests,
     }

@@ -255,6 +255,7 @@ class JSONHTTPProvider(LLMProvider):
             if phases is not None:
                 phases.attempts += 1
             response: httpx.Response | None = None
+            billed = False
             try:
                 with model_detail("transport"):
                     response = await self._client.send(prepared.request)
@@ -265,6 +266,16 @@ class JSONHTTPProvider(LLMProvider):
                         payload = response.json()
                     except ValueError:
                         payload = {}
+                    # Any nonzero count in the rejection's own usage object (whatever the
+                    # dialect, before decoding) means the provider worked on the request.
+                    raw_usage = (
+                        payload.get("usage", payload.get("usageMetadata"))
+                        if isinstance(payload, dict)
+                        else None
+                    )
+                    billed = isinstance(raw_usage, dict) and any(
+                        type(value) is int and value > 0 for value in raw_usage.values()
+                    )
                     diagnostics = (
                         self._usage_diagnostics(payload) if isinstance(payload, dict) else {}
                     )
@@ -277,17 +288,11 @@ class JSONHTTPProvider(LLMProvider):
                         exc.diagnostics = {**exc.diagnostics, "usage": usage}
                     raise
             except BaseException as exc:
-                details = getattr(exc, "diagnostics", {})
-                reported = details.get("usage")
                 if (
                     attempts is not None
                     and isinstance(exc, NOT_ACCEPTED_ERRORS)
-                    and details.get("http_status") != 504
-                    # A rejection reporting nonzero usage was worked on (and may bill).
-                    and not (
-                        isinstance(reported, dict)
-                        and any(type(value) is int and value > 0 for value in reported.values())
-                    )
+                    and getattr(exc, "diagnostics", {}).get("http_status") != 504
+                    and not billed
                 ):
                     attempts.not_accepted += 1
                 if finish is not None:

@@ -20,6 +20,7 @@ from yuki.model_runtime.connections import (
 from yuki.model_runtime.models import (
     ModelCapability,
     ModelProfile,
+    ModelProtocol,
     ModelRoute,
     ModelTask,
     StructuredOutputMode,
@@ -130,6 +131,16 @@ class ModelProfileCatalog(BaseModel):
                     raise ValueError(
                         f"model route {task.value} fallback references unknown profile "
                         f"{fallback_id}"
+                    )
+                if (
+                    fallback.protocol is ModelProtocol.CHAT_COMPLETIONS
+                    and profile.protocol is not ModelProtocol.CHAT_COMPLETIONS
+                ):
+                    # Plain Chat tool calls carry no continuation, so the chain's next
+                    # request would return to a head that cannot replay that history.
+                    raise ValueError(
+                        f"model route {task.value} fallback {fallback_id} uses chat_completions "
+                        "but the head does not"
                     )
                 lacking = required.difference(fallback.capabilities)
                 if lacking:
