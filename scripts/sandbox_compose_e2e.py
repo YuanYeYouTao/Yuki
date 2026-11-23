@@ -399,6 +399,14 @@ def proxy_stage(deployment: Deployment, gateway: str) -> None:
             time.sleep(2)
         raise Failure(f"the proxy never saw {target}: {log.read_text()}")
 
+    # The desktop stage ends without Chromium; put it back directly, before any proxy,
+    # so the snapshot that applies the proxy carries it.
+    installed = deployment.terminal(
+        "apt-get update -qq && apt-get install -y -qq --no-install-recommends chromium "
+        ">/dev/null; echo exit=$?"
+    )
+    expect("exit=0" in str(installed["output"]), f"reinstalling Chromium: {installed}")
+
     proxy = start_proxy()
     try:
         # P1: not configured, the proxy port on the host is dropped like any other.
