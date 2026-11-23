@@ -889,7 +889,8 @@ class MessageProcessor:
                 message, media_gateway, source_segments=record.segments
             )
             self._conversation_media.submit(record.id, media_gateway, message=message)
-        if message.scope_type is ScopeType.GROUP:
+        policy = runtime_snapshot.conversation_policy()
+        if message.scope_type is ScopeType.GROUP and policy.semantic_participation_enabled:
             self._autonomous.observe_context(
                 message,
                 direct=bool(decision.should_respond or admin_candidate),
@@ -944,12 +945,12 @@ class MessageProcessor:
                 )
                 if original.reason != "ordinary_deferred":
                     return original
-                if (
-                    deferred_open
-                    and not runtime_snapshot.conversation_policy().semantic_participation_enabled
-                ):
+                # Implicit new Main and legacy scoring are auto-reply opportunities only.
+                if not policy.auto_reply_enabled:
+                    return ProcessResult(False, reason="group_observed")
+                if deferred_open and not policy.semantic_participation_enabled:
                     return await self._defer_ordinary(observed, None, "group_open")
-                if self._participation is not None:
+                if self._participation is not None and policy.semantic_participation_enabled:
                     with turn_detail("participation_binding"):
                         found = await self._participation.continuation_for_event(record.id)
                     if found is not None:
@@ -958,7 +959,8 @@ class MessageProcessor:
             if (
                 message.scope_type is ScopeType.GROUP
                 and group_policy is not None
-                and runtime_snapshot.conversation_policy().autonomous_enabled
+                and policy.auto_reply_enabled
+                and policy.autonomous_enabled
                 and group_policy.autonomous_enabled
             ):
                 self._autonomous.observe(message)
@@ -969,6 +971,7 @@ class MessageProcessor:
             direct_match is None
             and decision.command is None
             and self._participation is not None
+            and policy.semantic_participation_enabled
             and record.author_is_human()
         ):
             with turn_detail("participation_binding"):

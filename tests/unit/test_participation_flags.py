@@ -49,7 +49,8 @@ async def test_four_flags_new_ordinary_admission_and_explicit_call(
     await override(database, env.space, "conversation.auto_reply_enabled", auto)
     await override(database, env.space, "conversation.proactive_wakeup_enabled", proactive)
     result = await harness.processor.handle(message(1, "implicit ordinary"), MemorySender())
-    assert result.reason == "ordinary_deferred"
+    # With auto reply off the implicit input is only recorded and offered to Work/wait (#565).
+    assert result.reason == ("ordinary_deferred" if auto else "group_observed")
     observed = next(iter(harness.processor._observed_human_turns.values()))
     await _wait_for_worker(worker, observed.snapshot.scope_key)
     assert len(await _admissions(database)) == int(auto)

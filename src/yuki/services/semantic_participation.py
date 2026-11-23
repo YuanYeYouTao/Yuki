@@ -341,7 +341,11 @@ class SemanticParticipationService:
         await self.reload_semantic_configuration()
         for conversation_id, generation in await self.repository.list_current_autonomous_scopes():
             scene = await self._scene(conversation_id)
-            if scene is not None and scene.generation == generation:
+            if (
+                scene is not None
+                and scene.generation == generation
+                and (await self._policy(scene)).semantic_participation_enabled
+            ):
                 await self._session(scene)
                 self._discovery_cursor += 1
         self._task = asyncio.create_task(self._loop(), name="semantic-participation")
@@ -481,6 +485,11 @@ class SemanticParticipationService:
             pending[message.source_event_id] = pending.get(message.source_event_id, False) or direct
             if len(pending) > 64:
                 pending.pop(next(iter(pending)))
+
+    async def _policy(self, scene: Scene) -> ConversationRuntimeConfig:
+        return await self.runtime_config.participation_policy(
+            group_id=scene.space_id if scene.enabled else None
+        )
 
     async def _scene(self, conversation_id: str) -> Scene | None:
         async with self.database.read_session() as session:
@@ -827,7 +836,6 @@ class SemanticParticipationService:
         direct: dict[int, bool] | None = None,
         *,
         runtime: RuntimeConfigSnapshot | ConversationRuntimeConfig | None = None,
-        policy_only: bool = False,
     ) -> RuntimeConfigSnapshot | ConversationRuntimeConfig | None:
         version, rows = await self.ledger.read_scope_context(
             item.scene.identity, limit=64, message_only=True, previous=item.context
@@ -927,12 +935,9 @@ class SemanticParticipationService:
         )
 
         if runtime is None:
-            reader = (
-                self.runtime_config.participation_policy
-                if policy_only
-                else self.runtime_config.snapshot
+            runtime = await self.runtime_config.snapshot(
+                group_id=item.scene.space_id if item.scene.enabled else None
             )
-            runtime = await reader(group_id=item.scene.space_id if item.scene.enabled else None)
         policy = (
             runtime
             if isinstance(runtime, ConversationRuntimeConfig)
@@ -1499,7 +1504,11 @@ class SemanticParticipationService:
                     break
             if unseen is not None:
                 scene = await self._scene(unseen[0])
-                if scene is not None and scene.generation == unseen[1]:
+                if (
+                    scene is not None
+                    and scene.generation == unseen[1]
+                    and (await self._policy(scene)).semantic_participation_enabled
+                ):
                     await self._session(scene)
         pinned: dict[tuple[str, int], _Session] = {}
         direct_by_scope = {}
@@ -1552,11 +1561,18 @@ class SemanticParticipationService:
         if scene is None or scene.generation != item.scene.generation:
             return
         item.scene = scene
+        policy = await self._policy(scene)
+        if not policy.semantic_participation_enabled:
+            # Nothing consumes this Controller without semantic participation. Keep only
+            # the owner/epoch fence current; accepted runs settle through the outbox.
+            self._dirty.pop(scene.conversation_id, None)
+            await self._binding(item, runtime=policy)
+            return
         from yuki.services.participation_feedback import _scope_social_rows, sync_scope_effects
 
         rows = await _scope_social_rows(self, scene.conversation_id)
         await sync_scope_effects(self, item, rows=rows)
-        runtime = await self._hydrate(item, direct, policy_only=True)
+        runtime = await self._hydrate(item, direct, runtime=policy)
         if runtime is None:
             return
         # Hydration creates real SourceRefs; bind late anchors with the same
@@ -1593,11 +1609,8 @@ class SemanticParticipationService:
         if current_scene is None or current_scene.generation != scene.generation:
             return
         item.scene = current_scene
-        runtime = await self.runtime_config.participation_policy(
-            group_id=current_scene.space_id if current_scene.enabled else None
-        )
-        binding = await self._binding(item, runtime=runtime)
-        policy = runtime
+        policy = await self._policy(current_scene)
+        binding = await self._binding(item, runtime=policy)
         allowed_kinds = frozenset(
             kind
             for kind, allowed in ((CandidateKind.CONVERSATION, policy.auto_reply_enabled),)

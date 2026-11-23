@@ -143,13 +143,7 @@ _CORE_END = (
     "不因醒来或群里安静主动找人聊天，不把旧消息当成新请求。"
     "已有任务反馈、约定提醒到期或重要变化需要对方知道或决定时，用 send 简短说明。"
     "无当前入站消息时不编造当前发言人、提及或引用。"
-    "\n\n【参与状态】\n"
-    '可在内部最终正文末尾附 <yuki-state>{"engage":"quiet"}</yuki-state>。'
-    "join 表示想加入，stay 表示愿意继续，quiet 表示当前话题先听着。"
-    "有意愿变化时填写即可，不必逐轮重复。quiet 只收起闲聊续接，不停止已有工作，"
-    "也不拒绝之后的新问题；状态不发到聊天里。"
-    "运行资料中的参与反馈说明当前讨论的交流关系，结合最新反馈判断是否继续接话。\n\n"
-    "【资料与查证】\n"
+    "\n\n【资料与查证】\n"
     "人物事实和共同经历缺少依据时，查人物、群、SELF 记忆或聊天历史；"
     "工作区问题查文件与执行状态。"
     "公开信息只要可能变化、更新或过时，即使熟悉话题或对方说得肯定，也不等用户要求，"
@@ -176,6 +170,17 @@ def core_contract(*, code_enabled: bool) -> str:
     return _CORE_START + tool_mode_policy(code_enabled=code_enabled) + _CORE_END
 
 
+# Only the semantic proposer consumes these reports; prompt assembly adds this
+# section while ``conversation.semantic_participation_enabled`` is on.
+PARTICIPATION_STATE_POLICY = (
+    "【参与状态】\n"
+    '可在内部最终正文末尾附 <yuki-state>{"engage":"quiet"}</yuki-state>。'
+    "join 表示想加入，stay 表示愿意继续，quiet 表示当前话题先听着。"
+    "有意愿变化时填写即可，不必逐轮重复。quiet 只收起闲聊续接，不停止已有工作，"
+    "也不拒绝之后的新问题；状态不发到聊天里。"
+    "运行资料中的参与反馈说明当前讨论的交流关系，结合最新反馈判断是否继续接话。"
+)
+
 CORE_CONTRACT = core_contract(code_enabled=False)
 
-__all__ = ["CORE_CONTRACT", "core_contract"]
+__all__ = ["CORE_CONTRACT", "PARTICIPATION_STATE_POLICY", "core_contract"]

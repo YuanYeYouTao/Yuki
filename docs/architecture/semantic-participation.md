@@ -224,13 +224,15 @@ call ID，避免不同响应重复使用 `call_0` 被误合并；Provider 请求
 详见 [Self Reflection](self-reflection.md)。
 
 主入口使用同一固定提示词、工具顺序和参数 schema。run ID、资料、时间与状态在固定部分
-之后；不根据 legacy/semantic 或场景动态裁剪声明。Work journal 保存实际请求和 Provider
+之后；不根据 legacy/semantic 或场景动态裁剪工具声明。唯一随开关装配的是【参与状态】段，见下文自报合同。Work journal 保存实际请求和 Provider
 continuation；有原生 continuation 时续跑沿原链追加并经观察边界补入新聊天，没有时已配对唤醒以当前获准
 聊天、未观察回执及任务材料重建前缀。
 `initiative:<run_id>` 防止将变化后的 brief、short_state 或记忆当作新的发起事实；私有尾部退出或
 整理采用明确新链，公共聊天无需清空，预算与效果不清零。具体边界见[主 Agent 合同](main-agent-runtime.md)。
 
-可选 `<yuki-state>` 尾段描述主 Yuki 自身意愿，不要求逐轮输出。主 SELF 自报按真实 run、
+可选 `<yuki-state>` 尾段描述主 Yuki 自身意愿，不要求逐轮输出。只有 semantic 消费它：
+`conversation.semantic_participation_enabled` 按本轮运行配置开启时，系统消息才装配【参与状态】填写说明；
+该段不进入恢复合同哈希，关闭时 Main 不收到 join/stay/quiet 填写要求，响应中的尾段也不进入参与自报。主 SELF 自报按真实 run、
 请求序号和 response ID 记录；普通主轮按原持久入场绑定、激活和请求顺序归属局部单元。
 `quiet` 收起自己的参与，不制造用户停止边界，不广播关闭全群，也不为补确认请求 Jev。
 无 hint 不清空原参与，迟到旧响应不能覆盖新意愿，保存失败不重跑或重发。
@@ -293,6 +295,17 @@ Host 在原推进边界刷新 scene/runtime，按 auto_reply 允许 conversation
 允许 intrinsic，先排除候选种类再计算机会率。
 关闭期间继续推进原 last_sample_at，不累计可补采的时间，不删除原反馈或改概率公式。
 尚未接纳的 pending 沿原 discard 返回值及原 proposal/run 查询处理，已接纳身份继续对账。
+
+日常参与意图只有 semantic 消费，隐式接话只属于 auto_reply，两个现有开关各自停掉自己的准备工作（#565）：
+
+- semantic 关闭：系统消息不含【参与状态】，主响应尾段不进入自报；显式呼叫不做参与绑定，原 admission 不带 binding；
+  新群消息不标记后台待办；启动和发现不加载该 scope 控制器；已加载的控制器每 tick 只同步 binding owner/epoch，
+  不读历史、不同步效果、不观察、不推进或保存快照。重新开启后的首个 tick 按新 epoch 重置抽样，不把停用期间当作已流逝的机会；
+  冷加载沿原 restore 不补抽。
+- auto_reply 关闭：非呼叫群消息照常入账并先交给原 Work/wait，然后不做隐式续接分类、不排队 group_open 或 legacy 评分。
+- 两者都不清空已保存的单元、hint、来源或反馈，不伪造 quiet 或完成，不取消已接纳 Work、不重置预算；
+  已接纳 run 的对账与派发每 tick 照常执行。可见发送与最终正文继续剥离控制尾段，旧响应和在途响应不会泄漏标记。
+  在途 Main 按本轮开始时的运行配置判断是否消费自报，热变更从下一次请求生效。
 
 参与库的确切版本以 `pyproject.toml`、`uv.lock` 与实际安装一致的修订为准。
 早期接入与当时 pin 见 [#268 实施记录](../operations/issue-268-implementation-20261013.md)，不作为当前依赖声明。
