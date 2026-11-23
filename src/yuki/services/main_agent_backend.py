@@ -629,6 +629,11 @@ class MainAgentBackend(AgentToolBackend):
         control = runtime.work_control
         if control is not None and control.lease.work_id is not None:
             return
+        config = self._runtime.runtime_config
+        if config is not None and not config.conversation_policy().semantic_participation_enabled:
+            # Only semantic participation consumes own reports; finalize() still strips
+            # the visible tail.
+            return
         _, delta = extract_tail(response.content or "")
         if delta is None:
             return

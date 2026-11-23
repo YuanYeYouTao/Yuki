@@ -31,11 +31,14 @@ def test_media_guidance_preserves_casual_and_explicit_image_tasks():
     )
     composer = PromptComposer(make_settings("sqlite+aiosqlite:///:memory:"))
     explicit = replace(current, content="请读出图片中的文字并解释这个错误 [图片附件0]")
-    casual = composer.compose(inbound=None, context=context, runtime=SimpleNamespace())
+    runtime = SimpleNamespace(
+        conversation_policy=lambda: SimpleNamespace(semantic_participation_enabled=False)
+    )
+    casual = composer.compose(inbound=None, context=context, runtime=runtime)
     requested = composer.compose(
         inbound=None,
         context=replace(context, current_message=explicit),
-        runtime=SimpleNamespace(),
+        runtime=runtime,
     )
     casual_system = tuple(item for item in casual.messages if item.role == "system")
     assert casual_system == tuple(item for item in requested.messages if item.role == "system")

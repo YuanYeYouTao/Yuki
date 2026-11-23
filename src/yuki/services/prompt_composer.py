@@ -17,7 +17,7 @@ from yuki.prompting import (
     PromptContribution,
     PromptProgram,
 )
-from yuki.prompting.contracts import CORE_CONTRACT
+from yuki.prompting.contracts import CORE_CONTRACT, PARTICIPATION_STATE_POLICY
 from yuki.prompting.contributors import static_text
 from yuki.prompting.models import PromptMetrics
 from yuki.services.context_assembler import AssembledContext
@@ -100,6 +100,18 @@ class PromptComposer:
         static: tuple[PromptContribution, ...] | None = None,
     ) -> PromptComposition:
         contributions = list(self.static_contributions() if static is None else static)
+        if runtime.conversation_policy().semantic_participation_enabled:
+            # Own join/stay/quiet reports have a consumer only in semantic participation.
+            # It stays out of invariant_contributions(), so the recovery contract hash
+            # does not follow this HOT switch.
+            contributions.append(
+                static_text(
+                    "core.participation_state",
+                    PARTICIPATION_STATE_POLICY,
+                    channel=PromptChannel.INVARIANT,
+                    priority=89,
+                )
+            )
         state = project_short_state(short_state or [])
         if state:
             contributions.append(

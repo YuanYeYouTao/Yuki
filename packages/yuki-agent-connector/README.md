@@ -1,13 +1,13 @@
 # Yuki Agent Connector
 
-Connector **0.9.7 / wire protocol 5** connects an existing computer to Yuki through
+Connector **0.9.8 / wire protocol 5** connects an existing computer to Yuki through
 one outbound WSS connection. It provides native Codex, Claude SDK and ACP
 connections, and optional local Shell/file capabilities. It does not
 install the Bot, create another business task system or mirror native histories.
 
 Desktop includes this locked Python runtime for the Connector. No user Python
 installation is required. Independent CLI installations use Python 3.12:
-`uv tool install path/to/yuki_agent_connector-0.9.7-py3-none-any.whl`.
+`uv tool install path/to/yuki_agent_connector-0.9.8-py3-none-any.whl`.
 
 ## Installation and ownership
 
@@ -292,6 +292,15 @@ permission mode `auto` with only SendMessage forced to ask, Codex gets
 scope), ACP keeps the agent's own mode; whatever the agent still asks is
 approved except questions and cross-session messages. A Claude process opened
 in auto mode accepts only full-scope inputs (`scope_conflict` otherwise).
+
+Since 0.9.8 the `ask` override of a narrowed scope also covers MCP tools
+(`mcp__*`), which a scope never grants: a user allow rule for an MCP tool no longer
+runs it without the connector, and the request is reported. A narrowed ACP scope
+opens (or loads/resumes) its session with the same override in
+`_meta.claudeCode.options.settings`, because claude-agent-acp loads the user's allow
+rules in every mode; other ACP agents ignore it. An ACP session the connector
+holds without that override (opened unscoped or with a full scope) refuses a
+narrowed scope with `scope_conflict`: release it, then delegate again.
 
 ACP (0.9.4): an agent advertising `_session/steering` (top-level
 `_meta.steering.supported`, e.g. codex-acp 2.9.0, claude-agent-acp 0.109.1) is
