@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, ClassVar, cast
 from uuid import uuid4
 
+import jsonschema
 from websockets.asyncio.client import ClientConnection, connect
 from websockets.exceptions import ConnectionClosed, InvalidHandshake
 
@@ -28,6 +29,27 @@ APPROVAL_METHODS = {
 # An owner's answer applies to this one request (Q1); session caches and policy
 # amendments would also answer later requests.
 ONE_TIME_DECISIONS = ("accept", "decline", "cancel")
+PERMISSIONS_METHOD = "item/permissions/requestApproval"
+# `codex app-server generate-json-schema` (codex-cli 0.169.0). An answer Codex cannot
+# decode becomes an empty grant and still resolves the request, so it is refused here.
+GRANT_SCHEMA = json.loads(
+    (Path(__file__).parent / "codex_schema" / "PermissionsRequestApprovalResponse.json").read_text()
+)
+NATIVE_FORMATS = jsonschema.FormatChecker()
+# The only format in the response schema: Rust's usize (64-bit) for globScanMaxDepth.
+NATIVE_FORMATS.checks("uint")(
+    lambda value: not isinstance(value, int) or isinstance(value, bool) or 0 <= value < 2**64
+)
+GRANT_VALIDATOR = jsonschema.validators.extend(
+    jsonschema.Draft7Validator,
+    # serde decodes no float as an integer, though JSON Schema counts 1.0 as one.
+    type_checker=jsonschema.Draft7Validator.TYPE_CHECKER.redefine(
+        "integer", lambda _checker, value: isinstance(value, int) and not isinstance(value, bool)
+    ),
+)(GRANT_SCHEMA, format_checker=NATIVE_FORMATS)
+# Tuples: membership compares by equality, so a list or object never raises here.
+PATCH_KINDS = ("add", "delete", "update")
+DECLINES = ("decline", "cancel")
 # Narrowed thread settings apply to the thread's next turns; a turn that starts
 # before Yuki's queued input (for example the user's) also runs with them.
 SCOPE_RACE = "turn_starting_before_yuki_input_uses_narrowed_settings"
@@ -304,6 +326,63 @@ def turn_status(turn: dict[str, Any]) -> str:
     }.get(turn.get("status", ""), "unknown")
 
 
+def judged_path(value: Any) -> bool:
+    """A path a scope can judge: a non-empty string (the scope refuses unresolvable ones)."""
+    return isinstance(value, str) and value != ""
+
+
+def change_paths(changes: Any) -> list[str] | None:
+    """Every path a fileChange writes: each source and its ``kind.move_path`` target.
+
+    The native ``FileUpdateChange`` is ``{path, kind: {type: add | delete | update,
+    move_path?: string | null (update only)}, diff}``. None when the changes are not
+    that shape; the approval then goes to the owner.
+    """
+    if not isinstance(changes, list) or not changes:
+        return None
+    paths: list[str] = []
+    for change in changes:
+        if not isinstance(change, dict):
+            return None
+        kind = change.get("kind")
+        if not isinstance(kind, dict) or kind.get("type") not in PATCH_KINDS:
+            return None
+        move = kind.get("move_path")
+        if not judged_path(change.get("path")) or (
+            move is not None and (kind["type"] != "update" or not judged_path(move))
+        ):
+            return None
+        paths += [change["path"], *([move] if move is not None else [])]
+    return paths
+
+
+def turn_grant(response: Any) -> dict[str, Any]:
+    """An owner's answer to ``item/permissions/requestApproval``, for this turn only.
+
+    A ``session`` grant would outlive Yuki's turn into the user's own (Q1). The native
+    response is ``{permissions, scope: "turn" | "session" (default "turn"),
+    strictAutoReview?}``; a decline is the empty grant.
+    """
+    if isinstance(response, dict) and response.get("decision") in DECLINES:
+        return {"permissions": {}, "scope": "turn"}
+    if isinstance(response, dict) and response.get("scope", "turn") != "turn":
+        raise DriverError(
+            "turn_only", "A permission grant applies to this turn only", {"scope": "turn"}
+        )
+    invalid = jsonschema.exceptions.best_match(GRANT_VALIDATOR.iter_errors(response))
+    if invalid is not None:
+        raise DriverError(
+            "response_required",
+            "Answer with {permissions, scope: 'turn'} or decline",
+            {
+                "options": ["decline"],
+                "invalid": invalid.message,
+                "at": list(invalid.absolute_path),
+            },
+        )
+    return {**response, "scope": "turn"}
+
+
 def item_view(item: dict[str, Any], *, details: bool = False) -> dict[str, Any] | None:
     kind = item.get("type")
     fields = {
@@ -416,7 +495,7 @@ class CodexDriver:
         self.narrowed: dict[str, set[str]] = {}
         self.thread_cwd: dict[str, str] = {}
         # Turn -> fileChange item -> paths, for approvals that name only the item.
-        self.item_paths: dict[str, dict[str, list[str]]] = {}
+        self.item_paths: dict[str, dict[str, list[str] | None]] = {}
         # Thread -> Yuki turn after which Yuki's subscription is released.
         self.releasing: dict[str, str] = {}
         self.background: set[asyncio.Task[None]] = set()
@@ -839,9 +918,9 @@ class CodexDriver:
         turn = params.get("turnId") or params.get("turn", {}).get("id")
         started_item = params.get("item", {})
         if method == "item/started" and started_item.get("type") == "fileChange":
-            self.item_paths.setdefault(str(turn), {})[started_item["id"]] = [
-                change["path"] for change in started_item.get("changes", []) if "path" in change
-            ]
+            self.item_paths.setdefault(str(turn), {})[started_item["id"]] = change_paths(
+                started_item.get("changes", [])
+            )
         if method == "turn/completed":
             self.item_paths.pop(str(turn), None)
         if method == "turn/completed" and turn and self.releasing.get(session) == turn:
@@ -1454,6 +1533,8 @@ class CodexDriver:
                 raise DriverError(
                     "response_required", "Provide the original native response object"
                 )
+            if request["method"] == PERMISSIONS_METHOD:
+                response = turn_grant(response)
             if "decision" in response and response["decision"] not in ONE_TIME_DECISIONS:
                 offered = params.get("availableDecisions") or ONE_TIME_DECISIONS
                 raise DriverError(

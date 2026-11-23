@@ -852,13 +852,14 @@ wheels = [
 
 [[package]]
 name = "yuki-agent-connector"
-version = "0.9.5"
+version = "0.9.6"
 source = { editable = "." }
 dependencies = [
     { name = "agent-client-protocol" },
     { name = "claude-agent-sdk" },
     { name = "comtypes", marker = "sys_platform == 'win32'" },
     { name = "httpx", extra = ["socks"] },
+    { name = "jsonschema" },
     { name = "platformdirs" },
     { name = "pyobjc-core", marker = "sys_platform == 'darwin'" },
     { name = "pyobjc-framework-applicationservices", marker = "sys_platform == 'darwin'" },
@@ -883,6 +884,7 @@ requires-dist = [
     { name = "claude-agent-sdk", specifier = "==0.2.172" },
     { name = "comtypes", marker = "sys_platform == 'win32'", specifier = ">=1.4,<1.5" },
     { name = "httpx", extras = ["socks"], specifier = ">=0.28.1,<1" },
+    { name = "jsonschema", specifier = ">=4.18,<5" },
     { name = "platformdirs", specifier = ">=4,<5" },
     { name = "pyobjc-core", marker = "sys_platform == 'darwin'", specifier = ">=13,<14" },
     { name = "pyobjc-framework-applicationservices", marker = "sys_platform == 'darwin'", specifier = ">=13,<14" },

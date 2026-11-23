@@ -111,12 +111,26 @@ def run(session, steps):
                 {"sessionId": session, "path": step["write"], "content": "x"},
             )
             record(method="fs/write_text_file", path=step["write"], error="error" in response)
+        elif "read" in step:
+            response = request("fs/read_text_file", {"sessionId": session, "path": step["read"]})
+            record(method="fs/read_text_file", path=step["read"], error="error" in response)
         elif "terminal" in step:
-            response = request(
-                "terminal/create",
-                {"sessionId": session, "command": step["terminal"], "args": []},
-            )
-            record(method="terminal/create", error="error" in response)
+            params = {
+                "sessionId": session,
+                "command": step["terminal"],
+                "args": step.get("args", []),
+            }
+            if "cwd" in step:
+                params["cwd"] = step["cwd"]
+            response = request("terminal/create", params)
+            row = {"method": "terminal/create", "error": "error" in response}
+            if step.get("output") and "result" in response:
+                terminal = {"sessionId": session, "terminalId": response["result"]["terminalId"]}
+                request("terminal/wait_for_exit", terminal)
+                row["output"] = request("terminal/output", terminal)["result"]["output"]
+            if "cwd" in step or step.get("output"):
+                row["cwd"] = step.get("cwd")
+            record(**row)
     return None
 
 

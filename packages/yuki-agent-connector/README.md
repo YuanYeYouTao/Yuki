@@ -1,13 +1,13 @@
 # Yuki Agent Connector
 
-Connector **0.9.5 / wire protocol 5** connects an existing computer to Yuki through
+Connector **0.9.6 / wire protocol 5** connects an existing computer to Yuki through
 one outbound WSS connection. It provides native Codex, Claude SDK and ACP
 connections, and optional local Shell/file capabilities. It does not
 install the Bot, create another business task system or mirror native histories.
 
 Desktop includes this locked Python runtime for the Connector. No user Python
 installation is required. Independent CLI installations use Python 3.12:
-`uv tool install path/to/yuki_agent_connector-0.9.5-py3-none-any.whl`.
+`uv tool install path/to/yuki_agent_connector-0.9.6-py3-none-any.whl`.
 
 ## Installation and ownership
 
@@ -241,13 +241,46 @@ when it does not. The connector does not declare `requiredHumanApproval`, so
 `humanCommand` does not arrive today; under `*` the kind is not checked, while the
 other conditions still apply (no `additionalPermissions`, network allowed when a
 `networkApprovalContext` is present, a non-empty string or list command).
-Known defects in 0.9.5, being fixed separately (planned for 0.9.6), so these
-protections do not hold yet: (1) detaching an ACP delegation while Yuki's prompt
-still runs drops its scope before the session closes, and `terminal/create` /
-`fs/write_text_file` callbacks in that window run unchecked; (2) a Codex
-file-change approval checks each change's `path` and `grantRoot` but not a move
-destination (`kind.move_path`); (3) a Codex `item/permissions/requestApproval`
-answer with `scope: "session"` is forwarded as is, beyond one request.
+Known defect in 0.9.6, not fixed, so this protection does not hold yet:
+detaching an ACP delegation while Yuki's prompt still runs drops its scope before
+the session closes, and `terminal/create` / `fs/write_text_file` callbacks in that
+window run unchecked.
+Since 0.9.6 a Codex `fileChange` auto-approval reads, for every change, its
+`path`, `kind.type` and `kind.move_path`, and needs each source `path` and move
+target inside `write_paths`; a path outside the scope is reported to the owner.
+It does not validate the full native `FileUpdateChange` (`diff` and other fields
+are not checked). These structural errors are also reported: `changes` is not a
+non-empty list, a change is not an object, `path` is empty or not a string, `kind`
+is not an object, or `kind.type` is not exactly `add`/`delete`/`update`. An absent
+or null `move_path` means no target; a non-null one must be a non-empty string and
+is only allowed on `update`. Paths the OS cannot resolve (an unknown user's
+`~user`, NUL) count as outside. An absent or null `grantRoot` is not checked.
+Gaps that remain: a non-null `grantRoot` is still judged after `str()`, so an
+empty string (the cwd), a number or another non-string can be auto-approved when
+the cwd is inside the scope; an unhashable `fileChange` item `id` (a list or
+object) still ends the native event stream (`native_event_stream_lost`), while an
+integer or null `id` does not (its approval is reported).
+An owner's answer to `item/permissions/requestApproval` (never auto-approved) is
+chosen first: the `response` object, or, only when `response` is absent or null,
+`{"decision": option_id}` built from `option_id` (neither gives
+`response_required`). The chosen answer is then handled in this order: a
+`decision` of `decline`/`cancel` becomes the native empty grant
+`{"permissions": {}, "scope": "turn"}` whatever else it holds; otherwise a `scope`
+other than `"turn"` (`"session"`, null, other strings, numbers, lists, objects) is
+refused with `turn_only`; otherwise the answer must match the shipped codex-cli
+0.169.0 response schema (integers strictly, `uint` within 64 bits) or is refused
+with `response_required`, and gets `scope: "turn"` when it has none; finally a
+non-one-time `decision` is refused with `one_time_only`. Only an answer that
+passes the schema and the one-time `decision` check is sent. A refused answer
+leaves the request pending. The grant is not clipped to the delegation
+scope: the owner decides the card. What Codex then grants (for example whether it
+intersects the grant with the request, or ends it with the turn) is up to Codex
+and was not exercised against a real Codex; the tests use scripted doubles,
+validating well-formed samples against the codex-cli 0.169.0 schema and skipping
+that validation for deliberately malformed ones.
+ACP callback paths are absolute: a relative `path` (file read/write) or terminal
+`cwd` is refused with `invalid_params`, so the path judged is the path used; a
+terminal without `cwd` starts in the session's cwd.
 A full scope (`write_paths` containing `/`,
 `network: true`, `commands: ["*"]`, 0.9.2) narrows nothing: Claude opens in
 permission mode `auto` with only SendMessage forced to ask, Codex gets

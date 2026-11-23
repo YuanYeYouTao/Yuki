@@ -397,7 +397,9 @@ async def test_scope_narrows_thread_settings_for_yuki_turn_and_restores_them(
                     "item": {
                         "id": "patch-in",
                         "type": "fileChange",
-                        "changes": [{"path": str(work / "a.py"), "kind": "add"}],
+                        "changes": [
+                            {"path": str(work / "a.py"), "kind": {"type": "add"}, "diff": ""}
+                        ],
                     },
                 },
             )
@@ -414,7 +416,9 @@ async def test_scope_narrows_thread_settings_for_yuki_turn_and_restores_them(
                     "item": {
                         "id": "patch-out",
                         "type": "fileChange",
-                        "changes": [{"path": str(tmp_path / "b.py"), "kind": "add"}],
+                        "changes": [
+                            {"path": str(tmp_path / "b.py"), "kind": {"type": "add"}, "diff": ""}
+                        ],
                     },
                 },
             )
@@ -638,7 +642,7 @@ async def test_file_change_approval_ignores_kind_k12(tmp_path: Path) -> None:
                 "item": {
                     "id": "patch-k",
                     "type": "fileChange",
-                    "changes": [{"path": str(work / "k.py"), "kind": "add"}],
+                    "changes": [{"path": str(work / "k.py"), "kind": {"type": "add"}, "diff": ""}],
                 },
             },
         )

@@ -1,6 +1,6 @@
 [project]
 name = "yuki-agent-connector"
-version = "0.9.5"
+version = "0.9.6"
 description = "Connect local native coding agents to Yuki"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
@@ -12,6 +12,7 @@ dependencies = [
   "httpx[socks]>=0.28.1,<1",
   "agent-client-protocol==1.0.0",
   "claude-agent-sdk==0.2.172",
+  "jsonschema>=4.18,<5",
   "pyobjc-core>=13,<14 ; sys_platform == 'darwin'",
   "pyobjc-framework-quartz>=13,<14 ; sys_platform == 'darwin'",
   "pyobjc-framework-screencapturekit>=13,<14 ; sys_platform == 'darwin'",
@@ -54,6 +55,11 @@ mypy_path = "src"
 [[tool.mypy.overrides]]
 # pyobjc and comtypes ship no type information; only the screen backends import them.
 module = ["Quartz", "ScreenCaptureKit", "ApplicationServices", "objc", "comtypes", "comtypes.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# jsonschema ships no type information; only the Codex driver validates with it.
+module = ["jsonschema", "jsonschema.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
