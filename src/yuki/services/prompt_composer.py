@@ -17,7 +17,7 @@ from yuki.prompting import (
     PromptContribution,
     PromptProgram,
 )
-from yuki.prompting.contracts import PARTICIPATION_STATE_POLICY, core_contract
+from yuki.prompting.contracts import CORE_CONTRACT, PARTICIPATION_STATE_POLICY
 from yuki.prompting.contributors import static_text
 from yuki.prompting.models import PromptMetrics
 from yuki.services.context_assembler import AssembledContext
@@ -66,7 +66,7 @@ class PromptComposer:
         return (
             static_text(
                 "core.contract",
-                core_contract(code_enabled=self._settings.code_mode_enabled),
+                CORE_CONTRACT,
                 channel=PromptChannel.INVARIANT,
                 priority=90,
             ),

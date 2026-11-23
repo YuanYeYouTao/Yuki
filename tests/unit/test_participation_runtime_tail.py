@@ -264,7 +264,6 @@ async def test_exact_work_recovery_keeps_paid_input_then_allows_later_feedback(d
     transcript.append_result("original-call", "original paired receipt")
     session.transcript = transcript
     session.uses_recovery_transcript = True
-    session.exact_recovery = True
     provider = FakeLLMProvider()
     runner, runtime = await _runtime(database, control, initial, provider)
     backend = ParticipationBackend({"semantic": {"floor": "other", "focus_event_id": 23}})

@@ -20,7 +20,6 @@ from yuki.capabilities.coordinator import (
 from yuki.capabilities.invocation import Invocation, direct_invocations
 from yuki.capabilities.media import result_images
 from yuki.capabilities.results import ToolExecutionResult
-from yuki.codemode.contract import EXECUTE_CODE_NAME
 from yuki.domain.messages import (
     ChatImage,
     ChatMessage,
@@ -62,14 +61,10 @@ from yuki.web.models import WebMode
 from yuki.web.route_context import web_model_task
 
 if TYPE_CHECKING:
-    from yuki.codemode.api_projection import ScriptApi
-    from yuki.config import Settings
     from yuki.services.context_compaction import PublicCompactContext
     from yuki.services.main_agent_contract import MainAgentContract
 
 logger = logging.getLogger(__name__)
-# Never a tool result: the outer code call stays unpaired for its original owner.
-CODE_COMPOSITION_YIELDED = "\x00yuki.code.yielded"
 
 
 def _unexecuted_tool_result(name: str, error: str, detail: str = "") -> str:
@@ -132,7 +127,6 @@ class AgentRuntime:
     execution_id: str | None = None
     source_event_id: int | None = None
     fixed_tools: tuple[ChatTool, ...] | None = None
-    script_api: ScriptApi | None = None
     manifest_revision: str = ""
     invocation_source: dict[str, Any] | None = None
     invocation_goal: str | None = None
@@ -196,9 +190,6 @@ class AgentToolBackend(CoordinatedToolBackend, Protocol):
     def work_query_allowed(self, name: str) -> bool:
         return False
 
-    async def archive_code_result(self, text: str) -> str | None:
-        return None
-
     async def observe_response(self, response: ChatResponse, runtime: AgentRuntime) -> None:
         pass
 
@@ -217,7 +208,6 @@ class AgentRunner:
         *,
         task: ModelTask = ModelTask.CHAT_AGENT,
         main_contract: MainAgentContract | None = None,
-        code_mode_settings: Settings | None = None,
     ) -> None:
         self._models = model_executor
         self._concurrency = concurrency
@@ -225,7 +215,6 @@ class AgentRunner:
         self._tool_coordinator = ToolInvocationCoordinator()
         self._native_tools = NativeToolBinder()
         self.main_contract = main_contract
-        self.code_mode_settings = code_mode_settings
 
     def work_contract(
         self,
@@ -233,7 +222,6 @@ class AgentRunner:
         system_messages: tuple[ChatMessage, ...],
         definitions: tuple[ChatTool, ...] | None,
         *,
-        script_api: ScriptApi | None = None,
         manifest_revision: str = "",
     ) -> str:
         if self.main_contract is not None:
@@ -243,9 +231,7 @@ class AgentRunner:
                 [
                     "context-layout:2",
                     repr(definitions),
-                    script_api.manifest_revision
-                    if script_api is not None
-                    else manifest_revision
+                    manifest_revision
                     or (self.main_contract.revision if self.main_contract is not None else ""),
                     asdict(runtime.web),
                     self._models.profile_revision(self._task),
@@ -456,13 +442,9 @@ class AgentRunner:
                     error = "media_request_budget_exceeded"
                 if error:
                     outcome = json.loads(result)
-                    if isinstance(outcome, dict) and (
-                        evidence.get(call.id, {}).get("mutation_committed") is True
-                        # Code Mode keeps its own composition result contract.
-                        or (
-                            call.function.name == EXECUTE_CODE_NAME
-                            and outcome.get("executed") is True
-                        )
+                    if (
+                        isinstance(outcome, dict)
+                        and evidence.get(call.id, {}).get("mutation_committed") is True
                     ):
                         result = json.dumps({**outcome, "media_read": False, "media_error": error})
                     else:
@@ -477,8 +459,8 @@ class AgentRunner:
         tools: AgentToolBackend | None,
         runtime: AgentRuntime,
         definitions: tuple[ChatTool, ...] | None,
-    ) -> bool:
-        """Finish the original response; True means its Code segment yielded."""
+    ) -> None:
+        """Finish the original response before another model request is bought."""
         control = runtime.work_control
         assert control is not None and control.session is not None
         session = control.session
@@ -505,49 +487,8 @@ class AgentRunner:
         for item in pending:
             call = ToolCall(item["id"], ToolFunction(item["name"], item["arguments"]))
             key = await session._pending_result_key(item, session.call_key(call.id))
-            composition = await session.journal.unsettled_composition(
-                control.current["id"] if control.current else None, key
-            )
             if call.id in paired:
                 result = await recorded(call, key)
-            elif composition is not None:
-                # This is the original open program's settlement/recovery,
-                # including a recorded cancellation, rather than a new call.
-                from yuki.capabilities.invocation import (
-                    InvocationIdentity,
-                    TrustedInvocationContext,
-                )
-                from yuki.codemode.driver import CodeCompositionYield, CodeModeDriver
-
-                host = self._code_host(
-                    tools,
-                    runtime,
-                    declared_names=declared,
-                    max_parallel_calls=tooling.max_parallel_calls if tooling is not None else 1,
-                )
-                if isinstance(host, str):
-                    result = await recorded(call, key)
-                else:
-                    assert control.current is not None
-                    outer = Invocation(
-                        InvocationIdentity(
-                            composition["operation_id"],
-                            str(control.current["id"]),
-                            transcript.chain_id,
-                            session.sequence,
-                            call.id,
-                        ),
-                        call,
-                        TrustedInvocationContext(
-                            runtime, host.api.manifest_revision if host.api is not None else ""
-                        ),
-                    )
-                    try:
-                        result = await CodeModeDriver(host, outer).resume()
-                    except CodeCompositionYield:
-                        control.yield_segment = True
-                        control.ending = "queued"
-                        return True
             elif "readonly_result_key" not in item and (
                 await session.journal.effect_state(key) is None
                 or (
@@ -564,9 +505,6 @@ class AgentRunner:
                     batch_calls=calls,
                 )
                 result = coordinated.calls[0][1]
-                if result == CODE_COMPOSITION_YIELDED:
-                    control.ending = "queued"
-                    return True
                 fact = coordinated.evidence.get(call.id)
                 if fact is not None:
                     facts[call.id] = fact
@@ -581,145 +519,7 @@ class AgentRunner:
                 transcript.append_result(call.id, result)
         transcript.append_tool_media(tuple((call.id, result) for call, result, _ in results))
 
-        session.pending_compositions = []
         await session.save("paired")
-        return False
-
-    async def _run_code_call(
-        self,
-        call: ToolCall,
-        tools: AgentToolBackend | None,
-        runtime: AgentRuntime,
-        *,
-        declared_names: frozenset[str],
-        chain_id: str,
-        request_sequence: int,
-        max_parallel_calls: int,
-    ) -> str:
-        from yuki.capabilities.invocation import direct_invocations
-        from yuki.codemode.driver import CodeCompositionYield, CodeModeDriver
-
-        control = runtime.work_control
-        if call.function.name not in declared_names:
-            return _undeclared(call.function.name)
-        if control is None or control.current is None or control.session is None:
-            # Short chat and single sends stay direct; code needs an admitted Work.
-            return json.dumps(
-                {
-                    "ok": False,
-                    "executed": False,
-                    "error": "accept_work_before_execution",
-                    "detail": "execute_code 需要已接纳的持续工作；短聊和单次发送直接调用原工具。",
-                },
-                ensure_ascii=False,
-            )
-        host = self._code_host(
-            tools,
-            runtime,
-            declared_names=declared_names,
-            max_parallel_calls=max_parallel_calls,
-        )
-        if isinstance(host, str):
-            return host
-        if host.api is None:
-            return json.dumps({"ok": False, "executed": False, "error": "code_engine_unavailable"})
-        outer = direct_invocations(
-            (call,),
-            runtime,
-            chain_id=chain_id,
-            request_sequence=request_sequence,
-            manifest_revision=host.api.manifest_revision,
-        )[0]
-        try:
-            return await CodeModeDriver(host, outer).run()
-        except CodeCompositionYield:
-            # Resource yield: the outer call stays pending in the journal; the
-            # original Work resumes the same composition in its next segment.
-            control.yield_segment = True
-            return CODE_COMPOSITION_YIELDED
-
-    def _code_host(
-        self,
-        tools: AgentToolBackend | None,
-        runtime: AgentRuntime,
-        *,
-        declared_names: frozenset[str],
-        max_parallel_calls: int,
-    ) -> Any:
-        from yuki.capabilities.results import effective_result_character_budget
-        from yuki.codemode.driver import ChildClass, CodeHost
-        from yuki.codemode.engine_monty import CodeEngineUnavailable, PinnedWorker
-        from yuki.codemode.limits import CodeModeLimits
-        from yuki.services.invocation_service import InvocationService
-
-        control = runtime.work_control
-        assert control is not None
-        api = runtime.script_api or (
-            self.main_contract.script_api if self.main_contract is not None else None
-        )
-        settings = self.code_mode_settings
-        if tools is None:
-            return json.dumps({"ok": False, "executed": False, "error": "code_engine_unavailable"})
-        try:
-            worker = (
-                PinnedWorker.from_settings(settings)
-                if settings is not None and getattr(settings, "code_mode_enabled", False)
-                else None
-            )
-            limits = (
-                CodeModeLimits.from_settings(settings) if settings is not None else CodeModeLimits()
-            )
-        except CodeEngineUnavailable:
-            worker, limits = None, CodeModeLimits()
-        service = InvocationService()
-
-        def classify(call: ToolCall) -> ChildClass:
-            name = call.function.name
-            if name in WORK_CONTROL_NAMES:
-                return ChildClass("control", False, False)
-            side = self._is_side_effecting(tools, call, runtime)
-            if name == "send":
-                return ChildClass("send", False, True)
-            parallel = (not side) and bool(tools.parallel_safe(name, runtime))
-            return ChildClass("write" if side else "read", parallel, side)
-
-        async def execute_business(invocation: Invocation, side_effecting: bool) -> str:
-            call = invocation.call
-            # Children use the full frozen execution API, independently of the
-            # compact Provider declaration.
-            if api is None or call.function.name not in api.schemas:
-                return _unexecuted_tool_result(call.function.name, "tool_not_declared")
-
-            async def invoke() -> str:
-                return await tools.execute_call(invocation)
-
-            return await service.invoke(invocation, invoke, side_effecting=side_effecting)
-
-        async def execute_control(call: ToolCall, key: str) -> tuple[str, bool]:
-            if api is None:
-                return _unexecuted_tool_result(call.function.name, "tool_not_declared"), False
-            return await self._execute_control_call(
-                call, tools, runtime, frozenset(api.schemas), key
-            )
-
-        return CodeHost(
-            control=control,
-            api=api,
-            worker=worker,
-            limits=limits,
-            execute_business=execute_business,
-            execute_control=execute_control,
-            classify=classify,
-            max_parallel=max_parallel_calls,
-            # No segment allowance; explicit root budgets apply at each child's T2.
-            tool_limit=None,
-            result_limit=effective_result_character_budget(runtime.runtime_config) or 12000,
-            archive=tools.archive_code_result if tools is not None else None,
-            background=(
-                control.lease.work_id is not None
-                or runtime.origin not in {TurnOrigin.USER_MESSAGE, TurnOrigin.PLUGIN_SESSION}
-            ),
-        )
 
     async def _execute_control_call(
         self,
@@ -728,9 +528,9 @@ class AgentRunner:
         runtime: AgentRuntime,
         declared_names: frozenset[str],
         key: str,
-        invocation: Invocation | None = None,
+        invocation: Invocation,
     ) -> tuple[str, bool]:
-        """One lifecycle control; shared by direct, code and recovered calls.
+        """One lifecycle control; shared by direct and recovered calls.
 
         Arguments are checked against the frozen contract schema inside the
         original effect boundary, so a call that already has a receipt returns
@@ -763,8 +563,6 @@ class AgentRunner:
                 await control.tool_outcome(name, arguments, key, invocation=invocation)
             )
 
-        if invocation is None:
-            return await execute(), True
         return await InvocationService().invoke(invocation, execute, side_effecting=True), True
 
     async def _execute_tool_batch(
@@ -811,11 +609,8 @@ class AgentRunner:
                 0,
             )
 
-        if len(calls) > 1 and any(
-            call.function.name in WORK_CONTROL_NAMES or call.function.name == EXECUTE_CODE_NAME
-            for call in calls
-        ):
-            # Controls and compositions are ordered barriers. Keep every original
+        if len(calls) > 1 and any(call.function.name in WORK_CONTROL_NAMES for call in calls):
+            # Controls are ordered barriers. Keep every original
             # call pending until the complete response is paired. A normal
             # lifecycle decision does not revoke the remaining original calls.
             mixed_calls: list[tuple[ToolCall, str, bool]] = []
@@ -824,14 +619,8 @@ class AgentRunner:
             mixed_executed = mixed_reused = index = 0
             while index < len(calls):
                 end = index + 1
-                if (
-                    calls[index].function.name not in WORK_CONTROL_NAMES
-                    and calls[index].function.name != EXECUTE_CODE_NAME
-                ):
-                    while end < len(calls) and (
-                        calls[end].function.name not in WORK_CONTROL_NAMES
-                        and calls[end].function.name != EXECUTE_CODE_NAME
-                    ):
+                if calls[index].function.name not in WORK_CONTROL_NAMES:
+                    while end < len(calls) and calls[end].function.name not in WORK_CONTROL_NAMES:
                         end += 1
                 part_result = await self._execute_tool_batch(
                     calls[index:end],
@@ -848,56 +637,10 @@ class AgentRunner:
                 mixed_outcomes.update(part_result.outcomes)
                 mixed_executed += part_result.executed_count
                 mixed_reused += part_result.reused_count
-                if any(result == CODE_COMPOSITION_YIELDED for _, result, _ in part_result.calls):
-                    break
                 index = end
             return CoordinatedToolResult(
                 tuple(mixed_calls), mixed_executed, mixed_reused, mixed_evidence, mixed_outcomes
             )
-
-        from yuki.codemode.tool_visibility import TOOL_LOOKUP_NAME, lookup_tools
-
-        if calls and all(call.function.name == TOOL_LOOKUP_NAME for call in calls):
-            await save_response()
-            if calls[0].function.name not in declared_names:
-                result = _undeclared(calls[0].function.name)
-            else:
-                api = runtime.script_api
-                if api is None and self.main_contract is not None:
-                    api = self.main_contract.script_api
-                if api is not None:
-                    return CoordinatedToolResult(
-                        tuple(
-                            (
-                                call,
-                                lookup_tools(
-                                    api, call.function.arguments, declared_names=declared_names
-                                ),
-                                False,
-                            )
-                            for call in calls
-                        ),
-                        0,
-                    )
-                result = json.dumps({"ok": False, "error": "tool_catalog_unavailable"})
-            # Frozen metadata creates no business effect or execution charge;
-            # its paired result still persists in the ordinary Work journal.
-            return CoordinatedToolResult(tuple((call, result, False) for call in calls), 0)
-
-        if calls and calls[0].function.name == EXECUTE_CODE_NAME:
-            # The ordered barriers above have already reduced this to one call.
-            call = calls[0]
-            await save_response()
-            result = await self._run_code_call(
-                call,
-                tools,
-                runtime,
-                declared_names=declared_names,
-                chain_id=chain_id,
-                request_sequence=request_sequence,
-                max_parallel_calls=max_parallel_calls,
-            )
-            return CoordinatedToolResult(((call, result, True),), 0)
 
         def readonly_control(call: ToolCall) -> bool:
             return call.function.name in READ_ONLY_CONTROLS
@@ -915,12 +658,8 @@ class AgentRunner:
                 runtime,
                 chain_id=chain_id,
                 request_sequence=request_sequence,
-                manifest_revision=(
-                    runtime.script_api.manifest_revision
-                    if runtime.script_api is not None
-                    else runtime.manifest_revision
-                    or (self.main_contract.revision if self.main_contract is not None else "")
-                ),
+                manifest_revision=runtime.manifest_revision
+                or (self.main_contract.revision if self.main_contract is not None else ""),
             )[0]
             capture = ResultCapture("", call.id)
             token = current_result_capture.set(capture)
@@ -968,28 +707,9 @@ class AgentRunner:
                         runtime,
                         chain_id=chain_id,
                         request_sequence=request_sequence,
-                        manifest_revision=(
-                            runtime.script_api.manifest_revision
-                            if runtime.script_api is not None
-                            else runtime.manifest_revision
-                            or (
-                                self.main_contract.revision
-                                if self.main_contract is not None
-                                else ""
-                            )
-                        ),
+                        manifest_revision=runtime.manifest_revision
+                        or (self.main_contract.revision if self.main_contract is not None else ""),
                     )[0],
-                )
-            elif call.function.name == TOOL_LOOKUP_NAME:
-                api = runtime.script_api or (
-                    self.main_contract.script_api if self.main_contract is not None else None
-                )
-                metadata_results[call.id] = (
-                    lookup_tools(api, call.function.arguments, declared_names=declared_names)
-                    if api is not None and call.function.name in declared_names
-                    else json.dumps(
-                        {"ok": False, "executed": False, "error": "tool_catalog_unavailable"}
-                    )
                 )
 
         if calls and len(metadata_results) == len(calls):
@@ -1018,12 +738,8 @@ class AgentRunner:
             max_parallel_calls=max_parallel_calls,
             chain_id=chain_id,
             request_sequence=request_sequence,
-            manifest_revision=(
-                runtime.script_api.manifest_revision
-                if runtime.script_api is not None
-                else runtime.manifest_revision
-                or (self.main_contract.revision if self.main_contract else "")
-            ),
+            manifest_revision=runtime.manifest_revision
+            or (self.main_contract.revision if self.main_contract else ""),
         )
         unique_results = {call.id: result for call, result, _executed in coordinated.calls}
         unique_executed = {call.id: executed for call, _result, executed in coordinated.calls}
@@ -1053,18 +769,6 @@ class AgentRunner:
             evidence=coordinated.evidence,
             outcomes=coordinated.outcomes,
         )
-
-    @staticmethod
-    def _is_side_effecting(
-        tools: AgentToolBackend | None,
-        call: ToolCall,
-        runtime: AgentRuntime,
-    ) -> bool:
-        from yuki.codemode.tool_visibility import TOOL_LOOKUP_NAME
-
-        if call.function.name == TOOL_LOOKUP_NAME or tools is None:
-            return False
-        return tools.is_side_effecting(call.function.name, call.function.arguments, runtime)
 
     @staticmethod
     async def _prepare_tools(tools: AgentToolBackend | None, runtime: AgentRuntime) -> None:

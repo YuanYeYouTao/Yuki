@@ -430,6 +430,8 @@ class ChatEventPromptRenderer:
         mention_field = self._mention_field(row)
         if mention_field:
             fields.append(mention_field)
+        if row.caused_by_relay is not None:
+            fields.append(f"转达:#{row.caused_by_event_id}/{row.caused_by_relay}")
         envelope = f"[{self._display_name(row)}|{self._principal_ref(row)}]"
         if proactive_label is not None:
             envelope = proactive_label

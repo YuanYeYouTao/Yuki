@@ -808,7 +808,8 @@ class CodexDriver:
         try:
             await self.rpc.call("thread/settings/update", restored_settings(thread, original))
         except DriverError as exc:
-            # Kept for the next scoped end or release on this thread to retry.
+            # Kept: the next scoped Yuki operation on this thread restores these at its end.
+            # Until then the thread stays narrowed (asks more, never less).
             self.original_settings.setdefault(thread, original)
             await self.emit(
                 "progress",

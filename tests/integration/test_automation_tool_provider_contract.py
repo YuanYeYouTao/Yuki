@@ -12,8 +12,6 @@ from tests.support.automation_unified_delivery_helpers import setup_run
 from tests.support.correctness_wire import KINDS, body
 
 from yuki.capabilities.validation import JsonSchemaCapabilityValidator
-from yuki.codemode.api_projection import project
-from yuki.codemode.tool_visibility import lookup_tools
 from yuki.domain.messages import ChatMessage, ChatRequest, ChatResponse, ToolCall, ToolFunction
 from yuki.services.agent_tools import ToolRuntime
 
@@ -88,9 +86,4 @@ async def test_real_provider_schema_call_and_authorized_get(database, tmp_path, 
     )
     result = await tools.execute(call.function.name, call.function.arguments, runtime)
     assert result.ok and result.data["goal"] == "PRIVATE_WIRE_GOAL"
-    # Code discovery carries exactly the same frozen schema and operation identity.
-    api = project(definitions, "automation-contract")
-    found = json.loads(lookup_tools(api, '{"name":"get_schedules"}'))
-    assert found.get("ok") is not False and found["data"]["parameters"] == actual["get_schedules"]
-    assert api.tool_for(found["data"]["script_name"]) == call.function.name
     assert not validator.validate("get_schedules", '{"id":1,"view":"get"}').ok

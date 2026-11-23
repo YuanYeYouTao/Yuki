@@ -21,7 +21,7 @@
   不记录鉴权头、原 Provider 错误正文或凭据；旧快照不回填为完整判定历史。
 - 成功的物理 HTTP attempt 只记录元数据：协议、模型、请求字节数、HTTP 状态、返回字节数与真实 usage；逻辑模型记录路由、状态、usage 和阶段耗时。失败（传输失败、上游拒绝、非 JSON 或无法解析的返回）和重试的 attempt 另保存完整实际请求 `provider_request` 与完整返回。每次都相同的 tools 不随 attempt 复制，只记录其 `tools_sha256` 与数量，并由 turn 起点记录的 `manifest_revision` 关联冻结清单。turn 不再复制初始上下文，逻辑模型不再复制请求或返回正文。
 - 工具参数和结果只在单项调用记录，不再复制工具批次的整份参数与结果；空的 Provider 成功结束事件不保存。Jev Snapshot 保存一次，观察结果不再携带同一 Snapshot。
-- 旧工具统计 `tool_invocations`、回合统计 `runtime_turn_observations` 没有现行读者，整链与两张表退役。真实 MemoryToolReceipt、原效果/发送回执、模型用量和关联 ID 保留；CodeMode 子操作结果只保存在原调用 span，不额外复制一条结果事件。
+- 旧工具统计 `tool_invocations`、回合统计 `runtime_turn_observations` 没有现行读者，整链与两张表退役。真实 MemoryToolReceipt、原效果/发送回执、模型用量和关联 ID 保留。
 - HTTP 重试分别记录；请求准备、响应收到、上游拒绝和取消分别标明，不把准备当作送达。
 - 保存 Provider 实际返回的可读思考；没有返回时不伪造。加密思考、签名与不透明续跑块
   只留类型/摘要提示，原恢复 journal 保持原样。

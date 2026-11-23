@@ -186,17 +186,32 @@ async def test_recovery_cache_miss_reads_original_internal_conversation_from_raw
     assert session.source_guard.version.scope == original.scope
 
 
-@pytest.mark.parametrize(
-    "kind", ["paired", "child", "contract", "legacy_guard", "source", "legacy_staging"]
-)
-async def test_normal_business_or_changed_contract_builds_fresh(database, kind):
-    control, session, selected, _ = await _session(database)
+@pytest.mark.parametrize("kind", ["paired", "child", "legacy_staging"])
+async def test_paired_business_resume_selects_its_original_chain(database, kind):
+    """Without a provider continuation a paired wakeup still appends to its chain (#646)."""
+    control, session, _selected, _ = await _session(database)
     if kind == "child":
         control, session = await as_child(control, session)
-    if kind == "legacy_guard":
-        session.source_guard = None
     if kind == "legacy_staging":
         session.progress["compaction_staging"] = {"cursor": 1}
+    assert session.transcript.continuation is None
+    await session.save("paired")
+    builder = AsyncMock(return_value="prepared-context")
+    assert (
+        await prepare_context(builder, control, recovery_contract="fixed-contract")
+        == "prepared-context"
+    )
+    recovery = control.protocol_recovery_preparation
+    assert recovery is not None
+    assert recovery.snapshot.record["chain_id"] == session.transcript.chain_id
+    assert recovery.guard.version == session.source_guard.version
+
+
+@pytest.mark.parametrize("kind", ["contract", "legacy_guard", "source"])
+async def test_changed_contract_or_source_builds_fresh(database, kind):
+    control, session, selected, _ = await _session(database)
+    if kind == "legacy_guard":
+        session.source_guard = None
     await session.save("paired")
     if kind == "source":
         await _change(database, selected)
@@ -556,6 +571,7 @@ async def test_paid_current_compact_recovery_prepares_latest_public_history(
             runtime,
             work_control=resumed,
             visible_event_ids=current.visible_event_ids,
+            observation_boundary=current.observation_boundary,
             before_model_request=chat._context_validator(
                 current.read_version, commit_projection=current.commit_projection
             ),
@@ -584,7 +600,7 @@ async def test_paid_current_compact_recovery_prepares_latest_public_history(
         current_work_control.reset(token)
 
 
-async def test_pending_receipt_settled_after_exact_selection_keeps_original_context_once(database):
+async def test_pending_receipt_settled_after_selection_keeps_original_chain(database):
     control, session, _selected, _ = await _session(database)
     control, session = await as_child(control, session)
     call = ToolCall("paid-pending", ToolFunction("workspace_read", "{}"))
@@ -602,26 +618,26 @@ async def test_pending_receipt_settled_after_exact_selection_keeps_original_cont
     initial = await prepare_context(prepare_exact, control, recovery_contract="fixed-contract")
     resumed = WorkSession(control, "fixed-contract")
     actual = await resumed.restore(initial)
-    assert resumed.exact_recovery and resumed.uses_recovery_transcript
+    assert resumed.uses_recovery_transcript
     assert actual.chain_id == chain
     assert any(message.role == "tool" for message in actual.request().messages)
-    assert not await resumed.rebase_business(TurnTranscript((ChatMessage("user", "fresh"),)))
+    await resumed.save("paired")
     fresh = TurnTranscript((ChatMessage("user", "current lawful public input"),))
     builder = AsyncMock(return_value=fresh)
     initial = await prepare_context(builder, control, recovery_contract="fixed-contract")
     again = WorkSession(control, "fixed-contract")
     actual = await again.restore(initial)
-    assert not again.exact_recovery and not again.uses_recovery_transcript
-    assert actual.chain_id == fresh.chain_id != chain
-    assert not any(
-        message.role == "tool" or message.tool_calls for message in actual.request().messages
-    )
+    # Without a provider continuation the paired chain is still resumed (#646):
+    # the original round stays once, the freshly prepared input is not adopted.
+    assert again.uses_recovery_transcript
+    assert actual.chain_id == chain
+    messages = actual.request().messages
+    assert [message.tool_call_id for message in messages if message.role == "tool"] == [call.id]
+    assert "current lawful public input" not in str(messages)
 
 
 @pytest.mark.parametrize("state", ["accepted", "unknown", "failed"])
-async def test_settled_or_unknown_original_effect_does_not_force_child_exact_recovery(
-    database, state
-):
+async def test_settled_or_unknown_original_effect_resumes_child_on_its_chain(database, state):
     control, session, _selected, _ = await _session(database)
     control, session = await as_child(control, session)
     call = ToolCall("original", ToolFunction("workspace_read", "{}"))
@@ -630,9 +646,12 @@ async def test_settled_or_unknown_original_effect_does_not_force_child_exact_rec
     key = session.call_key(call.id)
     await control.repository.prepare_effect(control.lease, control.current["id"], key, "tool")
     await control.repository.record_effect(key, state, {"result": "original evidence"})
-    builder = AsyncMock(return_value="fresh public context")
+    builder = AsyncMock(return_value="prepared context")
     assert (
         await prepare_context(builder, control, recovery_contract="fixed-contract")
-        == "fresh public context"
+        == "prepared context"
     )
     builder.assert_awaited_once()
+    recovery = control.protocol_recovery_preparation
+    assert recovery is not None
+    assert recovery.snapshot.record["chain_id"] == session.transcript.chain_id

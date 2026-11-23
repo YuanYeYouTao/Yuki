@@ -1,7 +1,7 @@
 """Explicit Invocation construction for WorkSession test fixtures.
 
 Fixtures run their tool effects through the real ``InvocationService`` entry,
-exactly as direct and Code calls do; WorkSession only owns the protocol.
+exactly as direct calls do; WorkSession only owns the protocol.
 """
 
 from types import SimpleNamespace
@@ -10,7 +10,6 @@ from yuki.capabilities.invocation import (
     Invocation,
     InvocationIdentity,
     TrustedInvocationContext,
-    child_operation_id,
 )
 from yuki.runtime.work_session import WorkSession
 from yuki.services.invocation_service import InvocationService
@@ -18,29 +17,18 @@ from yuki.services.invocation_service import InvocationService
 __all__ = ["WorkSession", "invoke_tool"]
 
 
-async def invoke_tool(
-    session, call, invoke, *, side_effecting=True, invocation=None, child_ordinal=None
-):
-    """Execute ``invoke`` as the original Host invocation of ``call`` in ``session``.
-
-    ``child_ordinal`` makes it a Code composition child of ``call``'s operation,
-    the real path on which even ``send`` keeps the pending/unresolved fences.
-    """
+async def invoke_tool(session, call, invoke, *, side_effecting=True, invocation=None):
+    """Execute ``invoke`` as the original Host invocation of ``call`` in ``session``."""
     control = session.control
     if invocation is None:
         assert session.transcript is not None
-        parent = session.call_key(call.id) if child_ordinal is not None else None
         invocation = Invocation(
             InvocationIdentity(
-                session.call_key(call.id)
-                if parent is None
-                else child_operation_id(parent, child_ordinal),
+                session.call_key(call.id),
                 str(control.current["id"]) if control.current else control.lease.owner,
                 session.transcript.chain_id,
                 session.sequence,
                 call.id,
-                parent_operation_id=parent,
-                child_ordinal=child_ordinal,
             ),
             call,
             TrustedInvocationContext(SimpleNamespace(work_control=control), session.contract),

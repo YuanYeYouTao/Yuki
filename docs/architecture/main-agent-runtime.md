@@ -32,15 +32,11 @@ Main 恢复同样登记活动。SELF 自省沿原 best-effort 后台名额退让
 
 `MainAgentTurnService._run_prepared` 在实际 Main runner 活跃期间，通过 `ProcessingStatusService` 后台维护原 Conversation/Presence 的原生正在输入状态。已知 Presence 的连接不支持对应私聊或群提示时，内存 Registry 直接跳过该 UI 动作，不查询路由或群成员；其余沿原路由、Registry 和内部 source event 取得适配器。同一入口重叠执行共用临时引用计数，最后退出请求停止续期，在途 UI 请求与原生停止仅由后台收尾，不等待路由、刷新或停止 API 才交回 Main 结果。服务继续持有并收拢 UI task；相邻同入口的新提示在后台等原停止请求完成或超时后再开始，模型不等该顺序。等待中的 Work 不维持提示。应用关闭先由 Runtime 收拢执行，再关闭状态服务并等待剩余 UI task。后台提示失败只写诊断，不裁决模型、工具或交付结果；该状态不入账、不建立回执或预算，不改变固定工具声明、静态提示词或缓存前缀。平台实际范围见[平台适配](platform-adapters.md#空输入与处理状态)。
 
-所有主入口默认采用 direct 构建及静态工具政策，不加载 Code 引擎，部署内固定完整工具清单直接可达。
-显式启用 Code 的部署才注入持续 Work 的 Code Mode 编排策略。
-已知多步流程在脚本内读取、核验和聚合，只把必要结果交回模型；需要解释新证据时再交回
-模型决策。基础工具包括联网搜索与网页读取，短聊、基础单次操作及生命周期控制可直接
-调用；专用工具按需查询原 schema 后通过 Code Mode 使用。工作者使用同一分层，具体
-执行、pending 等待、原 VM 续跑与授权仍遵守 [Tool Kernel 合同](tool-kernel.md)。
+所有主入口使用同一静态工具政策，部署内固定完整工具清单直接可达。工作者使用同一声明，具体
+执行、pending 等待与授权遵守 [Tool Kernel 合同](tool-kernel.md)。
 
 模型侧每项业务只有一个公开名称和参数合同。冻结清单只来自主工具注册表，不追加 DSL
-或插件的自动化别名；目录查询不会加载工具、改变声明或提升权限。声明变更在合法新链应用。
+或插件的自动化别名。声明变更在合法新链应用。
 续跑仍保留执行记录、预算和已提交回执，不改写旧 Provider 请求或重跑已有操作。
 
 运行状态用 `state_scope=current_activation` 区分本轮激活与持久 Work 生命周期。
@@ -81,7 +77,7 @@ created_at/updated_at 是原回执时间，生命周期和计数本身不能证�
 自主触发语义归程序规则。Main、SELF、自动化与子 Agent 复用相同入口。
 角色资料改名或 SOUL 编辑/reload 后，合法新激活使用新值；当前工具往返及原协议请求保持原材料。
 Main 的恢复合同只纳既有 INVARIANT 技术规则、实际模型设置和固定工具合同，SOUL 与名称保存在原请求正文中。
-改名不废弃原已付响应的未决工具尾部或签名，也不使未知派发可重购；新 SOUL 随新链生效：有原生 continuation 的 Work 沿原链追加，到压缩或合同变化换链时才用新值；没有原生 continuation 时，已配对唤醒的 `rebase_business` 使用新 SOUL。
+改名不废弃原已付响应的未决工具尾部或签名，也不使未知派发可重购；新 SOUL 随新链生效：Work 唤醒沿原链追加（不论有无 Provider 原生 continuation），到压缩或合同变化换链时才用新值。
 工具说明使用中性角色称谓，不因改名重建 manifest；历史只认原事件名称快照，不用当前角色名补造旧名。
 桌面与 CLI 共用单 SOUL 读写/重载合同，详见[SOUL 管理与升级](../operations/soul-deployment-20261022.md)。
 Main 的系统约束、
@@ -147,12 +143,18 @@ generation、Space、Presence 与群传输目标。目标成员和资料来源�
 每次模型请求、工具执行和发送准备仍复核原 run 与场景权限。SELF 自动化保留原
 Conversation、Space、Presence 和群绑定；每次新到期发生使用该会话的当前 generation，
 已接纳 Work 则保留原发生代次。SELF 的社交调用沿共同目标选择、资料授权和发送回执处理，不设来源专属四动作、当前群或提及名单。
-固定直调声明与完整执行 API 均不随主体改动，执行处拒绝不获准的能力；详见 [语义参与接入](semantic-participation.md)。
+固定工具声明不随主体改动，执行处拒绝不获准的能力；详见 [语义参与接入](semantic-participation.md)。
 
 模型侧只用 `send` 发送可见内容：省略 target 时发到当前群或私聊，显式 target 可指定
 其他人或群，后端选择私聊或群聊路由。表情、附件和引用由同一工具的参数表达；提及直接在正文原位置写 `@名字`，同名时复制 `@{account:UUID}`；语音合成与发送已退出；
 真实网关发送和持久回执组成普通工具结果，`uncertain` 不自动重试。一次循环可按实际需要多次发送，也可
-完全不发送；模型最终正文交回原调用方，不会自动作为平台聊天消息发送。`report_progress` 和本轮最终回复
+完全不发送；模型最终正文交回原调用方，不会自动作为平台聊天消息发送。
+发往触发会话以外的消息是**转达**：由真人消息直接触发的执行（`trigger_event_id`）把消息发进另一个 Conversation 时，
+出站事件的 `caused_by_event_id` 记下这条请求事件（#289）；SELF、定时与没有入站请求的续跑不带来源。
+目标会话的历史在该行字段里加 `转达:#请求事件/来源`，来源只写“受 <请求者当时显示名> 私下委托”（私聊请求发进群）、
+“受 <请求者> 委托”（私聊请求发进私聊）或“来自群 <群名>”（群里的请求），不带请求正文；
+需要时模型按事件 ID 用 `read_chat` 的 around 回查，读取仍按[聊天记录读取](chat-history.md)的现行授权。
+请求者被遗忘时这一列清空，消息本身保留、标签消失。`report_progress` 和本轮最终回复
 效果队列不再是模型可调用合同。工作完成可以安静结束，不需要人为制造发送回执。
 固定媒体提示将表情作为聊天语气，按当前话题和任务需要选读附件；讨论图片本身时仍可具体查看与说明。
 自然配图通过 `send.sticker.goal` 表达情绪或含义，正文先发、后台选图；纯表情可省略 `text`，不要求模型等图或逐张复述标签。
@@ -179,10 +181,10 @@ Work 时返回内部结果。自动化沿原 Work 终态收尾，完成不强制
 action、actor 下的 operation；不以当前 fact 可见性、设备在线或是否有 run 重判已确认效果。
 已保存的完整 T3 结果优先；缺结果时恢复出的模型结果与效果证据使用同一事实，保留
 `executed`、`mutation_committed`、pending/uncertain。steer/respond 被接纳不是任务完成，
-cancel/detach 按原动作语义解释。Main、Code child、worker 复用这条读取链，原预算和身份不重置。
+cancel/detach 按原动作语义解释。Main 与 worker 复用这条读取链，原预算和身份不重置。
 
 记忆写入不创建独占轮、单次写配额或特殊发送权限。每次操作仍核对原 actor、授权、
-输入来源、预算和效果回执；发送继续经 Social 权限、路由与投递合同。记忆写和发送可在同批或同一 Code 脚本按原调用顺序执行，真实结果逐条返回。原未知调用不重新派发，后续独立调用不因历史未知被整体拒绝。
+输入来源、预算和效果回执；发送继续经 Social 权限、路由与投递合同。记忆写和发送可在同批按原调用顺序执行，真实结果逐条返回。原未知调用不重新派发，后续独立调用不因历史未知被整体拒绝。
 `NO_REPLY` 是合法内部沉默，`return_to_caller` 不制造真人收尾通知。作为 `send`
 正文的完整 `NO_REPLY` 仍在发送和回执前拒绝；子 Agent 可沿真实来源与授权发送，内部结果与实际发送回执分别记录。
 
@@ -245,10 +247,10 @@ scene/include_memories/history_limit/context_profile 读取预设或 creator_pri
 target/binding，省略 target 仍是当前源会话；明确指定其他人的入口时使用已查明的稳定目标。
 内部任务和提醒共用同一 Main，不裁剪工具、不强制发送，也不禁止合法安排独立后续事项。
 
-`manage_task(action=finish)` 可在同一次调用中携带真实内部 `result`。工作者沿 Main 同一完整声明与 revision；Code 控制 API 为 `yuki.codemode.api.v2`。direct 与 Code 共用原结束入口，把 Agent 的结束决定写入 Work `checkpoint_json` 的
+`manage_task(action=finish)` 可在同一次调用中携带真实内部 `result`。工作者沿 Main 同一完整声明与 revision，共用原结束入口，把 Agent 的结束决定写入 Work `checkpoint_json` 的
 `accepted_control`（complete/fail/need_input/wait 各一份，wait 与原 wait 绑定同事务；模型侧
 finish 记为 complete，只等 `{"message": true}` 的根任务 wait 记为 need_input 即 waiting_user）。普通结束、
-wait 与交接只登记决定，同一份原响应及 Code 程序中仍获准的调用按原顺序收拢；不要求模型把控制放在最后，也不因普通结束提案裁剪工具。原批次、程序和配对保存后，本次 activation 沿共同出口结束，不再请求后续模型。结算 writer 仅复核真实新授权输入及尚在执行的所属执行，等待期间保留结束决定（`waiting_external/work_owned_execution_pending`）；任一所属运行在 `sandbox_task_runs` 结束的同一 writer 把这样的祖先重新排队结算，不依赖结束是否另有通知；真正提交 completed 时才把 result 原子转存为 `sync_result`。caller 与子任务通知只读已提交行。fail/cancel 的 `text` 和 note 是可选资料，不作为结束审批。
+wait 与交接只登记决定，同一份原响应中仍获准的调用按原顺序收拢；不要求模型把控制放在最后，也不因普通结束提案裁剪工具。原批次和配对保存后，本次 activation 沿共同出口结束，不再请求后续模型。结算 writer 仅复核真实新授权输入及尚在执行的所属执行，等待期间保留结束决定（`waiting_external/work_owned_execution_pending`）；任一所属运行在 `sandbox_task_runs` 结束的同一 writer 把这样的祖先重新排队结算，不依赖结束是否另有通知；真正提交 completed 时才把 result 原子转存为 `sync_result`。caller 与子任务通知只读已提交行。fail/cancel 的 `text` 和 note 是可选资料，不作为结束审批。
 合法无工具 final（包括空正文）走同一结束路径；正文供内部结果，QQ 仍须显式发送。旧 unknown、暂停子目标、产物标签与辅助通知不否决业务完成，查询仍保存实际失败和未知事实。
 原 wait 绑定仍 active 时，普通结算保留其 accepted_control；无新业务或匹配信号的辅助
 激活沿原等待收拢，不重购模型或改原截止时间。原 wait 在结算前兑现时，writer 认同一
@@ -258,7 +260,7 @@ wait ID 的 delivered/expired 及尚待处理的原 signal，将 Work 续回 que
 主任务需要用户补充时，先用 `send` 交付问题，再 `wait(for=[{"message": true}])`；该等待记为 waiting_user，
 任何下一条消息都会唤醒。子任务用 `message_task(ask=true, text=问题)` 通过父子通信提问并等待父任务回答（状态 waiting_parent），无需再单独提问。
 恢复先读 accepted_control，配齐原调用后由同一 writer 收尾，不再购买模型确认完成；没有持久响应的丢进程请求不自动重购。真实输入和目标修改沿原边界接续。
-已有 Work 的 direct 控制使用原 InvocationService 的 T1/T2/T3 保存调用与回执，不扣业务工具预算。原响应中明确未派发的尾部沿原调用键接续；已派发未知调用、旧未执行终结回执与已关闭程序不因升级取得重派资格。合同变更在合法新链应用，旧已付请求、公共历史和固定前缀原件保持不变。
+已有 Work 的控制调用使用原 InvocationService 的 T1/T2/T3 保存调用与回执，不扣业务工具预算。原响应中明确未派发的尾部沿原调用键接续；已派发未知调用、旧未执行终结回执不因升级取得重派资格。合同变更在合法新链应用，旧已付请求、公共历史和固定前缀原件保持不变。
 
 0110 一次升级将有真实高层要求的旧定义发布为干净 Main 任务，固定提醒原文和目标完整
 保留。不能恢复真实目标的多步骤、插件或模板定义停止未来安排并作为原件存档。
@@ -349,21 +351,17 @@ SDK 先沿原 durable 来源取得实际 Work 租约，再准备上下文和请�
 核验。初始输入没有可容纳的合法切点时仍报告真实容量错误。
 
 恢复从原 journal 核对执行身份、预算、调用和回执；未决协议保持原签名和配对。
-跨唤醒续跑按原检查点有无 Provider 原生 continuation 分流：
+跨唤醒续跑一律按精确恢复处理，不论原检查点有无 Provider 原生 continuation（Responses、Claude
+Messages、Gemini 适配器与带不透明推理状态的 Chat Completions 响应有；普通 Chat Completions 响应没有，
+#646）：接着原链追加，不重建前缀、不改写已付输入。根 Work 在下一次真实模型派发前经公共观察边界
+把原链未见过的新聊天补在末尾（见下文“根 Work 的精确协议恢复”）；Work 材料已在原链中，不再追加
+`work_current_material`，首个请求也不另加参与资料。尚未执行的调用先按原回执
+续跑完，再在同一链上继续。子 Work 不装载公共观察边界，沿私有检查点追加。
 
-- **有原生 continuation**（Responses、Claude Messages、Gemini 适配器，以及带不透明推理状态的 Chat Completions 响应）：一律按精确恢复处理，接着原链追加，不重建前缀、
-  不改写已付输入。根 Work 在下一次真实模型派发前经公共观察边界把原链未见过的新聊天补在
-  末尾（见下文“根 Work 的精确协议恢复”）；Work 材料已在原链中，不再追加
-  `work_current_material`，首个请求也不另加参与资料。
-- **没有原生 continuation**（普通 Chat Completions 响应，及经其接入的其他模型）：原响应完整配对后的唤醒
-  走 `rebase_business`，以新准备的公共上下文为前缀，接上一轮尚未观察的工具轮（portable 证据，
-  保原调用键、参数与结果）、Host 选中的必要媒体和一份 `work_current_material`；旧 opaque、签名、
-  思考和创建时聊天不搬入新链。这是 #646 剩余问题 2 的现状：所有者已决定这些协议将来同样追加
-  到原链末尾，随模型 fallback 链实施，届时 rebase 只留给下述换链条件。实际尚未执行的调用、
-  仍开放的 Code 程序、Provider pause 与未完成的压缩不 rebase，沿原链精确恢复。
-- **子 Work** 不装载公共观察边界。没有原生 continuation 时，只有存在尚未观察的工具轮才 rebase 到
-  自己的初始材料，否则沿私有检查点追加；执行压缩后按精确恢复。新链保原 Work ID、来源、
-  父子关系、消耗和执行回执。
+唯一保留的 `rebase_business` 是压缩本身：根 Work 恢复时采用一份已付、有效、尚未配对的公共压缩，
+本次激活以采用后的公共历史为前缀，接上一轮尚未观察的工具轮（portable 证据，保原调用键、参数与
+结果）、Host 选中的必要媒体和一份 `work_current_material`；旧 opaque、签名、思考和创建时聊天不搬入
+新链。准备阶段（`select_protocol_recovery`）对这一种情况照旧组装新的公共上下文，两处判定同一条件。
 
 换新链只有三种情况：恢复合同哈希变化（INVARIANT 技术规则、固定工具声明与 manifest／Script API
 revision、web 设置、Profile revision）；来源守卫失败（根 Work 的原来源修订变化且原依赖无法再证明）；
@@ -443,7 +441,7 @@ epoch；模型原请求链不变。准备期间正文、附件或身份变化，
 writer 与执行时的 owner/fence/generation/期限条件，不以锁外读取代替 CAS。
 
 未决私有协议恢复在公共历史准备前核原 journal、固定合同和持久来源依赖；合法时复用原
-协议，不准备最终不会派发的新公共窗口。业务恢复按上文原生 continuation 分流（追加原链或
+协议，不准备最终不会派发的新公共窗口。业务恢复按上文沿原链追加（仅采用公共压缩时
 `rebase_business`），最近一次私有 compact 检查点仍归原 Work。整理在完整往返边界建立新链，来源冲突不重购已付响应。
 新 Work source guard 使用 codec 3：普通事件来源按实际 owner、输入、版本和引用核验，
 不绑定无关的诊断 privacy counter；存在 observation 依赖时仍核原隐私依赖。
@@ -482,7 +480,7 @@ opaque 与会改变媒体外置的条目仍按原协议准备；复用不代替
 原 Conversation 的 projection；E 整理实际已配对执行前缀，保留初始材料和切点后的原文。
 完整请求触发后，在原公共片段、前缀与原生协议边界内优先复用 P，不要求 initial 单独越线；
 E 未覆盖的 initial 保留。未交给正常 Main 的完整工具结果先保留，再选择可覆盖前缀；
-rebase／恢复后的 portable 证据沿原调用键接续，compact 自身看过不算正常 Main 已观察。
+公共压缩采用或合同变化后的 portable 证据沿原调用键接续，compact 自身看过不算正常 Main 已观察。
 执行摘要及后续正常请求认本轮原输入与已接纳 Work，不从背景任务推导目标；公共摘要不混入私有目标。
 普通轮的 compact 不自动接纳业务 Work；其付费输入/响应使用既有私有存储记录，不作为公共观察。
 已有 Work 沿原 journal 保存派发、响应与配对，冷恢复重用已付响应，未知派发不盲重试。
@@ -567,8 +565,7 @@ Executor 不在同一物理 attempt 前重复调用它。原 Work source guard �
 
 根 Work 的精确协议恢复保留原私有前缀、签名和工具配对；原调用配对后，在下一次真实模型派发前沿同一公共观察边界追加该 Conversation 的新片段。可回收投影缺失时按原内部 Conversation 准备公共历史与摘要，不以空基线代替，也不改写已付输入。原 Work 只增加本次实际交给模型的事件依赖，共享投影中别轮新增的片段不成为它的来源门槛。插件原本未获历史读取时，恢复也不装载公共观察入口。
 
-私聊（含 App 私聊）Main 收到首个含 `send` 以外调用的工具批次后、执行该批次（含
-`execute_code`）之前，Host 先标记该轮已开始效果，再按 `validate_turn_snapshot` 核对版本；
+私聊（含 App 私聊）Main 收到首个含 `send` 以外调用的工具批次后、执行该批次之前，Host 先标记该轮已开始效果，再按 `validate_turn_snapshot` 核对版本；
 版本有效时，以预生成的 Work ID 在同一 writer 中提交接纳、接纳前已付模型计量与首份
 `phase=response` journal，然后才为整批绑定调用身份。goal 只引用原触发事件，模型可用
 update 改写。版本已失效则按下述抢占处理，不接纳。只由 `send` 与 Work 控制
@@ -636,7 +633,7 @@ work_id 或 usage 不授予恢复、控制或预算权。查询不重计旧累�
 用户要求安静、SELF 自主工作和后台维护按原指令安静处理，新追问照常响应；用户委托的工作在后台运行仍按原反馈约定处理。
 
 沟通由 Agent 在原循环决定，send 是有原领域权限和回执的显式工具。开始、实质进展、阻塞和追问需要说明时直接发送；没有必须先通报的门槛，不再分类汇报、保存答复水位或哈希批次，也不补固定暂停模板。
-同批 send→complete 与 complete→send 均依原调用顺序、来源及授权执行并配对；已确认发送不回滚或重发，未确认不补造成功。当前目标的真实 failed/cancelled 撤销、来源失效、撤权或预算拒绝按原事实阻止新效果；取消另一个目标不撤销当前执行权。记忆修改与普通生命周期决定不迫使整批发送或脚本停止。
+同批 send→complete 与 complete→send 均依原调用顺序、来源及授权执行并配对；已确认发送不回滚或重发，未确认不补造成功。当前目标的真实 failed/cancelled 撤销、来源失效、撤权或预算拒绝按原事实阻止新效果；取消另一个目标不撤销当前执行权。记忆修改与普通生命周期决定不迫使整批发送停止。
 子目标只由 `start_subtask` 派生（原 derive 已删除）；`get_tasks` 可查父子与祖先，指定 id 的 cancel/fail/resume 使用原管理 writer（子任务的 cancel/resume 走子任务路径，resume 可带新要求 `text`）。直接父与预算根不同，子任务继续保留来源和预算，不重开已完成祖先。
 
 `wait(for=[…], all?, deadline?)` 的每项恰含一个键：`{"run": id}`（子任务或命令的 id，即 `owned_run`）、

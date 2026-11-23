@@ -5,6 +5,7 @@ Docker is replaced by a recorder that answers like the engine; the Manager code 
 
 import json
 import os
+import socket
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -376,3 +377,173 @@ def test_u12_apt_waits_for_the_dpkg_lock():
     for command in (apt("update", "-qq"), apt("install", "-y", "xclip")):
         assert command[0] == "apt-get"
         assert "DPkg::Lock::Timeout=600" in command
+
+
+SECRET = "s3cret-proxy-password"
+PROXY = f"http://yuki:{SECRET}@172.30.0.1:3128"
+
+
+@pytest.mark.parametrize(
+    ("proxied", "facts", "stage"),
+    [
+        (True, {"exitcode": 0, "http_connect": 200, "http_code": 200}, "ok"),
+        (False, {"exitcode": 0, "http_connect": 0, "http_code": 301}, "ok"),
+        # P4: the proxy's name does not resolve inside the environment.
+        (True, {"exitcode": 5, "http_connect": 0, "http_code": 0}, "proxy_unresolved"),
+        # P8: nothing listens (refused); P9: the firewall drops it (timeout).
+        (True, {"exitcode": 7, "http_connect": 0, "http_code": 0}, "proxy_unreachable"),
+        (True, {"exitcode": 28, "http_connect": 0, "http_code": 0}, "proxy_unreachable"),
+        # P10: the proxy wants credentials.
+        (True, {"exitcode": 56, "http_connect": 407, "http_code": 0}, "proxy_refused"),
+        # P11: the proxy cannot reach the target or its upstream.
+        (True, {"exitcode": 56, "http_connect": 502, "http_code": 0}, "proxy_upstream_failed"),
+        # P12: the tunnel stands, the target or TLS fails.
+        (True, {"exitcode": 35, "http_connect": 200, "http_code": 0}, "remote_failed"),
+        (True, {"exitcode": 28, "http_connect": 200, "http_code": 0}, "remote_failed"),
+        (True, {"exitcode": 56, "http_connect": 0, "http_code": 0}, "proxy_failed"),
+        (False, {"exitcode": 6, "http_connect": 0, "http_code": 0}, "dns_failed"),
+        (False, {"exitcode": 7, "http_connect": 0, "http_code": 0}, "direct_failed"),
+    ],
+)
+def test_a_network_check_names_the_leg_that_failed(proxied, facts, stage):
+    from yuki.sandbox import network_guard
+
+    assert network_guard.check_stage(proxied, facts) == stage
+
+
+@pytest.mark.parametrize(
+    ("proxy", "endpoint", "error"),
+    [
+        ("", None, None),
+        (PROXY, (("172.30.0.1",), 3128), None),
+        ("http://172.30.0.1", (("172.30.0.1",), 80), None),
+        # P4: an unresolvable name never stops the Manager; it is reported.
+        (f"http://yuki:{SECRET}@proxy.invalid:3128", None, "proxy_unresolved"),
+    ],
+)
+async def test_the_proxy_endpoint_is_resolved_for_the_firewall(
+    tmp_path, monkeypatch, proxy, endpoint, error
+):
+    if error:
+        # Hosts behind a fake-ip resolver answer every name; this one answers none.
+        def unresolved(*args, **kwargs):
+            raise socket.gaierror(socket.EAI_NONAME, "Name or service not known")
+
+        monkeypatch.setattr(socket, "getaddrinfo", unresolved)
+    manager = PersistentManager(
+        tmp_path / "manager",
+        WorkspaceStore(tmp_path / "artifacts"),
+        "image",
+        "egress",
+        proxy,
+        tmp_path / "home",
+        testing=True,
+    )
+    try:
+        assert await manager.resolve_proxy() == endpoint
+        assert manager.proxy_error == (error or "")
+        assert manager.proxy_allowed == (
+            [f"{address}:{endpoint[1]}" for address in endpoint[0]] if endpoint else []
+        )
+    finally:
+        await manager.close()
+
+
+def proxied_manager(tmp_path, monkeypatch, proxy=PROXY):
+    manager = PersistentManager(
+        tmp_path / "manager",
+        WorkspaceStore(tmp_path / "artifacts"),
+        "image",
+        "egress",
+        proxy,
+        tmp_path / "home",
+        testing=True,
+    )
+    manager.observed_container = {
+        "tmpfs": "rw,nosuid,nodev,size=512m,mode=1777",
+        "shm_bytes": 0,
+    }
+    manager.set_setting("resource_tmp_mib", "512")
+    monkeypatch.setattr(PersistentManager, "available_memory", staticmethod(lambda: 0))
+    monkeypatch.setattr(
+        persistent.shutil, "disk_usage", lambda path: SimpleNamespace(total=1, used=0, free=1)
+    )
+    return manager
+
+
+async def test_a_changed_proxy_is_reported_until_the_environment_is_recreated(
+    tmp_path, monkeypatch
+):
+    # P5: the saved setting and what the running environment has are told apart.
+    manager = proxied_manager(tmp_path, monkeypatch)
+    manager.observe_proxy({"Config": {"Env": ["HTTP_PROXY=", "PATH=/usr/bin"]}})
+    try:
+        status = manager.environment_status()
+        assert status["proxy"]["configured"] == "http://172.30.0.1:3128"
+        assert status["proxy"]["environment"] is None
+        assert "proxy" in status["recreate_required"]
+        # P14: credentials never leave the environment's own variables.
+        assert SECRET not in json.dumps(status)
+        # P6: a recreated environment carries the setting.
+        manager.observe_proxy({"Config": {"Env": [f"HTTP_PROXY={PROXY}"]}})
+        status = manager.environment_status()
+        assert status["proxy"]["environment"] == "http://172.30.0.1:3128"
+        assert "proxy" not in status["recreate_required"]
+    finally:
+        await manager.close()
+
+
+async def test_p13_a_removed_proxy_is_reported_while_the_environment_still_has_it(
+    tmp_path, monkeypatch
+):
+    manager = proxied_manager(tmp_path, monkeypatch, proxy="")
+    manager.observe_proxy({"Config": {"Env": [f"HTTP_PROXY={PROXY}"]}})
+    try:
+        status = manager.environment_status()
+        assert status["proxy"]["configured"] is None
+        assert "proxy" in status["recreate_required"]
+        assert SECRET not in json.dumps(status)
+    finally:
+        await manager.close()
+
+
+async def test_the_network_check_runs_inside_the_environment_and_is_kept(tmp_path, monkeypatch):
+    manager = proxied_manager(tmp_path, monkeypatch)
+    manager.observe_proxy({"Config": {"Env": [f"HTTP_PROXY={PROXY}"]}})
+    calls = []
+
+    async def command(*args, deadline_seconds=30):
+        calls.append(args)
+        facts = {
+            "exitcode": 56,
+            "errormsg": "CONNECT tunnel failed, response 502",
+            "http_connect": 502,
+            "http_code": 0,
+            "remote_ip": "172.30.0.1",
+            "remote_port": 3128,
+        }
+        return 56, json.dumps(facts).encode()
+
+    manager.command = command
+    try:
+        # P15: nothing runs while the environment is not ready, and nothing is kept.
+        assert await manager.handle({"method": "environment_network_check", "args": {}}) == {
+            "error": "environment_unavailable"
+        }
+        assert calls == [] and manager.environment_status()["proxy"]["check"] is None
+        manager.ready = True
+        result = await manager.handle(
+            {"method": "environment_network_check", "args": {"url": "https://example.com/"}}
+        )
+        # The check uses the environment's own variables: no proxy is passed in.
+        (args,) = calls
+        assert args[:3] == ("docker", "exec", manager.name) and "curl" in args
+        assert args[-1] == "https://example.com/" and not any("proxy" in a for a in args)
+        assert result["stage"] == "proxy_upstream_failed"
+        assert result["http_connect"] == 502 and result["exit_code"] == 56
+        assert result["proxy"] == "http://172.30.0.1:3128"
+        assert result["remote"] == "172.30.0.1:3128"
+        assert manager.environment_status()["proxy"]["check"] == result
+        assert SECRET not in json.dumps(manager.environment_status())
+    finally:
+        await manager.close()

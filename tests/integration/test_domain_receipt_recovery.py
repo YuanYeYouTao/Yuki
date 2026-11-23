@@ -1,22 +1,15 @@
 """Real consumers recover domain commits whose original Work T3 was not saved.
 
 The boundary snapshot reconstructs a durable interruption, not an OS kill. Models
-and the Code VM are deterministic; domain writes, journals and recovery are real.
+are deterministic; domain writes, journals and recovery are real.
 """
 
 import json
-from dataclasses import replace
-from hashlib import sha256
-from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import func, select, update
 from tests.conftest import MemorySender
-from tests.integration.test_codemode_lifecycle_recovery import FakeEngine, FakeRun
-from tests.support.codemode_cases import TOOLS, build_host, effect_rows, outer_call
 from tests.support.runtime_execution import make_child_executor, make_work_resumer
-from tests.unit.test_external_agent_repository import prepare, register_device
-from tests.unit.test_external_agent_work import case as _native_case
 from tests.unit.test_history_dispatch_ownership import (
     _scene,
     _tool,
@@ -25,22 +18,14 @@ from tests.unit.test_history_dispatch_ownership import (
 )
 from tests.unit.test_memory_mutation import _service
 
-from yuki.codemode.api_projection import project
-from yuki.codemode.driver import ChildClass, CodeModeDriver
-from yuki.domain.messages import ChatMessage, ChatTool
 from yuki.llm.fake import FakeLLMProvider
 from yuki.persistence.models import MemoryFactModel, MemoryMutationReceiptModel
-from yuki.runtime.effect_outcomes import current_result_capture
 from yuki.runtime.subagent_repository import SubagentRepository
 from yuki.runtime.work_budget_schema import budgets
 from yuki.runtime.work_control import WorkControl
 from yuki.runtime.work_repository import WorkRepository
 from yuki.runtime.work_schema_v1 import effects, journal, work
-from yuki.runtime.work_session import WorkSession
 from yuki.services.main_agent_contract import MainAgentContract
-from yuki.services.turn_transcript import TurnTranscript
-
-native_case = _native_case
 
 
 class DomainCommitBoundary:
@@ -142,7 +127,7 @@ async def test_memory_commit_is_consumed_by_original_main_or_worker(
         database, tmp_path, provider, yield_after=1 if worker else 2
     )
     chat._tools._memory_mutations = _service(database)[0]
-    chat.runtime.runner.main_contract = MainAgentContract(chat, _state, code_enabled=False)
+    chat.runtime.runner.main_contract = MainAgentContract(chat, _state)
     observed_effects = []
     observe = WorkControl.observe_evidence
 
@@ -215,7 +200,11 @@ async def test_memory_commit_is_consumed_by_original_main_or_worker(
     observed = "\n".join(message.content or "" for message in provider.requests[-1].messages)
     assert str(fact_id) in observed
     assert "execution_outcome_unknown" not in observed
-    assert "remember-once" in observed
+    # The resume appends to the original chain (#646): the committed call stays as
+    # its original declaration, paired once with the recovered receipt.
+    messages = provider.requests[-1].messages
+    assert [m.tool_call_id for m in messages if m.role == "tool"].count("remember-once") == 1
+    assert any(call.id == "remember-once" for m in messages for call in m.tool_calls)
     recovered = next(item for item in observed_effects if item.get("effect_key") == boundary.key)
     assert (
         recovered.get("ok") is not False
@@ -235,108 +224,3 @@ async def test_memory_commit_is_consumed_by_original_main_or_worker(
             await reader.scalar(select(func.count()).select_from(MemoryFactModel)),
             await reader.scalar(select(func.count()).select_from(MemoryMutationReceiptModel)),
         )
-
-
-@pytest.mark.parametrize("uncertain", [False, True], ids=["confirmed", "unknown"])
-async def test_code_resume_consumes_original_native_control_receipt(
-    native_case, monkeypatch, uncertain
-):
-    database, control = native_case.db, native_case.control
-    native = await register_device(database, native_case.source["actor_person_id"])
-    native.session = (
-        await native.repository.remember_sessions(native.instance, native.actor, ["thread"])
-    )["thread"]
-    native.source = {
-        **native_case.source,
-        "conversation_id": control.lease.conversation_id,
-        "work_id": control.current["id"],
-    }
-    owner = WorkSession(control, "original-contract")
-    control.session = owner
-    owner.transcript = TurnTranscript((ChatMessage("user", "steer the original execution"),))
-    dispatched, views = [], []
-
-    async def domain(name, arguments):
-        assert name == "use_coding_agent"
-        capture = current_result_capture.get()
-        request_id = sha256(capture.effect_key.encode()).hexdigest()
-        await prepare(
-            native, identity=request_id, arguments=json.loads(arguments), lease=control.lease
-        )
-        await native.repository.response(
-            request_id,
-            {"status": "unknown" if uncertain else "succeeded", "pending": uncertain},
-        )
-        dispatched.append(request_id)
-        return json.dumps(
-            {
-                "ok": not uncertain,
-                "uncertain": uncertain,
-                "data": {"operation_id": request_id, "action": "steer"},
-            }
-        )
-
-    args = {"action": "steer", "prompt": "continue the original work"}
-
-    class ObservedRun(FakeRun):
-        async def settle(self, results):
-            views.extend(answer.value for answer in results.values())
-            return await super().settle(results)
-
-    class Engine(FakeEngine):
-        def run(self, names):
-            return ObservedRun(calls=[("yuki_use_coding_agent", args)])
-
-    def host(session):
-        env = build_host(session, domain)
-        env.host.api = project(
-            (*TOOLS, ChatTool("use_coding_agent", "agent", {"type": "object"})), "manifest-test"
-        )
-        env.host.classify = lambda call: ChildClass("write", False, True)
-        env.host.worker = SimpleNamespace(execution_digest=lambda: "stable-fake-engine")
-        env.host.engine_factory = lambda *_args: Engine()
-        return env
-
-    env = host(owner)
-    outer = outer_call(env, "await yuki_use_coding_agent({})")
-    owner.transcript.append(ChatMessage("assistant", tool_calls=(outer.call,)))
-    await owner.save("response", (outer.call,))
-    # The Work was recorded under the retired tool, whose receipts carried the action;
-    # resuming it still reads that original receipt by its recorded name.
-    boundary = DomainCommitBoundary(monkeypatch, "use_coding_agent", recorded={"action": "steer"})
-    assert json.loads(await CodeModeDriver(env.host, outer).run())["status"] == "completed"
-    await boundary.restore(database)
-    original_budget = await budget(database, control.current["id"])
-    restored = WorkControl(
-        control.repository, control.lease, control.source_key, control.source, control.validate
-    )
-    restored.current = await control.repository.get(control.current["id"])
-    session = WorkSession(restored, owner.contract)
-    restored.session = session
-    await session.restore(TurnTranscript((ChatMessage("user", "resume"),)))
-    resumed = host(session)
-    views.clear()
-    outer = replace(outer, context=replace(outer.context, runtime=resumed.agent))
-    result = json.loads(await CodeModeDriver(resumed.host, outer).resume())
-    assert dispatched == [sha256(boundary.key.encode()).hexdigest()]
-    if uncertain:
-        assert result["status"] == "partial", result
-        assert result["stop_reason"] == "unknown_effect"
-        assert result["uncertain_operation_id"] == boundary.key
-        assert views == []
-    else:
-        assert result["status"] == "completed", result
-        assert views[0]["ok"] and views[0]["executed"] and not views[0]["uncertain"]
-        assert views[0]["data"]["operation_id"] == dispatched[0]
-        assert views[0]["data"]["action"] == "steer"
-        assert views[0]["status"] == "succeeded" and not views[0]["pending"]
-        assert views[0]["reused"]
-        assert views[0]["operation_id"] == boundary.key
-    rows, tools, root = await effect_rows(database, control.current["id"])
-    assert rows[outer.identity.operation_id]["state"] == "accepted"
-    if not uncertain:
-        assert json.loads(rows[outer.identity.operation_id]["receipt_json"])["outcome"][
-            "side_effecting"
-        ]
-    assert tools == root == original_budget["tools"]
-    assert restored.ending is None

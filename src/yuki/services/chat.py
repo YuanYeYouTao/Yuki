@@ -270,12 +270,8 @@ class ChatService:
         self.participation_runtime_context = participation_runtime_context
         from yuki.services.main_agent_contract import MainAgentContract
 
-        self.main_contract = MainAgentContract(
-            self, short_state, code_enabled=settings.code_mode_enabled
-        )
-        runner = AgentRunner(
-            models, concurrency, main_contract=self.main_contract, code_mode_settings=settings
-        )
+        self.main_contract = MainAgentContract(self, short_state)
+        runner = AgentRunner(models, concurrency, main_contract=self.main_contract)
         from yuki.runtime.activation_bindings import ActiveWorkBindings
         from yuki.services.yuki_runtime import YukiRuntime
 

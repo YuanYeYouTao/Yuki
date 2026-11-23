@@ -122,6 +122,17 @@ def _self_scene(context: SocialContext) -> bool:
     )
 
 
+def relay_cause(context: SocialContext, conversation_id: str | None) -> int | None:
+    """The cause stored on a Yuki message delivered into ``conversation_id``.
+
+    A send into another Conversation keeps the request event that triggered it, so the
+    target history can say where the message came from without carrying its body.
+    """
+    if context.caused_by_event_id is not None or conversation_id == context.conversation_id:
+        return context.caused_by_event_id
+    return context.trigger_event_id
+
+
 def _mentioned_accounts(messages: Iterable[dict[str, Any]]) -> list[dict[str, str]]:
     """Project confirmed native targets from the original persisted transport plan."""
     accounts: dict[str, dict[str, str]] = {}
@@ -993,6 +1004,7 @@ class SocialService:
                 planned_file_parts=None,
                 origin=context.origin,
                 caused_by_event_id=context.caused_by_event_id,
+                relay_event_id=context.trigger_event_id,
             )
         assert result is not None
         if parent.prepared is not None:
@@ -1660,7 +1672,7 @@ class SocialService:
             prepared=prepared,
             segments=segments,
             origin=context.origin,
-            caused_by_event_id=context.caused_by_event_id,
+            caused_by_event_id=relay_cause(context, route.conversation_id),
             source_event_id=context.trigger_event_id or context.caused_by_event_id,
             reply_to_message_id=params["message"].reply_reference,
             reply_to_event_id=reply_to_event_id,
@@ -1918,7 +1930,8 @@ class SocialService:
                     or event.event_kind != "message"
                     or event.suppression_status != "keeper"
                     or event.origin != context.origin
-                    or event.caused_by_event_id != context.caused_by_event_id
+                    or event.caused_by_event_id
+                    != relay_cause(context, event.canonical_conversation_id)
                 ):
                     return result
                 conversation = await session.get(

@@ -51,7 +51,7 @@ async def _paid_root(database, tmp_path):
 
 @pytest.mark.parametrize("retained_inputs", [0, 2])
 @pytest.mark.parametrize("provider_incomplete", [False, True])
-async def test_current_compact_retains_original_inputs_and_business_resume(
+async def test_current_compact_retains_original_inputs_and_resumes_on_its_chain(
     database, tmp_path, retained_inputs, provider_incomplete
 ):
     control, first, transcript, initial = await _paid_root(database, tmp_path)
@@ -126,14 +126,28 @@ async def test_current_compact_retains_original_inputs_and_business_resume(
         assert "execution_checkpoint" not in first.progress["task_material"]
     else:
         assert first.progress["task_material"]["execution_checkpoint"] == checkpoint
+    current = first.transcript.request().messages
     resumed = WorkSession(control, first.contract)
     control.session = resumed
     restored = await resumed.restore(TurnTranscript((ChatMessage("user", "fresh business input"),)))
-    material = json.loads(restored.request().messages[-1].content)
-    assert material["original_request"] == original_request
-    assert material["task_material"]["directives"][0]["text"] == "keep the original restriction"
+    # A wakeup appends to the compacted chain, or to the original paired chain when
+    # no checkpoint was produced (#646); the fresh input is not a new prefix.
+    assert resumed.uses_recovery_transcript
+    assert restored.chain_id == first.transcript.chain_id
+    assert restored.request().messages[: len(current)] == current
+    assert "fresh business input" not in str(restored.request().messages)
+    assert resumed.progress["task_material"]["directives"][0]["text"] == (
+        "keep the original restriction"
+    )
+    assert await resumed._original_request() == original_request
+    body = "\n".join(message.content or "" for message in restored.request().messages)
     for index in range(19):
-        assert restored.request().messages[-1].content.count(f"original requirement {index}:") == 1
+        # Each requirement is either summarized into the checkpoint or retained
+        # verbatim once; none is duplicated by the resume.
+        assert body.count(f"original requirement {index}:") <= 1
+    if retained_inputs and not provider_incomplete:
+        for message in original.messages[-retained_inputs:]:
+            assert body.count(message.content) == 1
     assert len(provider.requests) == 1
     saved = await control.repository.get(identity)
     assert saved["goal"] == "prepare an artifact"
@@ -217,9 +231,9 @@ async def test_current_compact_selects_a_fitting_prefix_without_splitting_tool_p
 
 
 @pytest.mark.parametrize("input_budget", [None, 128000], ids=["unknown", "finite"])
-@pytest.mark.parametrize("rebase_before_compact", [False, True], ids=["paired", "portable"])
+@pytest.mark.parametrize("restore_before_compact", [False, True], ids=["paired", "restored"])
 async def test_current_compact_keeps_unobserved_original_receipt_for_next_main(
-    database, tmp_path, input_budget, rebase_before_compact, compact_evidence
+    database, tmp_path, input_budget, restore_before_compact, compact_evidence
 ):
     """A fitting paid prefix cannot consume Main's original, still-unseen result."""
     control, session, initial = await _session(database, tmp_path)
@@ -247,23 +261,28 @@ async def test_current_compact_keeps_unobserved_original_receipt_for_next_main(
     await session.save("paired")
     identity = control.current["id"]
     original_source = control.current["source_json"]
+    original_chain = session.transcript.chain_id
     directory, evidence = compact_evidence
-    if rebase_before_compact:
+    if restore_before_compact:
         await database.engine.dispose()
         restored = WorkSession(control, session.contract)
         control.session = restored
         await restored.restore(TurnTranscript(initial))
         session = restored
-        assert "work_unobserved_tool_round" in str(session.transcript.request().messages)
-        assert original_key in str(session.transcript.request().messages)
-        evidence["first_portable_restore"] = asdict(session.transcript.request())
+        # The restore appends to the original chain (#646): the paired call and
+        # its original result stay as the native round, not portable evidence.
+        assert session.transcript.chain_id == original_chain
+        restored_messages = session.transcript.request().messages
+        assert [m.tool_call_id for m in restored_messages if m.role == "tool"] == [call.id]
+        assert original_key in str(restored_messages)
+        evidence["first_restore"] = asdict(session.transcript.request())
         await session.save("paired")
         await database.engine.dispose()
         restored = WorkSession(control, session.contract)
         control.session = restored
         await restored.restore(TurnTranscript(initial))
         session = restored
-        evidence["second_portable_restore"] = asdict(session.transcript.request())
+        evidence["second_restore"] = asdict(session.transcript.request())
 
     provider = FakeLLMProvider(
         lambda request: (
@@ -278,7 +297,7 @@ async def test_current_compact_keeps_unobserved_original_receipt_for_next_main(
     execution.state.transcript = session.transcript
     evidence.update(
         input_budget=input_budget,
-        rebase_before_compact=rebase_before_compact,
+        restore_before_compact=restore_before_compact,
         original_work=identity,
         original_source=original_source,
         original_call=asdict(call),
@@ -291,7 +310,7 @@ async def test_current_compact_keeps_unobserved_original_receipt_for_next_main(
             ChatRequest(messages=session.transcript.request().messages),
             ModelExecutionPriority.FOREGROUND,
             input_budget,
-            trigger_tokens=1 if rebase_before_compact else None,
+            trigger_tokens=1 if restore_before_compact else None,
         )
         evidence["compacted_transcript"] = asdict(session.transcript.request())
         await execution.request(0)
@@ -305,7 +324,7 @@ async def test_current_compact_keeps_unobserved_original_receipt_for_next_main(
         saved = await control.repository.get(identity)
         evidence["saved_work"] = saved
         assert saved["source_json"] == original_source
-        assert saved["model_requests"] == (1 if rebase_before_compact else 2)
+        assert saved["model_requests"] == (1 if restore_before_compact else 2)
         assert saved["tool_calls"] == 1
     finally:
         evidence["requests"] = [asdict(request) for request in provider.requests]
@@ -420,24 +439,21 @@ async def test_legacy_public_compact_restore_does_not_invent_original_effect_key
         resumed.state.transcript = restored.transcript
         await resumed.request(0)
         normal = provider.requests[-1]
-        portable = next(
-            json.loads(message.content)
-            for message in normal.messages
-            if "legacy-original-result" in (message.content or "")
-        )
         evidence["normal_request"] = asdict(normal)
-        original = portable["calls"][0]
-        assert original["call_id"] == call.id
-        assert original["arguments"] == call.function.arguments
-        assert original["result"] == result
-        assert "effect_key" not in original
-        assert json.loads(original["result"])["data"]["operation_id"] == original_key
+        # The wakeup appends to the compacted chain (#646): the original round stays
+        # as its raw call and results. No effect key is rebuilt for the new chain.
+        assert restored.uses_recovery_transcript
+        assert [message.tool_calls for message in normal.messages if message.tool_calls] == [calls]
+        outputs = {
+            message.tool_call_id: message.content
+            for message in normal.messages
+            if message.role == "tool"
+        }
+        assert outputs[call.id] == result
+        assert json.loads(outputs[call.id])["data"]["operation_id"] == original_key
+        assert not any("effect_key" in (message.content or "") for message in normal.messages)
         if partial_keys:
-            known = portable["calls"][1]
-            assert known["call_id"] == known_call.id
-            assert known["arguments"] == known_call.function.arguments
-            assert known["result"] == known_result
-            assert known["effect_key"] == known_key
+            assert outputs[known_call.id] == known_result
             assert await session.journal.effect_result(known_key) == known_result
         assert await session.journal.effect_result(original_key) == result
         assert invoked == [item.id for item in calls]

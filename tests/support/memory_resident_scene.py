@@ -183,7 +183,6 @@ class ResidentScene:
         self.chat = self.harness.processor._chat
         self.short_state = ShortState(WorkspaceStore(self.tmp_path / "short-state"))
         self.chat.runtime.runner.main_contract = MainAgentContract(self.chat, self.short_state)
-        self.chat.runtime.runner.code_mode_settings = self.settings
         self.chat._tools.short_state = self.short_state
         self.chat._tools.social_service = self.env.service
         self.env.service.runtime_config = self.chat._runtime_config

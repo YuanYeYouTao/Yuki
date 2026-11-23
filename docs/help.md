@@ -76,7 +76,7 @@ API Base URL、模型与任务路由，通过 `admin model apply` 保存并热�
 Google 搜索沿显式搜索连接与 `search_mode="bridge"`，不根据消息内容暗中切换 Provider。
 用量是 Yuki 入账记录，不是供应商账单。
 
-主 Agent 在启动时冻结工具合同，执行处按当前 Principal 核验授权。默认 direct 模式直接声明部署内固定完整工具清单；显式启用 Code Mode 时，固定直调工具保留终端、联网搜索和网页读取，其余工具经 Code Mode 调用。
+主 Agent 在启动时冻结工具合同，执行处按当前 Principal 核验授权。Provider 直接声明部署内固定完整工具清单。
 Capability 决定 metadata、外部 ID、正文、mutation 与 destructive 操作的不同权限。
 
 管理 CLI 通过 Bearer API 调用原领域服务，权限来自服务器 operator 声明；

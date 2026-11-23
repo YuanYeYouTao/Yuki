@@ -66,7 +66,9 @@ async def test_actual_main_keeps_public_delta_and_reuses_paid_response(
         restored = WorkSession(control, session.contract)
         control.session = restored
         await restored.restore(TurnTranscript((*initial[:-1], ambient, initial[-1])))
-        assert not restored.uses_recovery_transcript
+        # The paid execution checkpoint is published and the Work continues on the
+        # compacted chain (#646), not on a freshly prepared prefix.
+        assert restored.uses_recovery_transcript
         assert (
             restored.progress["task_material"]["execution_checkpoint"]
             == "Verified findings. Continue original task."
