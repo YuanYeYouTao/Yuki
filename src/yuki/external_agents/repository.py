@@ -786,6 +786,8 @@ class AgentRepository:
                 updated_at=datetime.now(UTC),
             )
         )
+        if row.work_id is not None:
+            await WorkRepository.resettle_deferred(session, row.work_id)
 
     async def _followups(self, device_id: str, events: list[dict[str, Any]]) -> None:
         """Register the follow-up operation of a turn the native owner started itself.

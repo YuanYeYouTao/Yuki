@@ -584,6 +584,26 @@ class WorkRepository:
             .exists(),
         )
 
+    @staticmethod
+    async def resettle_deferred(session: AsyncSession, identity: str) -> None:
+        """An owned execution of ``identity``'s lineage ended: settle deferred completions.
+
+        A completion deferred by ``_owned_execution_clause`` is decided only by the
+        execution facts, never by whether an ending also sent its owner a notice. The
+        lineage is the Work and its ancestors (indexed by primary key), whatever its depth.
+        """
+        from yuki.runtime.work_tree import ancestors
+
+        await session.execute(
+            update(work)
+            .where(
+                work.c.id.in_(ancestors(identity, include_self=True)),
+                work.c.state == "waiting_external",
+                work.c.reason == "work_owned_execution_pending",
+            )
+            .values(state="queued", revision=work.c.revision + 1, updated=time.time())
+        )
+
     async def has_owned_execution(self, lease: WorkLease, identity: str) -> bool:
         async with self.database.read_session() as session:
             await self._assert_lease_readonly(session, lease)
