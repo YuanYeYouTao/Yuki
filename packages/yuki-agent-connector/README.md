@@ -1,13 +1,13 @@
 # Yuki Agent Connector
 
-Connector **0.9.6 / wire protocol 5** connects an existing computer to Yuki through
+Connector **0.9.7 / wire protocol 5** connects an existing computer to Yuki through
 one outbound WSS connection. It provides native Codex, Claude SDK and ACP
 connections, and optional local Shell/file capabilities. It does not
 install the Bot, create another business task system or mirror native histories.
 
 Desktop includes this locked Python runtime for the Connector. No user Python
 installation is required. Independent CLI installations use Python 3.12:
-`uv tool install path/to/yuki_agent_connector-0.9.6-py3-none-any.whl`.
+`uv tool install path/to/yuki_agent_connector-0.9.7-py3-none-any.whl`.
 
 ## Installation and ownership
 
@@ -241,10 +241,14 @@ when it does not. The connector does not declare `requiredHumanApproval`, so
 `humanCommand` does not arrive today; under `*` the kind is not checked, while the
 other conditions still apply (no `additionalPermissions`, network allowed when a
 `networkApprovalContext` is present, a non-empty string or list command).
-Known defect in 0.9.6, not fixed, so this protection does not hold yet:
-detaching an ACP delegation while Yuki's prompt still runs drops its scope before
-the session closes, and `terminal/create` / `fs/write_text_file` callbacks in that
-window run unchecked.
+Since 0.9.7 an ACP scope belongs to the session, not to the delegation: a detach
+(with or without `release`) no longer drops it, so `terminal/create` and
+`fs/write_text_file` callbacks stay confined to it for the rest of the turn, in later
+agent-initiated turns and until the session is closed; only the next prompt on the
+session replaces it. Auto-approval of permission requests still needs an owning
+delegation: after a detach they are no longer auto-approved and go to whichever
+watches still receive them (deny-only when none do). Before 0.9.7 a detach while
+Yuki's prompt still ran dropped the scope and those callbacks ran unchecked.
 Since 0.9.6 a Codex `fileChange` auto-approval reads, for every change, its
 `path`, `kind.type` and `kind.move_path`, and needs each source `path` and move
 target inside `write_paths`; a path outside the scope is reported to the owner.

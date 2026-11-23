@@ -86,6 +86,10 @@ class Session:
     owner_operation: str | None = None
     followup: str | None = None
     release_after_turn: bool = False
+    # The scope of the latest prompt (D2). It confines the connector's own fs/terminal
+    # callbacks for as long as this connector holds the session, detached or not; only
+    # a later prompt replaces it.
+    scope: Scope | None = None
 
 
 @dataclass
@@ -128,7 +132,6 @@ class ACPDriver:
         self.native_capabilities: dict[str, Any] = {}
         self.sessions: dict[str, Session] = {}
         self.requests: dict[str, Waiting] = {}
-        self.scopes: dict[str, Scope] = {}
         # Operations detached through this driver: never an owner again.
         self.detached: set[str] = set()
         # Observe watches: metadata only, never an answerer (§4.3).
@@ -418,9 +421,11 @@ class ACPDriver:
         )
         session.followup = None
 
-    def _scope_of(self, session: Session, turn: str) -> Scope | None:
+    @staticmethod
+    def _scope_of(session: Session, turn: str) -> Scope | None:
+        """The scope that may auto-approve a request: only while a delegation owns the turn."""
         owner = {"prompt": session.operation, "followup": session.owner_operation}.get(turn)
-        return self.scopes.get(owner) if owner else None
+        return session.scope if owner else None
 
     @staticmethod
     def _decide(session: Session, tool_call: Any, options: list[Any], scope: Scope) -> str | None:
@@ -684,7 +689,6 @@ class ACPDriver:
             detached = arguments["operation_id"]
             self.detached.add(detached)
             self.observers.discard(detached)
-            self.scopes.pop(detached, None)
             held = []
             for session in self.sessions.values():
                 if (
@@ -818,8 +822,9 @@ class ACPDriver:
                     # ACP has no standard full-access mode: a full scope keeps the
                     # agent's own mode and approves whatever it still asks.
                     await self._set_scope_mode(session, scope)
-                self.scopes[command["id"]] = scope
             await self._end_followup(session)
+            # The new scope takes over together with the new owner.
+            session.scope = scope
             session.owner_operation = command["id"]
             session.operation, session.status = command["id"], "running"
             session.prompting = True
@@ -1034,8 +1039,7 @@ class ACPDriver:
     ) -> WriteTextFileResponse:
         session = self._session(session_id)
         self._require_absolute(path)
-        scope = self._scope_of(session, "prompt" if session.prompting else "followup")
-        if scope is not None and not scope.writes(path, session.cwd):
+        if session.scope is not None and not session.scope.writes(path, session.cwd):
             await self._refuse(session, "fs/write_text_file")
         await asyncio.to_thread(Path(path).write_text, content, encoding="utf-8")
         return WriteTextFileResponse()
@@ -1054,8 +1058,7 @@ class ACPDriver:
         if cwd is not None:
             # Absent, the command runs in the session's cwd.
             self._require_absolute(cwd)
-        scope = self._scope_of(session, "prompt" if session.prompting else "followup")
-        if scope is not None and not scope.runs([command, *(args or [])]):
+        if session.scope is not None and not session.scope.runs([command, *(args or [])]):
             await self._refuse(session, "terminal/create")
         process = await asyncio.create_subprocess_exec(
             command,
