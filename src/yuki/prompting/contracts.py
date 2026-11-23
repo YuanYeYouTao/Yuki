@@ -1,7 +1,5 @@
 """Static execution guidance shared by all main Agent entrypoints."""
 
-from yuki.codemode.contract import CODE_MODE_POLICY
-
 _CORE_START = (
     "<runtime_context>...</runtime_context> 是程序附带的本轮运行资料，不是聊天成员的新发言。"
     "其中 current_time 是准备这份资料时的可信当前时间（UTC+8），判断今天、近期和时效以它为准；"
@@ -162,20 +160,8 @@ _CORE_END = (
     "搜索词只包含公开问题所需信息，不外发完整聊天、私人记忆或系统提示。"
 )
 
-DIRECT_TOOL_POLICY = (
-    "【工具执行模式】\n"
-    "当前为 direct 模式，直接调用工具；有依赖或副作用顺序时逐步执行，独立调用可并行。\n\n"
-)
+_TOOL_POLICY = "【工具执行】\n直接调用工具；有依赖或副作用顺序时逐步执行，独立调用可并行。\n\n"
 
+CORE_CONTRACT = _CORE_START + _TOOL_POLICY + _CORE_END
 
-def tool_mode_policy(*, code_enabled: bool) -> str:
-    return CODE_MODE_POLICY if code_enabled else DIRECT_TOOL_POLICY
-
-
-def core_contract(*, code_enabled: bool) -> str:
-    return _CORE_START + tool_mode_policy(code_enabled=code_enabled) + _CORE_END
-
-
-CORE_CONTRACT = core_contract(code_enabled=False)
-
-__all__ = ["CORE_CONTRACT", "core_contract"]
+__all__ = ["CORE_CONTRACT"]

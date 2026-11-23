@@ -24,7 +24,7 @@ class ResultCapture:
     source_privacy_generation: int | None = None
 
     def observe_sources(self, event_ids: tuple[int, ...], privacy: int | None) -> None:
-        """Retain the original read dependencies across composed child calls."""
+        """Retain the original read dependencies across the calls this capture records."""
         self.source_event_ids = tuple(dict.fromkeys((*self.source_event_ids, *event_ids)))
         if event_ids and privacy is not None:
             self.source_privacy_generation = (

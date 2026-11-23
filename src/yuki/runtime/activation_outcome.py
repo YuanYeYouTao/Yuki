@@ -51,7 +51,6 @@ class ContextBoundaryChanged(LLMInvalidRequestError):
 class ExitReason(StrEnum):
     COMPLETED = "completed"
     FAILED = "failed"
-    SEGMENT = "segment_budget"
     EXTERNAL = "waiting_external"
     INPUT = "waiting_input"
     RETRY = "retry"

@@ -217,8 +217,6 @@ async def settle(control: WorkControl, *, pending_inputs: bool) -> None:
     state: str | None
     if proposed in {"failed", "cancelled"}:
         state, reason = proposed, ACCEPTED_REASONS[proposed]
-    elif control.yield_segment:
-        state, reason = "queued", ExitReason.SEGMENT
     elif control.handoff_work_id is not None:
         state = "queued" if pending_inputs else await control.background_state()
         if state is None:

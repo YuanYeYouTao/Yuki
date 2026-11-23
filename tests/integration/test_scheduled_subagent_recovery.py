@@ -396,7 +396,7 @@ async def test_self_child_runs_and_continues_after_parent_and_original_initiativ
     worker_tools = {tool.name for tool in provider.requests[0].tools}
     assert worker_tools == {tool.name for tool in provider.requests[2].tools}
     assert {"manage_task", "start_subtask", "send"} <= worker_tools
-    assert provider.requests[0].tools == await chat.runtime.runner.main_contract.model_definitions()
+    assert provider.requests[0].tools == await chat.runtime.runner.main_contract.definitions()
     assert provider.requests[0].messages[0] == chat._prompt_composer.static_messages()[0]
     lease = await repository.acquire(source["conversation_id"], source["generation"])
     await workers.resume(lease, parent["id"], identity, key="continue-self-child")

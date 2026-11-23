@@ -179,8 +179,7 @@ async def test_main_reads_an_uploaded_file_only_after_its_explicit_tool_call(
     state = ShortState(workspace.store)
     state.update({"slot": 1, "text": "file reading test"})
     chat._tools.short_state = state
-    chat.runtime.runner.main_contract = MainAgentContract(chat, state, code_enabled=False)
-    chat.runtime.runner.code_mode_settings = harness.settings
+    chat.runtime.runner.main_contract = MainAgentContract(chat, state)
     locator = "base64://" + base64.b64encode(content).decode()
     incoming = InboundMessage(
         ingress_key="file-is-data-not-a-reading-command",

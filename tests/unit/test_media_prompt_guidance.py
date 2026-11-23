@@ -4,7 +4,6 @@ import io
 from dataclasses import replace
 from types import SimpleNamespace
 
-import pytest
 from PIL import Image
 from tests.conftest import make_settings
 
@@ -15,8 +14,7 @@ from yuki.services.native_media import NativeMediaPreparer
 from yuki.services.prompt_composer import PromptComposer
 
 
-@pytest.mark.parametrize("code_enabled", (False, True))
-def test_media_guidance_preserves_casual_and_explicit_image_tasks(code_enabled):
+def test_media_guidance_preserves_casual_and_explicit_image_tasks():
     data = io.BytesIO()
     Image.new("RGB", (8, 8), "red").save(data, format="PNG")
     images = NativeMediaPreparer(ImagePreprocessor()).prepare_image(
@@ -31,9 +29,7 @@ def test_media_guidance_preserves_casual_and_explicit_image_tasks(code_enabled):
         metrics=ContextMetrics(0, 0, 1, len(current.content), False),
         history_self_name="Yuki",
     )
-    composer = PromptComposer(
-        make_settings("sqlite+aiosqlite:///:memory:", code_mode_enabled=code_enabled)
-    )
+    composer = PromptComposer(make_settings("sqlite+aiosqlite:///:memory:"))
     explicit = replace(current, content="请读出图片中的文字并解释这个错误 [图片附件0]")
     casual = composer.compose(inbound=None, context=context, runtime=SimpleNamespace())
     requested = composer.compose(

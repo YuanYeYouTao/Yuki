@@ -8,7 +8,7 @@ import time
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import Any
 from uuid import uuid4
 
 from sqlalchemy import (
@@ -28,7 +28,6 @@ from sqlalchemy import (
     update,
 )
 from sqlalchemy.dialects.sqlite import insert
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from yuki.admin.models import WorkStorageRuntimeConfig
@@ -49,9 +48,6 @@ from yuki.runtime.work_schema_v1 import (
     work,
 )
 from yuki.runtime.work_wait_schema import waits
-
-if TYPE_CHECKING:
-    from yuki.runtime.protocol_store import CodeSnapshotBinding, ProtocolStore
 
 TERMINAL = frozenset({"completed", "failed", "cancelled"})
 
@@ -706,7 +702,6 @@ class WorkRepository:
             values["state"] != "running"
             and not draining
             and values["reason"] != "work_input_preparing"
-            and not (values["state"] == "queued" and exit_reason == "segment_budget")
         ):
             # A wait remains the accepted decision while its original binding is
             # active. Settlement of this activation must not erase that decision
@@ -796,12 +791,7 @@ class WorkRepository:
                 updated=time.time(),
                 not_before=0,
             )
-            if exit_reason in {
-                "segment_budget",
-                "completed",
-                "waiting_input",
-                "waiting_external",
-            }:
+            if exit_reason in {"completed", "waiting_input", "waiting_external"}:
                 detail.update(attempts=0, failure_json="{}")
         else:
             detail = None
@@ -2026,7 +2016,6 @@ class WorkRepository:
         *,
         outcome: dict[str, Any] | None = None,
         invocation: dict[str, Any] | None = None,
-        composition: dict[str, Any] | None = None,
     ) -> bool:
         """False means an intent already exists, not that it is safe to send again."""
         now = time.time()
@@ -2034,7 +2023,6 @@ class WorkRepository:
             {
                 **({"outcome": outcome} if outcome is not None else {}),
                 **({"invocation": invocation} if invocation is not None else {}),
-                **({"composition": composition} if composition is not None else {}),
             }
         )
         async with self.database.immediate_session() as session:
@@ -2068,211 +2056,6 @@ class WorkRepository:
                 )
             ).first()
             return inserted is not None
-
-    async def publish_code_boundary(
-        self,
-        lease: WorkLease,
-        identity: str,
-        parent_key: str,
-        *,
-        expected_revision: int,
-        composition: dict[str, Any],
-        child: dict[str, Any] | None,
-        store: ProtocolStore,
-        binding: CodeSnapshotBinding,
-        side_effecting: bool,
-    ) -> bool:
-        """T1 publishes a private prepared snapshot and at most one original child intent.
-
-        Without a child this is a pure program checkpoint (e.g. a future wait):
-        the same CAS and publication, and no business intent.
-        """
-        if (
-            binding.work_id != identity
-            or binding.operation_id != parent_key
-            or binding.conversation_id != lease.conversation_id
-            or binding.generation != lease.generation
-        ):
-            raise WorkConflict("code_boundary_identity_conflict")
-        if child is not None and (
-            child.get("version") != 1
-            or child.get("parent_effect_key") != parent_key
-            or child.get("owner_execution_id") != identity
-            or child.get("dispatch_started") is not False
-            or child.get("budget_admitted") is not False
-            or not isinstance(child.get("child_ordinal"), int)
-            or not isinstance(child.get("feed_index"), int)
-            or not isinstance(child.get("engine_call_id"), str)
-        ):
-            raise WorkConflict("code_boundary_identity_conflict")
-        async with self.database.read_session() as reader:
-            original = (
-                (
-                    await reader.execute(
-                        select(effects).where(
-                            effects.c.effect_key == parent_key,
-                            effects.c.work_id == identity,
-                        )
-                    )
-                )
-                .mappings()
-                .first()
-            )
-        if (
-            original is None
-            or original["kind"] != "code_composition"
-            or original["state"] not in {"prepared", "unknown"}
-        ):
-            raise WorkConflict("code_composition_closed")
-        previous = json.loads(original["receipt_json"])
-        saved = previous.get("composition", {})
-        if saved.get("version") != 1 or saved.get("snapshot_revision") != expected_revision:
-            raise WorkConflict("code_checkpoint_conflict")
-        for field in (
-            "script_id",
-            "media_privacy_generation",
-            "code_ref",
-            "inputs_ref",
-            "api_revision",
-            "engine_digest",
-            "dump_format",
-        ):
-            if field in composition and composition[field] != saved.get(field):
-                raise WorkConflict("code_composition_binding_conflict")
-        if (
-            saved.get("api_revision") != binding.api_revision
-            or saved.get("engine_digest") != binding.engine_digest
-            or saved.get("dump_format") != binding.dump_format
-        ):
-            raise WorkConflict("code_composition_binding_conflict")
-        next_composition = {
-            **saved,
-            **composition,
-            "version": 1,
-            "snapshot_revision": expected_revision + 1,
-        }
-        snapshot_ref = next_composition.get("snapshot_ref")
-        if snapshot_ref not in store.prepared_refs:
-            raise WorkConflict("code_snapshot_not_prepared")
-        store.decode_code_snapshot(await store.get_bytes(snapshot_ref), binding)
-        output_ref = next_composition.get("output_ref")
-        if output_ref is not None:
-            if output_ref not in store.prepared_refs:
-                raise WorkConflict("code_output_not_prepared")
-            store.decode_code_snapshot(await store.get_bytes(output_ref), binding)
-        parent_receipt = encode_json({**previous, "composition": next_composition})
-        child_receipt = (
-            encode_json(
-                {
-                    "invocation": child,
-                    "outcome": {
-                        "tool": child["tool_id"],
-                        "side_effecting": side_effecting,
-                        "ok": False,
-                        "pending": False,
-                        "uncertain": False,
-                        "executed": False,
-                    },
-                }
-            )
-            if child is not None
-            else None
-        )
-        from yuki.execution_trace.db_models import ExecutionTraceStateModel
-
-        async with store.publication(identity) as prepared_objects:
-            async with self.database.immediate_session() as writer:
-                await self._assert_lease(writer, lease)
-                source = await writer.get(CanonicalConversationModel, lease.conversation_id)
-                privacy = (
-                    await writer.scalar(
-                        select(ExecutionTraceStateModel.privacy_generation).where(
-                            ExecutionTraceStateModel.id == 1,
-                        )
-                    )
-                    or 0
-                )
-                if (
-                    source is None
-                    or source.generation != binding.generation
-                    or source.prompt_source_revision != binding.source_revision
-                    or privacy != binding.privacy_generation
-                ):
-                    raise WorkConflict("code_boundary_authority_changed")
-                if not await writer.scalar(
-                    select(work.c.id).where(
-                        work.c.id == identity,
-                        work.c.conversation_id == lease.conversation_id,
-                        work.c.generation == lease.generation,
-                        work.c.state.not_in(TERMINAL),
-                    )
-                ):
-                    raise WorkConflict("work_effect_obsolete")
-                changed = await writer.scalar(
-                    update(effects)
-                    .where(
-                        effects.c.effect_key == parent_key,
-                        effects.c.work_id == identity,
-                        effects.c.state.in_(("prepared", "unknown")),
-                        effects.c.receipt_json == original["receipt_json"],
-                    )
-                    .values(receipt_json=parent_receipt, updated=time.time())
-                    .returning(effects.c.effect_key)
-                )
-                if changed is None:
-                    raise WorkConflict("code_checkpoint_conflict")
-                try:
-                    if child is not None:
-                        await writer.execute(
-                            insert(effects).values(
-                                effect_key=child["operation_id"],
-                                work_id=identity,
-                                kind="tool",
-                                state="prepared",
-                                receipt_json=child_receipt,
-                                created=time.time(),
-                                updated=time.time(),
-                            )
-                        )
-                except IntegrityError as exc:
-                    # Same ordinal/engine call or operation ID: one original child only.
-                    raise WorkConflict("code_child_identity_conflict") from exc
-                await store.publish_refs(writer, identity, prepared_objects)
-        return True
-
-    async def composition_children(self, identity: str, parent_key: str) -> list[dict[str, Any]]:
-        """Exact parent index lookup; never a bounded display page or a text scan."""
-        async with self.database.read_session() as reader:
-            rows = (
-                (
-                    await reader.execute(
-                        select(effects.c.effect_key, effects.c.state, effects.c.receipt_json)
-                        .where(
-                            effects.c.work_id == identity,
-                            func.json_extract(
-                                effects.c.receipt_json,
-                                literal_column("'$.invocation.parent_effect_key'"),
-                            )
-                            == parent_key,
-                            func.json_extract(
-                                effects.c.receipt_json, literal_column("'$.invocation.version'")
-                            )
-                            == literal_column("1"),
-                        )
-                        .order_by(effects.c.effect_key)
-                    )
-                )
-                .mappings()
-                .all()
-            )
-        return [
-            {
-                "effect_key": row["effect_key"],
-                "state": row["state"],
-                **json.loads(row["receipt_json"]),
-            }
-            for row in rows
-        ]
 
     async def undispatched_intent(self, identity: str, key: str) -> bool:
         async with self.database.read_session() as reader:
@@ -2567,17 +2350,7 @@ class WorkRepository:
             == 0,
         )
         unresolved = and_(unresolved, ~never_dispatched)
-        # Only a recognized parent is aggregate state, never a business leaf.
-        # Legacy/unknown versions retain the conservative historical fence.
-        return and_(
-            or_(WorkRepository._lifecycle_role_clause(), malformed),
-            unresolved,
-            or_(
-                effects.c.kind != "code_composition",
-                func.coalesce(func.json_extract(effects.c.receipt_json, "$.composition.version"), 0)
-                != 1,
-            ),
-        )
+        return and_(or_(WorkRepository._lifecycle_role_clause(), malformed), unresolved)
 
     async def effect_evidence(
         self,
@@ -2770,13 +2543,12 @@ class WorkRepository:
                 raise WorkConflict("work_effect_receipt_conflict")
             previous = json.loads(existing["receipt_json"])
             candidate = dict(receipt)
-            # The ordinary outcome path cannot replace Host-owned identity or
-            # snapshot metadata. Decode and serialize before opening the writer.
-            for field in ("invocation", "composition"):
-                if field in previous:
-                    if field in candidate and candidate[field] != previous[field]:
-                        raise WorkConflict("work_effect_metadata_conflict")
-                    candidate[field] = previous[field]
+            # The ordinary outcome path cannot replace Host-owned identity.
+            # Decode and serialize before opening the writer.
+            if "invocation" in previous:
+                if "invocation" in candidate and candidate["invocation"] != previous["invocation"]:
+                    raise WorkConflict("work_effect_metadata_conflict")
+                candidate["invocation"] = previous["invocation"]
             existing_outcome = previous.get("outcome", {})
             if "outcome" not in candidate:
                 if "result" in candidate:

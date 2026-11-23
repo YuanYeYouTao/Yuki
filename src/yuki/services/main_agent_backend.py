@@ -226,31 +226,6 @@ class MainAgentBackend(AgentToolBackend):
         )
         return self._capability_runtime
 
-    async def archive_code_result(self, text: str) -> str | None:
-        """Full program result as an authorized artifact; the model sees a preview."""
-        store = self._service._tool_artifacts
-        config = self._runtime.runtime_config
-        tooling = config.tooling if config is not None else None
-        if store is None or tooling is None or not tooling.result_artifact_enabled:
-            return None
-        from yuki.runtime.work_activation import current_work_control
-        from yuki.tool_results.access import access_from_runtime
-
-        active = current_work_control.get()
-        request_runtime = self._request_runtime()
-        handle: str = await store.write_artifact(
-            provider_id="codemode",
-            tool_name="execute_code",
-            content=text,
-            media_type="application/json",
-            retention_seconds=tooling.result_artifact_retention_seconds,
-            access=access_from_runtime(
-                request_runtime,
-                generation=active.lease.generation if active is not None else None,
-            ),
-        )
-        return handle
-
     def pin_web_provider(self) -> AbstractContextManager[None]:
         tools = self._service._tools
         return tools.pin_web_provider() if tools is not None else nullcontext()

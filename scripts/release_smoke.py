@@ -110,7 +110,6 @@ def wait_healthy(compose: Compose, service: str, timeout_seconds: float = 120.0)
 
 def verify_bot(compose: Compose, deploy_directory: Path, version: str) -> None:
     wait_healthy(compose, "bot")
-    compose.run("exec", "-T", "bot", "python", "/app/scripts/verify_monty_packaging.py", "direct")
     health = _read_healthz(compose)
     _assert_core_health(health, version)
     migration_command = (
