@@ -245,6 +245,7 @@ class Watchdog:
             now,
             min_interval=pace.notify_min_interval_seconds,
             retry_after=pace.check_interval_seconds,
+            source_kind=SOURCE_KIND,
         ):
             if turn_id not in self._attempts:
                 task = asyncio.create_task(

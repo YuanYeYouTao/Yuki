@@ -136,8 +136,8 @@ Embedding 请求、缓存命中、错误和已知 usage 分别记录，缺失的
 
 | 会话 | 小节（固定顺序） |
 |---|---|
-| 与 P 的私聊 | `[对方明确要求记住的]`：P 的 person / person_group 明确事实（`source_type` 或 `authority` 为 explicit），按 ID 升序，最多 30 条，超出时加一行“另有 N 条”；`[对方·公共画像]`、`[对方·私聊画像]`（见[人物画像](#人物画像)）；`[我自己的原则]` |
-| 群 G | `[本群]`：G 的核心集；`[群成员画像]`：G 成员名单上每人的公共画像前 5 条；`[我自己的原则]` |
+| 与 P 的私聊 | `[对方明确要求记住的]`：P 的 person / person_group 明确事实（`source_type` 或 `authority` 为 explicit），按 ID 升序，最多 30 条，超出时加一行“另有 N 条”；`[对方·公共画像]`、`[对方·私聊画像]`（见[人物画像](#人物画像)）；`[我在意的事]`（见[在意的事](#在意的事)）；`[我自己的原则]` |
+| 群 G | `[本群]`：G 的核心集；`[群成员画像]`：G 成员名单上每人的公共画像前 5 条；`[我在意的事]`；`[我自己的原则]` |
 
 群聊不按当前发言人或被 @ 的人挑选内容。事实小节每行是事实正文（连续空白折成一个空格）加 `（fact:ID）`，
 可用 `search_memory(fact_id=…)` 读取正文与本会话可见的证据原文；记忆依据规则写明这一点。没有条目的小节不输出；全部为空时整段不输出。
@@ -149,7 +149,7 @@ Embedding 请求、缓存命中、错误和已知 usage 分别记录，缺失的
 - 核心集条目必须属于该行的主人：群行只收该群的 group 事实，SELF 行只收 SELF 事实。
 - 私聊：任一证据（聊天事件，或工具回执的触发事件）来自别人的私聊即排除；没有证据行的事实允许。
 - 群聊：至少有一条证据，且每条证据都直接指向一条聊天事件、该事件所在会话的 `space_id` 是本群。
-- SELF 原则：visibility 为 global，私聊里另含可见人物是对方的 private，群聊里另含可见群是本群的 group。
+- SELF 原则与在意的事：visibility 为 global，私聊里另含可见人物是对方的 private，群聊里另含可见群是本群的 group。
 - 列表里的 ID 不再 active 时，沿 `supersedes_id` 指向它的最新事实、否则沿已提交 Dream 操作的输出，
   走到 active 的后继再套用全部条件；没有后继就跳过。
 
@@ -162,6 +162,27 @@ Dream 每日批次在全部簇处理完后对到期主人运行一次挑选步�
 设计依据与验收见[记忆分层 P1 实施任务书](Yuki-记忆分层P1实施任务书-2026-11-21.md)。
 人物核心集（原 `[关于对方]`）已由人物画像替代：迁移 `0164` 删除 `owner_kind='person'` 的行并收窄 CHECK，
 挑选步骤、CLI `--person` 与人物合并时的水位清零一并删除。
+
+## 在意的事
+
+“在意的事”（#541）是 Yuki 会长期放在心上、持续跟进的事，不是要收尾的 Work。一条就是一个 SELF 事实：
+`kind=fact`、`category='concern'`，没有新 kind、新表或开关。Main 用 `save_memory(target={self:true}, kind="concern")`
+写一句话（只能写给自己，别的 target 返回 `invalid_arguments`）；可见范围照 SELF 规则：私聊里默认只对该人可见，
+私聊来源不能设 global，群里默认只对本群可见。Yuki 自己判断就算数，不需要所有者确认（所有者 2026-11-23 决定）。
+事情结束用 `edit_memory` 撤回；改写沿后继显示新内容。
+
+**渲染**：常驻段的 `[我在意的事]` 小节，排在画像之后、`[我自己的原则]` 之前，每行一句话加 `（fact:ID）`。
+候选是最近一次已收尾 Dream 运行（completed / partial_failed）快照水位 `snapshot_max_fact_id` 以内的 concern 事实，
+所以新记下的事随下一次 Dream 收尾才进常驻段，小节与常驻段其他内容一样每天最多变一次；撤回立即消失，
+改写沿 `supersedes_id`（或已提交 Dream 操作的输出）显示 active 后继，后继仍须是 concern。之后套用常驻段的
+共同条件、SELF 可见条件与本会话证据条件（群里要有本群直接聊天证据），同一后继只出现一次。
+每个会话最多 5 条，取最新的 5 条（按原事实 ID）按 ID 升序列出，其余写一行“另有 N 件在意的事未常驻，
+可用 search_memory 查”。
+
+**读写代价**：每轮多一条语句，取水位以内、status 为 active / superseded 的 concern ID（水位是同一语句里的标量子查询），
+走部分索引 `ix_memory_facts_self_concern (scope_type, category, id) WHERE category='concern'`（迁移 `0167`，只加索引）；
+category 条件写成字面量，部分索引才可用。这些 ID 与核心集一起进同一次后继解析和证据查询，语句数与 concern 条数无关
+（`tests/integration/test_memory_concerns_e2e.py` K9 记录语句数与查询计划）。
 
 ## 人物画像
 

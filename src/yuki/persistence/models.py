@@ -520,6 +520,14 @@ class MemoryFactModel(Base):
             "supersedes_id",
             sqlite_where=text("supersedes_id IS NOT NULL"),
         ),
+        # The resident "[我在意的事]" reads SELF concerns every turn (#541, migration 0167).
+        Index(
+            "ix_memory_facts_self_concern",
+            "scope_type",
+            "category",
+            "id",
+            sqlite_where=text("category = 'concern'"),
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)

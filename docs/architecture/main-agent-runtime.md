@@ -301,6 +301,20 @@ Social 回执来源键保留旧键；较长的完整内部身份沿共同 SHA256
 因此在协议存储满时仍能发出消息。失败回合由调用方在一个检查周期后重试一次；进程丢失时按
 Social 回执（`send_message` 等）结算：已成功发送算已告知，有发送记录但结果未知记 unknown、不重发，没有发送记录算失败；正常结束的回合同样按回执判断，没有成功发送（只写最终正文或发送被拒）不算已告知。路由解析只认路由设置的 Presence，失效时不改用同一 Binding 的其他 Presence。遗忘人物时一并删除其 `proactive_turns` 与 `watchdog_issues`。主动回合不写工具回执（Memory 证据只认触发事件、SELF initiative 或 SELF 定时执行三种来源，与没有触发事件的人物轮次相同）。
 
+### 每天一次的“看一看”（SELF lookaround）
+
+第二个主动私聊来源是 `SelfLookaround`（`application/lookaround.py`，#541），默认关闭（`SELF_LOOKAROUND_ENABLED=false`）。
+打开后，每天 `SELF_LOOKAROUND_HOUR`（按 `MEMORY_DREAM_TIMEZONE`，默认 6 点，排在 5 点的 Dream 之后）起，
+给每位启用的根超管登记一条 `proactive_turns`（`source_kind='lookaround'`）；同一天的时段已有一条就不再登记，
+启用当天若时段已过则立即登记。回合由上面同一个入口执行：路由、会话忙、按人最小间隔（`WATCHDOG_NOTIFY_MIN_INTERVAL_SECONDS`）、
+失败重试一次与按 Social 回执结算都与看门狗相同，`ProactivePrivateTurns.due` 按来源各自领取，最小间隔与“同一人同时只跑一轮”跨来源计算。
+本轮资料是回合开始时读到的、在该私聊可见的[在意的事](memory-v2.md#在意的事)（global 与只对该人可见的 concern，
+不含别人私聊或群可见的）；一条都没有时不调模型，记 `cleared_before_start`。
+回合只读加告诉：除 `send`（只发这个私聊）外的非只读调用一律 `report_only_source`，包括 `save_memory`／`edit_memory`，
+所以这一轮**不写 SELF 笔记**（SELF 记忆的执行来源目前只认群场景，见调研文档 §8 实施说明）。
+每次尝试最多付 `SELF_LOOKAROUND_MAX_MODEL_REQUESTS`（默认 8）次模型请求：第 N+1 次请求前停止，回合按回执结算为
+`finished`（或发送结果未知时 `unknown`），原因 `model_request_cap`，不重试；这一轮不建 Work，上限不进 `runtime_work_budgets`。
+
 ## 所有者与恢复
 
 | 来源 | 恢复所有者 | 交付所有者 |

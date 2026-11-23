@@ -19,6 +19,7 @@ from yuki.admin.models import RuntimeConfigSnapshot, VisionRuntimeConfig
 from yuki.admin.permission_catalog import PermissionCatalogService
 from yuki.admin.platform_files import PlatformConfig
 from yuki.application.lifecycle import LifecycleRegistry
+from yuki.application.lookaround import SelfLookaround
 from yuki.application.modules import (
     AdminModule,
     AutomationModule,
@@ -671,6 +672,9 @@ class ApplicationContainer:
         self._cleanup_task: asyncio.Task[None] | None = None
         self._cleanup_last_error: str | None = None
         self.watchdog = self._build_watchdog()
+        self.lookaround = SelfLookaround(
+            self.database, self.proactive_turns, self.runtime_config, settings=self.settings
+        )
         self._register_lifecycle()
 
     async def _promote_semantic_event(
@@ -957,6 +961,12 @@ class ApplicationContainer:
             start=self.watchdog.start,
             close=self.watchdog.close,
             health=self.watchdog.health,
+        )
+        self.lifecycle.register(
+            "self_lookaround",
+            start=self.lookaround.start,
+            close=self.lookaround.close,
+            health=self.lookaround.health,
         )
 
     def _build_watchdog(self) -> Watchdog:
