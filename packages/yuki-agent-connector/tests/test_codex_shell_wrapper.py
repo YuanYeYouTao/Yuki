@@ -69,9 +69,11 @@ OUTSIDE: list[Any] = [
 
 
 def _fill(command: Any, work: Path) -> Any:
+    # Long, resolved, forward-slash names: a Windows runner's temp path is 8.3 (`~`).
+    path = work.resolve().as_posix()
     if isinstance(command, list):
-        return [item.replace("{W}", str(work)) for item in command]
-    return command.replace("{W}", str(work))
+        return [item.replace("{W}", path) for item in command]
+    return command.replace("{W}", path)
 
 
 @pytest.mark.asyncio
