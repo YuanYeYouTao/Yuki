@@ -10,12 +10,21 @@ Failure cases written before the implementation:
   settings cannot be set and restored;
 - F13/G9: release leaves Yuki's subscription on the thread (or touches the daemon);
 - §4.16: a read-only view hides queued inputs.
+
+D5 (0.9.4, 2026-11-22 task book §7), written and run red before the change: under a
+scope whose commands lack "*", a command approval whose ``kind`` is ``writeStdin``,
+``humanCommand``, null or any value other than ``command`` (or absent) is
+auto-approved by command prefix instead of reported (K1-K4). K5-K13 already hold:
+a plain command approval, the "*" scope, file-change approvals and the one-time
+answer path stay as they were.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
@@ -519,3 +528,159 @@ async def test_yuki_prompt_queues_behind_a_running_user_turn(tmp_path: Path) -> 
             assert "turn/start" not in owner.methods()
         finally:
             await driver.stop()
+
+
+ABSENT = object()  # The approval carries no "kind" field at all (an older Codex).
+
+
+@asynccontextmanager
+async def scoped_turn(
+    tmp_path: Path, commands: list[str]
+) -> AsyncIterator[tuple[AppServer, CodexDriver, asyncio.Queue[tuple[str, dict[str, Any]]], Path]]:
+    work = tmp_path / "work"
+    work.mkdir()
+    owner = AppServer(cwd=str(work))
+    async with serve(owner.handler, "127.0.0.1", 0) as listener:
+        driver, events = await connected(owner, listener, tmp_path)
+        try:
+            await driver.execute(
+                command(
+                    "prompt",
+                    "scoped",
+                    prompt="fix",
+                    scope={"write_paths": [str(work)], "commands": commands},
+                )
+            )
+            await until(events, lambda kind, value: value["operation_id"] == "scoped")
+            yield owner, driver, events, work
+        finally:
+            await driver.stop()
+
+
+async def reported(
+    owner: AppServer, events: asyncio.Queue[tuple[str, dict[str, Any]]], identity: int
+) -> dict[str, Any]:
+    kind, value = await until(
+        events,
+        lambda kind, value: (
+            identity
+            in (
+                value["payload"].get("native_request_id"),
+                value["payload"].get("permission_auto_approved"),
+            )
+        ),
+    )
+    assert kind == "permission", value["payload"]
+    await asyncio.sleep(0.05)
+    assert owner.answers.empty()  # The connector itself never answered it.
+    return value["payload"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("commands", "params", "auto"),
+    [
+        pytest.param(["pytest"], {"command": "pytest -q", "kind": "writeStdin"}, False, id="K1"),
+        pytest.param(["pytest"], {"command": "pytest -q", "kind": "humanCommand"}, False, id="K2"),
+        pytest.param(["pytest"], {"command": "pytest -q", "kind": None}, False, id="K3"),
+        pytest.param(["pytest"], {"command": "pytest -q", "kind": "futureKind"}, False, id="K4"),
+        pytest.param(["pytest"], {"command": "pytest -q", "kind": "command"}, True, id="K5"),
+        pytest.param(["pytest"], {"command": "pytest -q", "kind": ABSENT}, True, id="K6"),
+        pytest.param(["pytest"], {"command": "rm -rf ~", "kind": "writeStdin"}, False, id="K7"),
+        pytest.param(
+            ["pytest"],
+            {
+                "command": "pytest -q",
+                "kind": "command",
+                "additionalPermissions": {"fileSystem": {"write": ["/etc"]}},
+            },
+            False,
+            id="K8",
+        ),
+        pytest.param(
+            ["pytest"],
+            {
+                "command": "pytest -q",
+                "kind": "command",
+                "networkApprovalContext": {"host": "example.com"},
+            },
+            False,
+            id="K9",
+        ),
+        pytest.param(["*"], {"command": "pytest -q", "kind": "writeStdin"}, True, id="K10"),
+        pytest.param(["*"], {"command": "anything; rm", "kind": "humanCommand"}, True, id="K11"),
+    ],
+)
+async def test_command_approval_kind_under_scope(
+    tmp_path: Path, commands: list[str], params: dict[str, Any], auto: bool
+) -> None:
+    request = {key: value for key, value in params.items() if value is not ABSENT}
+    async with scoped_turn(tmp_path, commands) as (owner, _driver, events, _work):
+        await owner.request(21, "item/commandExecution/requestApproval", "turn-1", **request)
+        if auto:
+            assert await asyncio.wait_for(owner.answers.get(), 3) == {
+                "id": 21,
+                "result": {"decision": "accept"},
+            }
+        else:
+            payload = await reported(owner, events, 21)
+            assert payload["native_request"]["command"] == request["command"]
+
+
+@pytest.mark.asyncio
+async def test_file_change_approval_ignores_kind_k12(tmp_path: Path) -> None:
+    async with scoped_turn(tmp_path, ["pytest"]) as (owner, _driver, _events, work):
+        await owner.notify(
+            "item/started",
+            {
+                "threadId": "thread",
+                "turnId": "turn-1",
+                "item": {
+                    "id": "patch-k",
+                    "type": "fileChange",
+                    "changes": [{"path": str(work / "k.py"), "kind": "add"}],
+                },
+            },
+        )
+        await owner.request(
+            22, "item/fileChange/requestApproval", "turn-1", itemId="patch-k", kind="writeStdin"
+        )
+        assert await asyncio.wait_for(owner.answers.get(), 3) == {
+            "id": 22,
+            "result": {"decision": "accept"},
+        }
+
+
+@pytest.mark.asyncio
+async def test_reported_command_kind_answer_stays_one_time_k13(tmp_path: Path) -> None:
+    async with scoped_turn(tmp_path, ["pytest"]) as (owner, driver, events, _work):
+        await owner.request(
+            23,
+            "item/commandExecution/requestApproval",
+            "turn-1",
+            command="rm -rf ~",
+            kind="command",
+        )
+        await reported(owner, events, 23)
+
+        def respond(identity: str, decision: str) -> dict[str, Any]:
+            return command(
+                "respond",
+                identity,
+                execution="turn-1",
+                operation_id="scoped",
+                permission_id="23",
+                connection_id=driver.rpc.connection_id,
+                response={"decision": decision},
+            )
+
+        with pytest.raises(DriverError) as refused:
+            await driver.execute(respond("answer-session", "acceptForSession"))
+        assert refused.value.code == "one_time_only"
+        await asyncio.sleep(0.05)
+        assert owner.answers.empty()  # Still pending in Codex.
+        await driver.execute(respond("answer-decline", "decline"))
+        assert await asyncio.wait_for(owner.answers.get(), 3) == {
+            "id": 23,
+            "result": {"decision": "decline"},
+        }

@@ -798,8 +798,11 @@ class CodexDriver:
         cwd = str(params.get("cwd") or self.thread_cwd.get(thread) or self.spec.cwd)
         if method == "item/commandExecution/requestApproval":
             command = params.get("command")
+            # A command prefix vouches only for starting that command, not for
+            # input written to a running terminal (writeStdin) or other kinds.
             return (
-                not params.get("additionalPermissions")
+                ("*" in scope.commands or params.get("kind", "command") == "command")
+                and not params.get("additionalPermissions")
                 and (scope.network or not params.get("networkApprovalContext"))
                 and isinstance(command, (str, list))
                 and scope.runs(command)

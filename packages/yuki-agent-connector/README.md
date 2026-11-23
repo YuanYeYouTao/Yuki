@@ -215,7 +215,29 @@ not resumed (`session_live_elsewhere`) unless explicitly forked. A scope
 (`write_paths`, `network`, command prefixes) only narrows: Claude routes side
 effects through the connector with a `permissions.ask` override, Codex narrows
 and later restores the thread settings, ACP switches to an asking mode; anything
-outside the scope is reported. A full scope (`write_paths` containing `/`,
+outside the scope is reported, except that ACP client callbacks the connector runs
+itself (`terminal/create`, `fs/write_text_file`) are refused outright (progress
+`scope_refused`, `invalid_params`) without a card. An ACP request inside the scope
+is approved only with the agent's `allow_once` option; without one it is reported.
+A command is inside the scope when, after stripping surrounding whitespace (Python's
+Unicode whitespace, so a trailing newline is dropped), it contains none of
+``; & | < > ` $ ( )``, newline or carriage return (inside quotes and `2>&1`
+included) and equals a prefix or starts with the prefix plus one ASCII space
+(`git log` matches `git log -5`, not `git logx`, `git push` or `git<TAB>log`);
+only `*` admits the rest. Combined commands stay reported under a narrowed scope
+(#647 not relaxed). The prefix check looks neither at the cwd nor at the paths a
+command writes, so `write_paths` does not confine an approved command: Claude runs
+it under the user's own account with no connector sandbox; Codex sandboxed
+commands never ask, and an `accept` only consents to that one request (where and
+whether it then runs is up to Codex); an ACP agent runs its own commands under its
+own sandbox, if any, while the connector runs an in-scope `terminal/create`
+directly under the user's account. Since 0.9.4, under `commands` without `*`, only
+a Codex command approval whose `kind` is absent or `command` can be auto-approved
+by prefix; `writeStdin` (input to a running terminal), `humanCommand`, null or any
+other kind is reported. Such a card may not show the input; decline or ask the user
+when it does not. The connector does not declare `requiredHumanApproval`, so
+`humanCommand` does not arrive today; under `*` these kinds are still approved.
+A full scope (`write_paths` containing `/`,
 `network: true`, `commands: ["*"]`, 0.9.2) narrows nothing: Claude opens in
 permission mode `auto` with only SendMessage forced to ask, Codex gets
 `dangerFullAccess` + approvals `never` (restored after Yuki's turn like any
