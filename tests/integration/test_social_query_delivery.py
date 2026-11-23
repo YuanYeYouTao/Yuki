@@ -36,15 +36,13 @@ def request_evidence(request):
     ]
 
 
-@pytest.mark.parametrize("code_enabled", [False, True])
 async def test_main_discovers_subject_and_conversation_reads_neighbours_and_sends(
-    database, tmp_path, tool_delivery_evidence, code_enabled
+    database, tmp_path, tool_delivery_evidence
 ):
     _, evidence = tool_delivery_evidence
     case = await setup_run(database, tmp_path, mode="silent")
-    case.settings.code_mode_enabled = code_enabled
     case.chat.runtime.runner.main_contract = MainAgentContract(
-        case.chat, ShortState(case.env.store), code_enabled=code_enabled
+        case.chat, ShortState(case.env.store)
     )
     records = []
     original_events = []
@@ -67,7 +65,6 @@ async def test_main_discovers_subject_and_conversation_reads_neighbours_and_send
         )
     replies = []
     evidence.update(
-        code_enabled=code_enabled,
         source_event_ids=records,
         original_events=original_events,
         replies=replies,
@@ -149,18 +146,6 @@ async def test_main_discovers_subject_and_conversation_reads_neighbours_and_send
     assert replies[11]["status"] == "succeeded" and replies[11]["event_id"]
     assert "delivered_text" not in json.dumps(replies[11])
     assert [name for name, _ in case.env.bot.calls].count("send_group_msg") == 1
-    if code_enabled:
-        from yuki.codemode.tool_visibility import lookup_tools
-
-        api = case.chat.runtime.runner.main_contract.script_api
-        for name in ("find_contacts", "read_chat"):
-            found = json.loads(lookup_tools(api, json.dumps({"name": name})))
-            assert found["data"]["direct"] is True
-            assert found["data"]["parameters"] == evidence["declarations"][name]
-            assert api.tool_for(found["data"]["script_name"]) == name
-        evidence["script_names"] = {
-            name: api.schemas[name] for name in ("find_contacts", "read_chat")
-        }
 
 
 @pytest.mark.parametrize("name", ["find_contacts", "read_chat"])

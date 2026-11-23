@@ -400,7 +400,6 @@ class WorkControl:
     # preparation failed before any activation; see work_supervisor.
     protocol_recovery_preparation: Any = None
     tools_started: int = 0
-    yield_segment: bool = False
     handoff_work_id: str | None = None
     settled: bool = False
     recovery_deferred: bool = False

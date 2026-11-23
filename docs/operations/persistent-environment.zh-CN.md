@@ -78,11 +78,18 @@ Manager 在派发前持久化原请求、执行意图和 execd 会话标识。�
 
 HOME、运行记录、Manager 状态、代码文件、快照与媒体缓存是 Docker 命名卷，没有单独的容量上限，与 Docker 和 Bot 数据共用磁盘；`environment_status.storage` 报告这块共享磁盘的容量与剩余（`shared_disk: true`）。环境写满磁盘会让 Bot 写库失败，按真实错误报告。
 
-环境接入 `yuki-sandbox-egress` bridge（`yuki-egress0`，关闭 IPv6），不存在时 Manager 创建。Manager 在 Docker 使用的 iptables 后端（含 DOCKER-USER 链的那个）中设置：环境不能主动访问宿主、私网、链路本地及其他非公网 IPv4 目标；普通公网 TCP/UDP（包括 SSH）不按端口白名单限制；只允许回应 Manager 自己的 execd 连接。Docker 改用 nftables 防火墙后端（没有 DOCKER-USER）时 Manager 报 `network_guard_unsupported`，不创建环境；Manager 不在宿主网络（如 rootless Docker）时报 `network_guard_missing`。环境不挂 Docker socket、Bot 配置/数据库、QQ 凭据或私有 artifact 索引。`YUKI_SANDBOX_PROXY` 可为环境内程序设置 HTTP 代理，默认不设。
+环境接入 `yuki-sandbox-egress` bridge（`yuki-egress0`，关闭 IPv6），不存在时 Manager 创建。Manager 在 Docker 使用的 iptables 后端（含 DOCKER-USER 链的那个）中设置：环境不能主动访问宿主、私网、链路本地及其他非公网 IPv4 目标；普通公网 TCP/UDP（包括 SSH）不按端口白名单限制；只允许回应 Manager 自己的 execd 连接。Docker 改用 nftables 防火墙后端（没有 DOCKER-USER）时 Manager 报 `network_guard_unsupported`，不创建环境；Manager 不在宿主网络（如 rootless Docker）时报 `network_guard_missing`。环境不挂 Docker socket、Bot 配置/数据库、QQ 凭据或私有 artifact 索引。
+
+**代理。**`.env` 的 `YUKI_SANDBOX_PROXY`（如 `http://<地址>:<端口>`，可带凭据）为环境内程序设置 `HTTP_PROXY`/`HTTPS_PROXY`（含小写），默认不设，留空即停用；改后 `docker compose up -d`。不会自动复用 Bot 的代理。
+
+- **放行**：Manager 每次启动按当前设置解析代理地址（在宿主网络里解析为 IPv4，缺端口时 http 为 80），在 `YUKI-PROXY` 链里只放行这一组 `地址:端口` 的 TCP，`INPUT` 与 `DOCKER-USER` 各跳转一次、位于上面两类丢弃之前。代理在宿主上（bridge 网关或宿主地址）或局域网、Colima/Docker Desktop 的宿主网关上都可以；宿主与私网的其他端口照旧丢弃，不需要向公网开放代理端口。代理须监听环境可达的接口，只听 127.0.0.1 时连不上。名字解析失败时 Manager 照常就绪，`proxy.firewall_error` 为 `proxy_unresolved`。
+- **生效**：变量只在创建环境时写入。改了设置后，`environment_status.proxy` 的 `configured`（`.env`）与 `environment`（当前环境）不同，`recreate_required` 列出 `proxy`。拍一份整机快照并还原它即按当前设置重建：HOME、已装软件和原回执保留，在途执行记 `environment_restored`，不重放。还原、环境文件重建与容器丢失后的重建也都按当前设置创建。已在运行的进程不换变量。
+- **检测**：`docker compose exec --user 10001:10001 bot yuki setup environment-check --network [--url URL]` 让 Manager 在环境里用环境自己的变量跑一次 `curl`（默认 `https://deb.debian.org/`），返回并保存在 `proxy.check`：`stage` 为 `ok`、`proxy_unresolved`、`proxy_unreachable`（连不上代理，含被防火墙丢弃）、`proxy_refused`（如 407）、`proxy_upstream_failed`（代理连不上目标，5xx）、`remote_failed`（隧道已建立，TLS 或目标失败）、`dns_failed`、`direct_failed` 或 `proxy_failed`，并附 curl 的退出码、原文错误、`http_connect`、`http_code` 与实际连接地址。只有 https 目标能分开代理与目标两段。环境未就绪时返回 `environment_unavailable`。状态、日志与检测结果中的代理地址都去掉凭据。
+- **范围**：读标准变量的程序走代理，例如 curl、wget、apt、pip、npm、git（https）、Python 常用 HTTP 库、Chromium；直接开 TCP/UDP 的程序（ssh、数据库客户端、DNS）不走，仍按上面的规则直连公网。`NO_PROXY` 沿镜像默认的 localhost、127.0.0.1、::1。
 
 Docker 自定义 bridge 的 `127.0.0.11` DNS 无法由 gVisor 访问。用 runsc 时把 HOME 内一个文件（如 `.config/resolv.conf`，环境内 `/home/yuki/.config/resolv.conf`）写好可达的 DNS，并设 `YUKI_SANDBOX_RESOLV_CONF=.config/resolv.conf`，Manager 创建环境时把它挂到 `/etc/resolv.conf`。runc 直接使用 Docker 的 DNS。宿主走 fake-ip 代理（如 Clash/mihomo TUN）时，公共 DNS 会返回 `198.18.0.0/15` 的假地址，而这一段按非公网被防火墙丢弃；这时让环境使用能返回真实地址的解析器（例如环境内的本地 DNS 服务）。见 [gVisor DNS 说明](https://gvisor.dev/docs/user_guide/faq/#dns-doesnt-work-on-a-docker-user-defined-bridge-network-including-docker-compose)。
 
-所有 Main 入口、自动化和子 Agent 使用固定能力合同。工具目录不修改已提交声明，环境管理员能力不扩大人物、发送、委托或插件领域授权。可选 Code Mode 的 Monty 仍是无文件系统/网络的编排环境，不能当作持久终端别名。
+所有 Main 入口、自动化和子 Agent 使用固定能力合同。环境管理员能力不扩大人物、发送、委托或插件领域授权。
 
 ## 安装、档位与升级
 
@@ -137,6 +144,7 @@ execd token 与执行回执在 `yuki-sandbox-state` 的 `jobs.sqlite3`。状态�
 ## 定向验收
 
 - `scripts/sandbox_compose_e2e.py`（CI `sandbox-compose`）：用真实安装器装 `lite`，经 Bot 的用户调用 Manager，验证终端、公网可达而宿主与私网不可达、`lite` 浏览器不可用、重启 Manager 保留环境与原执行、`down -v` 保留数据，再换到 `headless` 在原环境上安装浏览器并打开页面。产物 `test-results/sandbox-compose/steps.json`。
+- 同一脚本最后一段在 CI 宿主的 bridge 网关上起一个 CONNECT 代理，验证未配置时被丢弃、配置后经快照还原生效、检测与终端／包管理／后台服务／浏览器经代理、宿主其他端口仍被丢弃、各段失败的 `stage` 与停用后重新关闭；状态和检测结果不含凭据。产物 `proxy.json` 与 `proxy-log.txt`。
 - 同一 CI 作业（runc 与 runsc 两路）由 `scripts/sandbox_snapshot_e2e.py` 在 `lite`、`headless` 与第三阶段 `desktop` 各自验证 `rc.local` 自启动、快照、还原、同键重试、轮换、容器丢失后重建、每日检查、Chromium 资料随 HOME 还原、闲置休眠与唤醒、会话自启随电脑还原；产物 `snapshots-<档位>.json` 与 `desktop/` 截图。
 - `tests/unit/test_environment_snapshots.py`、`tests/unit/test_computer_lifecycle.py`：任务书 §11 的快照、还原、恢复与生命周期决定（Docker 由模拟引擎应答）。
 - `tests/unit/test_sandbox_profiles.py`：状态卷丢失、项目归属、运行时检查、换档安装与失败、即时限额与需重建项。

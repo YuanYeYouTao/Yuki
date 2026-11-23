@@ -48,7 +48,7 @@ async def test_retired_checkpoint_resumes_original_work_without_old_protocol(
     assert "current legal public input" in rendered
     assert "retired-signature" not in rendered and "retired frozen body" not in rendered
     assert actual.chain_id != before.transcript.chain_id
-    assert not resumed.pending and not resumed.pending_compositions
+    assert not resumed.pending
     now = await control.repository.get(original["id"])
     for key in (
         "id",

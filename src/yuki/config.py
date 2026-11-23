@@ -96,21 +96,6 @@ class Settings(BaseSettings):
     social_transfer_directory: Path = Path("social-transfer")
     social_gateway_transfer_directory: str = ""
     sandbox_socket: Path = Path("/run/yuki-sandbox/manager.sock")
-    # Declaration mode is fixed at startup; dispatch still checks current authority.
-    code_mode_enabled: bool = False
-    # Code Mode native worker: explicit path and pinned digest.
-    code_mode_worker_path: Path | None = None
-    code_mode_worker_sha256: str = Field(default="", pattern=r"^([0-9a-f]{64})?$")
-    code_mode_launcher_path: Path | None = None
-    code_mode_launcher_sha256: str = Field(default="", pattern=r"^([0-9a-f]{64})?$")
-    code_mode_max_feed_seconds: float = Field(default=10.0, gt=0, le=120)
-    code_mode_max_memory_bytes: int = Field(default=64 * 1024 * 1024, ge=1 << 20, le=1 << 30)
-    code_mode_max_output_bytes: int = Field(default=64 * 1024, ge=1024, le=1 << 22)
-    code_mode_max_snapshot_bytes: int = Field(default=8 << 20, ge=1 << 16, le=1 << 27)
-    code_mode_request_timeout_seconds: float = Field(default=30.0, gt=0, le=600)
-    code_mode_max_worker_processes: int = Field(default=1, ge=1, le=32)
-    code_mode_foreground_reserved_processes: int = Field(default=0, ge=0, le=31)
-
     onebot_access_token: str = ""
     enabled_groups_csv: str = Field(default="", validation_alias="ENABLED_GROUPS")
     ignored_bot_users_csv: str = Field(default="", validation_alias="IGNORED_BOT_USERS")
@@ -410,14 +395,6 @@ class Settings(BaseSettings):
     @classmethod
     def _valid_direct_command_bindings(cls, value: dict[str, str]) -> dict[str, str]:
         return validate_direct_command_bindings(value)
-
-    @model_validator(mode="after")
-    def _validate_code_worker_settings(self) -> Self:
-        if self.code_mode_foreground_reserved_processes >= self.code_mode_max_worker_processes:
-            raise ValueError("code worker foreground reserve must be smaller than total capacity")
-        if bool(self.code_mode_launcher_path) != bool(self.code_mode_launcher_sha256):
-            raise ValueError("code worker launcher path and digest must be configured together")
-        return self
 
     @model_validator(mode="after")
     def _direct_bindings_do_not_shadow_ai_prefix(self) -> Self:

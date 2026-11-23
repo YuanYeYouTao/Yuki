@@ -14,7 +14,6 @@ C02 admission
 - a crash after the admission commit and before the first tool repurchases the
   model response, drops a pending call, resets the budget or runs a call twice;
 - calls of one parallel batch are bound to different owners (accept barrier split);
-- ``execute_code`` in the first batch is refused with ``accept_work_before_execution``;
 - an explicit ``accept`` after the Host admission creates a second Work;
 - ``RUNTIME_WORK_ENABLED=false`` still creates a Work, or is truncated at 24;
 - a group direct turn is admitted as Work.
@@ -56,7 +55,6 @@ from yuki.automation.repository import AutomationRepository
 from yuki.automation.service import AutomationService
 from yuki.automation.tools import AutomationToolService
 from yuki.automation.worker import AutomationWorker
-from yuki.codemode.contract import EXECUTE_CODE_NAME
 from yuki.domain.conversations import ScopeType
 from yuki.domain.messages import (
     ChatMessage,
@@ -140,23 +138,19 @@ def _plain(request) -> str:
     return "\n".join(str(message.content or "") for message in request.messages)
 
 
-async def _private_scene(
-    database, tmp_path, provider, *, work_enabled=True, code_enabled=False, **overrides
-):
+async def _private_scene(database, tmp_path, provider, *, work_enabled=True, **overrides):
     env = await social_env(database, tmp_path)
     settings = make_settings(
         database.url,
         runtime_work_enabled=work_enabled,
         enabled_groups_csv="20001",
-        code_mode_enabled=code_enabled,
         automation_enabled=True,
         **overrides,
     )
     harness = build_harness(database, settings, provider)
     chat = harness.processor._chat
     state = ShortState(WorkspaceStore(tmp_path / "state"))
-    chat.runtime.runner.main_contract = MainAgentContract(chat, state, code_enabled=code_enabled)
-    chat.runtime.runner.code_mode_settings = settings
+    chat.runtime.runner.main_contract = MainAgentContract(chat, state)
     chat._tools.short_state = state
     chat._tools.social_service = env.service
     env.service.runtime_config = chat._runtime_config
@@ -371,7 +365,7 @@ async def test_explicit_accept_after_host_admission_does_not_create_second_work(
     }
 
 
-async def test_parallel_batch_and_execute_code_share_the_admitted_work(database, tmp_path):
+async def test_parallel_batch_shares_the_admitted_work(database, tmp_path):
     def respond(request):
         number = len(provider.requests)
         if number == 1:
@@ -381,16 +375,12 @@ async def test_parallel_batch_and_execute_code_share_the_admitted_work(database,
                 tool_calls=(
                     ToolCall("read-a", ToolFunction("read_chat", "{}")),
                     ToolCall("read-b", ToolFunction("read_chat", "{}")),
-                    ToolCall(
-                        "code",
-                        ToolFunction(EXECUTE_CODE_NAME, json.dumps({"code": "result = 1"})),
-                    ),
                 ),
             )
         return "done"
 
     provider = ScriptedProvider(respond)
-    env, harness, _, _ = await _private_scene(database, tmp_path, provider, code_enabled=True)
+    env, harness, _, _ = await _private_scene(database, tmp_path, provider)
     result = await harness.processor.handle(_private(env, "并行读", "parallel"), MemorySender())
     works = await _rows(database, work)
     assert result.reason == "chat"
@@ -400,13 +390,10 @@ async def test_parallel_batch_and_execute_code_share_the_admitted_work(database,
     owners = {receipt["invocation"]["owner_execution_id"] for receipt in receipts}
     sequences = {receipt["invocation"]["request_sequence"] for receipt in receipts}
     assert owners == {works[0]["id"]} and len(sequences) == 1
-    code = _tool_results(provider.requests[1])["code"]
-    assert "accept_work_before_execution" not in json.dumps(code, ensure_ascii=False)
-    RESULTS["parallel_batch_and_execute_code"] = {
+    RESULTS["parallel_batch"] = {
         "works": len(works),
         "effect_owner_ids": sorted(owners),
         "request_sequences": sorted(sequences),
-        "execute_code_result_error": code.get("error") if isinstance(code, dict) else code,
     }
 
 

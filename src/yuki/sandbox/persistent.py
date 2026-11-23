@@ -17,12 +17,14 @@ import os
 import re
 import secrets
 import shutil
+import socket
 import sqlite3
 import sys
 import time
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, cast
+from urllib.parse import urlsplit
 from uuid import uuid4
 
 from yuki.sandbox import network_guard
@@ -43,6 +45,8 @@ from yuki.workspace.store import WorkspaceError, WorkspaceStore
 LABEL = "io.yuki.sandbox=persistent-v1"
 PROJECT_LABEL = "io.yuki.sandbox.project"
 CONTAINER = "yuki-environment"
+# A package source: the check answers for package downloads as well as the web.
+NETWORK_CHECK_URL = "https://deb.debian.org/"
 # Docker volumes that outlive containers and Compose projects (created by the installer).
 VOLUMES = {
     "home": "yuki-sandbox-home",
@@ -82,6 +86,15 @@ AUTOSTART = (
     'echo "exit $?" >> /var/log/rc.local.log\n'
     "exit 0\n"
 )
+
+
+def redacted(proxy: str | None) -> str | None:
+    """A proxy URL without its credentials, for status and logs; None when unset."""
+    if not proxy:
+        return None
+    parts = urlsplit(proxy)
+    netloc = parts.hostname or ""
+    return parts._replace(netloc=f"{netloc}:{parts.port}" if parts.port else netloc).geturl()
 
 
 class PersistentManager:
@@ -140,6 +153,11 @@ class PersistentManager:
         self.runtime_root.chmod(0o755)
         self.execd: Execd | None = None
         self.observed_container: dict[str, Any] = {}
+        # The proxy the running container was created with (None until observed); the
+        # firewall endpoint opened for the configured one and why it could not be.
+        self.environment_proxy: str | None = None
+        self.proxy_allowed: list[str] = []
+        self.proxy_error = ""
         # Environment files the current container has no mount for (it predates them).
         self.environment_files_missing: list[str] = []
         # The generation whose packages were installed; installing runs once per generation.
@@ -515,7 +533,66 @@ class PersistentManager:
         # filter only its own namespace.
         if not await asyncio.to_thread(Path(f"/sys/class/net/{network_guard.BRIDGE}").exists):
             raise RuntimeError("network_guard_missing")
-        await network_guard.apply(self.command)
+        await network_guard.apply(self.command, await self.resolve_proxy())
+
+    async def resolve_proxy(self) -> tuple[tuple[str, ...], int] | None:
+        """The configured proxy's IPv4 addresses and port, as this host resolves them."""
+        self.proxy_allowed, self.proxy_error = [], ""
+        if not self.proxy:
+            return None
+        parts = urlsplit(self.proxy)
+        port = parts.port or (443 if parts.scheme == "https" else 80)
+        try:
+            found = await asyncio.get_running_loop().getaddrinfo(
+                parts.hostname, port, family=socket.AF_INET, type=socket.SOCK_STREAM
+            )
+        except OSError:
+            # The environment and its other work do not depend on the proxy.
+            self.proxy_error = "proxy_unresolved"
+            return None
+        addresses = tuple(dict.fromkeys(str(item[4][0]) for item in found))
+        self.proxy_allowed = [f"{address}:{port}" for address in addresses]
+        return addresses, port
+
+    def observe_proxy(self, current: dict[str, Any]) -> None:
+        """The proxy variable the container was created with; Docker sets it only then."""
+        variables = dict(
+            item.split("=", 1) for item in current.get("Config", {}).get("Env") or () if "=" in item
+        )
+        self.environment_proxy = variables.get("HTTP_PROXY", "")
+
+    async def network_check(self, url: str) -> dict[str, Any]:
+        """One request from inside the environment, with its own variables (task book P1-P17)."""
+        if not self.ready:
+            return {"error": "environment_unavailable"}
+        code, output = await self.command(
+            *("docker", "exec", self.name, "curl", "-s", "-o", "/dev/null"),
+            *("-m", "20", "-w", "%{json}", "--url", url),
+            deadline_seconds=60,
+        )
+        try:
+            facts = json.loads(output)
+        except ValueError:
+            # curl did not run at all (removed from the environment, or exec failed).
+            return {
+                "error": "network_check_unavailable",
+                "exit_code": code,
+                "output": output.decode(errors="replace")[-2048:],
+            }
+        proxied = bool(self.environment_proxy)
+        result = {
+            "stage": network_guard.check_stage(proxied, facts),
+            "url": url,
+            "proxy": redacted(self.environment_proxy),
+            "exit_code": facts["exitcode"],
+            "error": facts.get("errormsg") or None,
+            "http_connect": facts["http_connect"],
+            "http_code": facts["http_code"],
+            "remote": f"{facts.get('remote_ip', '')}:{facts.get('remote_port', '')}",
+            "at": time.time(),
+        }
+        self.set_setting("network_check", json.dumps(result))
+        return result
 
     async def read_manifest(self) -> list[dict[str, str]]:
         code, raw = await self.command(
@@ -640,6 +717,8 @@ class PersistentManager:
             differs.append("tmp_mib")
         if "shm_mib" in limits and observed.get("shm_bytes") != int(limits["shm_mib"]) * MIB:
             differs.append("shm_mib")
+        if self.environment_proxy is not None and self.environment_proxy != self.proxy:
+            differs.append("proxy")
         return differs
 
     async def recover(self) -> None:
@@ -792,6 +871,7 @@ class PersistentManager:
             "tmpfs": (config.get("Tmpfs") or {}).get("/tmp"),
             "shm_bytes": config.get("ShmSize"),
         }
+        self.observe_proxy(current)
         self.container_id = current["Id"] + ":" + current["State"]["StartedAt"]
         # Docker sets mounts only when a container is created: one created by an older
         # release lacks the environment files added since. It converges the one way a
@@ -1462,6 +1542,13 @@ class PersistentManager:
             "container_at_recovery": self.observed_container,
             "limits_update_error": self.limits_error or None,
             "recreate_required": self.recreate_required() if self.observed_container else [],
+            "proxy": {
+                "configured": redacted(self.proxy),
+                "environment": redacted(self.environment_proxy),
+                "allowed": self.proxy_allowed,
+                "firewall_error": self.proxy_error or None,
+                "check": json.loads(self.setting("network_check", "null")),
+            },
             "browser": self.desktop.browser_status(),
             "checkpoint": self.setting("checkpoint_image", self.image),
             **self.snapshots.status(),
@@ -1607,6 +1694,8 @@ class PersistentManager:
                 return await self.file_request(method, args, request.get("request_id", ""))
             if method == "environment_status":
                 return self.environment_status()
+            if method == "environment_network_check":
+                return await self.network_check(args.get("url") or NETWORK_CHECK_URL)
             if method == "environment_snapshot":
                 # The person's Desktop command: accepted here, progress via computer_revision.
                 return self.snapshots.request_snapshot(

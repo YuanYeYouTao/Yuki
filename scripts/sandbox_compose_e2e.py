@@ -8,6 +8,8 @@ building ``ghcr.io/yuanyeyoutao/yuki:<version>`` and both ``yuki-environment`` i
 
 Covers task book F4, F7, F8, F9, F14, F15, F17 (success path), F20 and F24 with the real
 installer, Docker engine, firewall and environment. Writes one JSON record per step.
+The last stage covers the sandbox proxy task book (2026-11-23) P1-P15 against a proxy on
+this host; its record is ``proxy.json`` with the proxy's own log ``proxy-log.txt``.
 """
 
 from __future__ import annotations
@@ -72,6 +74,60 @@ def answer(query, address):
 while True:
     query, address = server.recvfrom(4096)
     threading.Thread(target=answer, args=(query, address), daemon=True).start()
+"""
+
+
+# A minimal HTTP CONNECT proxy for the proxy stage: one log line per request, 502 when the
+# target cannot be reached, nothing but CONNECT accepted.
+CONNECT_PROXY = """
+import socket, sys, threading
+host, port, log = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+server = socket.create_server((host, port))
+def note(line):
+    with open(log, "a") as stream:
+        stream.write(line + "\\n")
+def pipe(source, target):
+    try:
+        while data := source.recv(65536):
+            target.sendall(data)
+    except OSError:
+        pass
+    finally:
+        for end in (source, target):
+            try:
+                end.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+def serve(client):
+    head = b""
+    while b"\\r\\n\\r\\n" not in head:
+        chunk = client.recv(4096)
+        if not chunk:
+            client.close()
+            return
+        head += chunk
+    method, target = head.split(b"\\r\\n", 1)[0].decode().split(" ")[:2]
+    if method != "CONNECT":
+        note(f"{method} {target} 405")
+        client.sendall(b"HTTP/1.1 405 Method Not Allowed\\r\\n\\r\\n")
+        client.close()
+        return
+    name, _, number = target.rpartition(":")
+    try:
+        upstream = socket.create_connection((name.strip("[]"), int(number)), timeout=10)
+    except OSError:
+        note(f"CONNECT {target} 502")
+        client.sendall(b"HTTP/1.1 502 Bad Gateway\\r\\n\\r\\n")
+        client.close()
+        return
+    note(f"CONNECT {target} 200")
+    upstream.settimeout(None)
+    client.sendall(b"HTTP/1.1 200 Connection established\\r\\n\\r\\n")
+    threading.Thread(target=pipe, args=(client, upstream), daemon=True).start()
+    pipe(upstream, client)
+while True:
+    connection, _ = server.accept()
+    threading.Thread(target=serve, args=(connection,), daemon=True).start()
 """
 
 
@@ -289,6 +345,188 @@ def computer_use(deployment: Deployment, status: dict[str, Any]) -> None:
     deployment.record("computer_use", **record)
 
 
+def proxy_stage(deployment: Deployment, gateway: str) -> None:
+    """Sandbox proxy task book (2026-11-23) §6: a proxy on this host, reached from inside.
+
+    The proxy listens on the host's address on the egress bridge, which the firewall drops
+    until it is configured (INPUT path). Credentials in the URL are fake and must never
+    appear in a status or check result (P14).
+    """
+    secret = "not-a-real-proxy-secret"
+    port = 3128
+    log = deployment.artifacts / "proxy-log.txt"
+    log.write_text("")
+    stage = sandbox_snapshot_e2e.Computer(deployment, "proxy")
+    records: list[dict[str, Any]] = []
+
+    def record(name: str, **facts: Any) -> None:
+        records.append({"step": name, **facts})
+        (deployment.artifacts / "proxy.json").write_text(
+            json.dumps(records, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        deployment.record(f"proxy_{name}")
+
+    def start_proxy() -> subprocess.Popen[bytes]:
+        process = subprocess.Popen(
+            [sys.executable, "-c", CONNECT_PROXY, gateway, str(port), str(log)]
+        )
+        time.sleep(1)
+        expect(process.poll() is None, "the test proxy did not start")
+        return process
+
+    def blocked(target: str) -> str:
+        probe = deployment.terminal(
+            f"curl --noproxy '*' -sS -o /dev/null -m 5 http://{target}; echo exit=$?"
+        )
+        return str(probe["output"]).strip().splitlines()[-1]
+
+    def check(url: str = "") -> dict[str, Any]:
+        result = deployment.manager("environment_network_check", {"url": url} if url else {})
+        expect(secret not in json.dumps(result), f"credentials in a check: {result}")
+        return result
+
+    def proxy_status() -> dict[str, Any]:
+        status = deployment.status()
+        expect(secret not in json.dumps(status), "credentials in environment_status")
+        return status
+
+    def logged(target: str, seconds: float = 60) -> list[str]:
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            lines = [line for line in log.read_text().splitlines() if f" {target} " in line]
+            if lines:
+                return lines
+            time.sleep(2)
+        raise Failure(f"the proxy never saw {target}: {log.read_text()}")
+
+    # The desktop stage ends without Chromium; put it back directly, before any proxy,
+    # so the snapshot that applies the proxy carries it.
+    installed = deployment.terminal(
+        "apt-get update -qq && apt-get install -y -qq --no-install-recommends chromium "
+        ">/dev/null; echo exit=$?"
+    )
+    expect("exit=0" in str(installed["output"]), f"reinstalling Chromium: {installed}")
+
+    proxy = start_proxy()
+    try:
+        # P1: not configured, the proxy port on the host is dropped like any other.
+        status = proxy_status()
+        expect(status["proxy"]["configured"] is None, f"P1 status: {status['proxy']}")
+        expect(blocked(f"{gateway}:{port}") == "exit=28", "P1: the host proxy port was open")
+        direct = check()
+        expect(direct["proxy"] is None, f"P1 check: {direct}")
+        record("p1_not_configured", proxy=status["proxy"], check=direct)
+
+        # P5: saved, not yet in the running environment.
+        url = f"http://e2e:{secret}@{gateway}:{port}"
+        stage.settings(YUKI_SANDBOX_PROXY=url)
+        status = proxy_status()
+        shown = f"http://{gateway}:{port}"
+        expect(status["proxy"]["configured"] == shown, f"P5: {status['proxy']}")
+        expect(status["proxy"]["environment"] is None, f"P5: {status['proxy']}")
+        expect(status["proxy"]["allowed"] == [f"{gateway}:{port}"], f"P2: {status['proxy']}")
+        expect("proxy" in status["recreate_required"], f"P5: {status['recreate_required']}")
+        before = check()
+        expect(before["proxy"] is None, f"P5 check uses the environment's variables: {before}")
+        record("p5_saved_not_applied", proxy=status["proxy"], check=before)
+
+        # P6: applied the documented way, a snapshot and its restore; files are kept.
+        deployment.terminal("echo proxied > /workspace/proxy-keep.txt")
+        taken = stage.snapshot("apply the proxy")
+        stage.restore(taken["id"])
+        status = proxy_status()
+        expect(status["proxy"]["environment"] == shown, f"P6: {status['proxy']}")
+        expect("proxy" not in status["recreate_required"], f"P6: {status['recreate_required']}")
+        kept = deployment.terminal("cat /workspace/proxy-keep.txt")
+        expect("proxied" in str(kept["output"]), "P6: the restore lost a file")
+        record("p6_applied", snapshot=taken["id"], proxy=status["proxy"])
+
+        # Through the proxy, from inside: the check, terminal, package manager, a
+        # background service and the browser, each seen in the proxy's own log.
+        through = check()
+        expect(through["stage"] == "ok" and through["proxy"] == shown, f"check: {through}")
+        seen = {"check": logged("deb.debian.org:443")}
+        terminal = deployment.terminal(
+            "curl -sS -o /dev/null -w '%{http_code}' https://example.com/; echo; "
+            "env | grep -c '^HTTPS_PROXY='"
+        )
+        expect(terminal["status"] == "succeeded", f"terminal through the proxy: {terminal}")
+        seen["terminal"] = logged("example.com:443")
+        package = deployment.terminal(
+            "python3 -m pip download --no-deps --quiet --dest /tmp/proxy-pip six; echo exit=$?"
+        )
+        expect("exit=0" in str(package["output"]), f"package download: {package}")
+        seen["package"] = logged("pypi.org:443")
+        for action in ("register", "start"):
+            deployment.manager(
+                "environment_service",
+                {
+                    "action": action,
+                    "name": "proxy-probe",
+                    "command": "curl -sS -o /dev/null https://example.org/",
+                    "restart": "never",
+                    "cwd": "/home/yuki",
+                },
+            )
+        seen["service"] = logged("example.org:443")
+        opened = deployment.manager(
+            "browser_action", {"action": "open", "url": "https://www.iana.org/"}
+        )
+        expect(not opened.get("error"), f"browser through the proxy: {opened}")
+        seen["browser"] = logged("www.iana.org:443")
+        record("through_the_proxy", check=through, seen=seen, terminal=terminal["output"])
+
+        # P2: only that endpoint; the same host's other ports stay dropped.
+        expect(blocked(f"{gateway}:22") == "exit=28", "P2: another host port was open")
+        # P11: the proxy cannot reach the target.
+        upstream = check("https://yuki-e2e.invalid/")
+        expect(upstream["stage"] == "proxy_upstream_failed", f"P11: {upstream}")
+        record("p2_p11", upstream=upstream)
+
+        # P8: nothing listens on the allowed endpoint any more.
+        proxy.terminate()
+        proxy.wait()
+        refused = check()
+        expect(refused["stage"] == "proxy_unreachable", f"P8: {refused}")
+        expect(proxy_status()["proxy"]["check"] == refused, "the last check was not kept")
+        record("p8_proxy_down", check=refused)
+
+        # P13 and P9: removing the setting closes the endpoint again while the proxy runs;
+        # the environment keeps its variables until recreated and now meets the drop.
+        proxy = start_proxy()
+        stage.settings(YUKI_SANDBOX_PROXY="")
+        status = proxy_status()
+        expect(status["proxy"]["configured"] is None, f"P13: {status['proxy']}")
+        expect(status["proxy"]["allowed"] == [], f"P13: {status['proxy']}")
+        expect("proxy" in status["recreate_required"], f"P13: {status['recreate_required']}")
+        expect(blocked(f"{gateway}:{port}") == "exit=28", "P13: the endpoint stayed open")
+        dropped = check()
+        expect(dropped["stage"] == "proxy_unreachable", f"P9: {dropped}")
+        expect(dropped["exit_code"] == 28, f"P9: {dropped}")
+        record("p13_p9_removed", proxy=status["proxy"], check=dropped)
+
+        # The operator's entry: the same check through the Bot's CLI.
+        cli = deployment.run(
+            "docker",
+            "compose",
+            "exec",
+            "-T",
+            "--user",
+            "10001:10001",
+            "bot",
+            "yuki",
+            "setup",
+            "environment-check",
+            "--network",
+            check=False,
+        )
+        answer = json.loads(cli.strip().splitlines()[-1])
+        expect(answer.get("stage") == "proxy_unreachable", f"CLI: {cli}")
+        record("operator_cli", check=answer)
+    finally:
+        proxy.terminate()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--version", required=True)
@@ -482,6 +720,7 @@ def main() -> int:
         sandbox_snapshot_e2e.desktop(deployment)
         deployment.record("desktop_computer", limits=status["limits"])
         computer_use(deployment, status)
+    proxy_stage(deployment, gateway)
     print(f"All steps passed; record in {args.artifacts / 'steps.json'}")
     return 0
 

@@ -123,7 +123,7 @@ async def test_child_executes_main_business_tools_with_own_receipts(database, tm
         assert (await repository.get(parent["id"]))["model_requests"] == 0
         assert (
             case.provider.requests[0].tools
-            == await case.chat.runtime.runner.main_contract.model_definitions()
+            == await case.chat.runtime.runner.main_contract.definitions()
         )
         assert "call_onebot_api" not in {tool.name for tool in case.provider.requests[0].tools}
         assert (
@@ -198,7 +198,7 @@ async def test_real_worker_completion_keeps_original_tail_and_late_parent_mail(
     assert len(case.provider.requests) == 1
     assert (
         case.provider.requests[0].tools
-        == await case.chat.runtime.runner.main_contract.model_definitions()
+        == await case.chat.runtime.runner.main_contract.definitions()
     )
 
 

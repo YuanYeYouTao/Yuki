@@ -2,7 +2,6 @@
 
 import asyncio
 
-import pytest
 from tests.conftest import make_settings
 from tests.support.model_profiles import write_fake_profiles
 from tests.unit.test_sticker_library import LocalDirectoryBridge
@@ -11,9 +10,8 @@ from yuki.container import ApplicationContainer
 from yuki.health import build_health_payload
 
 
-@pytest.mark.parametrize("code_enabled", [False, True])
 async def test_offline_container_starts_freezes_tools_and_closes_sticker_resources(
-    database, tmp_path, monkeypatch, code_enabled
+    database, tmp_path, monkeypatch
 ):
     app = ApplicationContainer(
         make_settings(
@@ -25,7 +23,6 @@ async def test_offline_container_starts_freezes_tools_and_closes_sticker_resourc
             conversation_media_cache_directory=tmp_path / "conversation-media",
             social_transfer_directory=tmp_path / "transfer",
             semantic_participation_state_path=tmp_path / "participation.sqlite3",
-            code_mode_enabled=code_enabled,
             memory_embedding_enabled=False,
             memory_embedding_worker_enabled=False,
             memory_self_reflection_enabled=False,
@@ -56,8 +53,6 @@ async def test_offline_container_starts_freezes_tools_and_closes_sticker_resourc
         platform = await app.main_agent_contract.definitions()
         names = {tool.name for tool in platform}
         assert {"send", "read_chat"} <= names
-        assert ("execute_code" in names) == code_enabled
-        assert "send" in {tool.name for tool in await app.main_agent_contract.model_definitions()}
         payload = await build_health_payload(app)
         assert payload["main_agent_manifest"]["frozen"]
     finally:

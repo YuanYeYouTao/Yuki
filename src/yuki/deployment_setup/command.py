@@ -125,6 +125,12 @@ def add_setup_parser(
     setup.add_argument("--timeout", type=float, default=180.0)
     setup.add_argument("--json", action="store_true", help="以 JSON 匯出 Provider 預設")
     setup.add_argument("--image", default="", help="snowluma：自备的 SnowLuma 镜像")
+    setup.add_argument(
+        "--network", action="store_true", help="environment-check：从沙箱内经实际代理访问外网"
+    )
+    setup.add_argument(
+        "--url", default="", help="environment-check --network：目标 URL，默认 Debian 软件源"
+    )
 
 
 def run_setup_command(args: argparse.Namespace) -> int:
@@ -167,10 +173,14 @@ def run_setup_command(args: argparse.Namespace) -> int:
             write_result(result)
             return 0
         if action == "environment-check":
-            from yuki.sandbox.deployment_check import check_environment
+            from yuki.sandbox.deployment_check import check_environment, check_network
 
             with _working_directory(paths.root):
                 settings = Settings()
+            if args.network:
+                checked = asyncio.run(check_network(settings.sandbox_socket, str(args.url)))
+                ui.line(json.dumps(checked, ensure_ascii=False))
+                return 0 if checked.get("stage") == "ok" else 1
             result = asyncio.run(
                 check_environment(
                     settings.sandbox_socket,

@@ -38,14 +38,14 @@ def test_original_history_sources_are_evidence_not_model_or_activation_input():
     assert "observed_event_ids" not in evidence
 
 
-async def test_composed_result_keeps_all_child_sources_without_changing_public_text():
+async def test_result_keeps_all_observed_sources_without_changing_public_text():
     capture = ResultCapture("work", "effect")
     capture.observe_sources((11, 17), 2)
     capture.observe_sources((17, 23), 3)
     token = current_result_capture.set(capture)
     try:
         rendered = await ToolResultBudgeter(max_characters=None).render(
-            ToolExecutionResult(ok=True, data="program result", tool_name="execute_code")
+            ToolExecutionResult(ok=True, data="command result", tool_name="run_command")
         )
     finally:
         current_result_capture.reset(token)

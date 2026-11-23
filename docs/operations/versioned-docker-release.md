@@ -4,7 +4,7 @@
 
 ## 仓库与 CI
 
-Quality workflow 检查 Ruff、Mypy 和 pytest，另跑有头桌面、Code Mode 与 `sandbox-compose`（用真实安装器装 `lite`，经 Manager 使用环境，再换到 `headless`）。正式 tag 发布使用 `scripts/release_validate.py` 核对 tag、项目版本、运行时版本、锁文件、安装器及 main 祖先关系；迁移与启动由实际构建镜像的 release smoke 核验。
+Quality workflow 检查 Ruff、Mypy 和 pytest，另跑有头桌面与 `sandbox-compose`（用真实安装器装 `lite`，经 Manager 使用环境，再换到 `headless`）。正式 tag 发布使用 `scripts/release_validate.py` 核对 tag、项目版本、运行时版本、锁文件、安装器及 main 祖先关系；迁移与启动由实际构建镜像的 release smoke 核验。
 
 Python 发行包／模块为 `yuki`，命令为 `yuki` 与 `yuki-bot`，镜像为 `ghcr.io/yuanyeyoutao/yuki`；沙箱环境镜像为 `ghcr.io/yuanyeyoutao/yuki-environment`。
 
@@ -17,15 +17,13 @@ Python 发行包／模块为 `yuki`，命令为 `yuki` 与 `yuki-bot`，镜像�
 3. Release workflow 经 Buildx/QEMU 构建并推送包含两种架构的 Bot 镜像索引，以及沙箱环境镜像 `yuki-environment:X.Y.Z` 与 `X.Y.Z-desktop`（同一版本已存在时复用），同时生成部署包、安装入口及 SHA256SUMS。每个架构单独拉取到干净部署目录，核对实际镜像版本、提交与平台，再验证迁移、启动和重建后的持久数据。
 4. 发布提交同步更新 README 的正式版下载入口，并在流水线完成后核对链接、镜像和附件。只有推进开发基线时，不提前声称新镜像或安装包已发布。
 
-默认 Bot 镜像使用 Dockerfile 的 `direct` target，`runtime` 也继承它；Compose 中的沙箱 Manager 使用同一镜像。镜像不包含 Monty binding、worker 或 launcher，`CODE_MODE_ENABLED=false`。安装器和默认 Compose 采用同一 direct 发行物，全部获准工具仍由原 Agent loop 直接声明，授权与恢复不变。发布 smoke 在镜像内执行 `scripts/verify_monty_packaging.py direct` 核验无 Monty 与默认关闭。
+默认 Bot 镜像使用 Dockerfile 的 `direct` target，`runtime` 也继承它；Compose 中的沙箱 Manager 使用同一镜像。安装器和默认 Compose 采用同一 direct 发行物，全部获准工具由原 Agent loop 直接声明。
 
 两套安装器读取 Docker Engine 的 Linux 架构，识别 amd64/x86_64 与 arm64/aarch64，并用该平台拉取镜像、运行配置向导；不使用客户端 CPU 猜测远端 Docker 主机。Compose 不再固定 Bot 或 SnowLuma 为 amd64，删除会跳过显式 `compose pull` 的 `pull_policy: missing`，已有另一平台镜像时也能拉取目标架构。复用已有版本时也逐架构核对同一提交，缺少任一架构即失败，不覆盖旧版本资产。`latest` 用 `buildx imagetools create` 复制已验证的完整索引，不能把最后拉取的单架构镜像重新 push 成 latest。
 
 发布任务通过 `setup-docker-action` 安装当前 Docker Engine，使用 `docker image inspect --platform` 检查目标架构；[该检查](https://docs.docker.com/reference/cli/docker/image/inspect/)需要 Docker API 1.49 或更新版本，仅作用于发布验证，不改变安装器的用户端要求。
 
 发布资产包括 `yuki-X.Y.Z-deploy.zip`、`yuki-X.Y.Z-deploy.tar.gz`、`docker-compose.yml`、`install.sh`、`install.ps1` 与 `SHA256SUMS`。独立下载的环境模板名为 `default.env.example`，压缩包内仍是 `.env.example`；校验单保留构建时的 `.env.example` 文件名。下载后比较实际校验和，不以 Release 页面或源码版本号代替附件验证。部署包含 `deploy/sandbox/prepare.sh`（创建沙箱数据卷）与 `deploy/sandbox/migrate-host-manager.sh`（从宿主 Manager 一次性迁移）。
-
-Code Mode 是显式可选构建：使用 `docker build --target codemode`，按 [Code 运维](pi-codemode-operations.md) 通过原生隔离门禁后，显式设置 `YUKI_CODE_IMAGE` 并叠加 `docker-compose.codemode.yml`。默认发行不安装或加载 Code 专用 AppArmor/seccomp。
 
 ## 新部署配置
 

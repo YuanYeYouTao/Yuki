@@ -98,8 +98,7 @@ class MainAgentTurnService:
         return self._runner.work_contract(
             runtime,
             self._composer.static_messages(),
-            await contract.model_definitions(),
-            script_api=contract.script_api,
+            await contract.definitions(),
             manifest_revision=contract.revision,
         )
 
