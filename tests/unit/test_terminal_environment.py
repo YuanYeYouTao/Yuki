@@ -391,14 +391,69 @@ async def test_network_guard_allows_public_protocols_after_private_isolation(bac
     assert await network_guard.apply(firewall.command) == backend
     # Rules land only in the backend Docker uses, once each, the reply above the drop.
     assert {call[0] for call in firewall.calls if call[1] != "-S"} == {backend}
-    assert firewall.chains["INPUT"] == [reply, ["-i", "yuki-egress0", "-j", "DROP"]]
-    assert firewall.chains["DOCKER-USER"] == [["-i", "yuki-egress0", "-j", "YUKI-EGRESS"]]
+    jump = ["-i", "yuki-egress0", "-j", "YUKI-PROXY"]
+    assert firewall.chains["INPUT"] == [jump, reply, ["-i", "yuki-egress0", "-j", "DROP"]]
+    assert firewall.chains["DOCKER-USER"] == [
+        jump,
+        ["-i", "yuki-egress0", "-j", "YUKI-EGRESS"],
+    ]
+    # P1: without a configured proxy nothing on the host or a private network is open.
+    assert firewall.chains["YUKI-PROXY"] == []
     public = firewall.chains["YUKI-EGRESS"]
     assert public[-1] == ["-j", "RETURN"]
     assert all(rule[0] == "-d" and rule[-2:] == ["-j", "DROP"] for rule in public[:-1])
     destinations = {rule[1] for rule in public[:-1]}
     assert {"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16"} <= destinations
     assert not any("--dport" in rule or "-p" in rule for rule in public)
+
+
+@pytest.mark.parametrize("backend", ["iptables-nft", "iptables-legacy"])
+async def test_network_guard_opens_only_the_configured_proxy_endpoint(backend):
+    from yuki.sandbox import network_guard
+
+    firewall = Firewall(backend)
+    drop = ["-i", "yuki-egress0", "-j", "DROP"]
+    jump = ["-i", "yuki-egress0", "-j", "YUKI-PROXY"]
+    egress = ["-i", "yuki-egress0", "-j", "YUKI-EGRESS"]
+
+    def opened(address, port):
+        return ["-d", f"{address}/32", "-p", "tcp", "--dport", str(port), "-j", "ACCEPT"]
+
+    # P2/P3: one TCP endpoint, reached from the bridge whether it is on this host (INPUT)
+    # or beyond it (DOCKER-USER); both jumps sit above the drop and the private ranges.
+    await network_guard.apply(firewall.command, proxy=(("172.30.0.1",), 3128))
+    assert firewall.chains["YUKI-PROXY"] == [opened("172.30.0.1", 3128)]
+    assert firewall.chains["INPUT"][0] == jump and firewall.chains["INPUT"][-1] == drop
+    assert firewall.chains["DOCKER-USER"] == [jump, egress]
+    # The private ranges themselves are unchanged: every other host port stays dropped.
+    assert all(rule[-1] in {"DROP", "RETURN"} for rule in firewall.chains["YUKI-EGRESS"])
+
+    # P7: a Manager start with another proxy replaces the endpoint; jumps are not repeated.
+    await network_guard.apply(firewall.command, proxy=(("192.168.5.2", "10.0.0.7"), 7890))
+    assert firewall.chains["YUKI-PROXY"] == [
+        opened("192.168.5.2", 7890),
+        opened("10.0.0.7", 7890),
+    ]
+    assert firewall.chains["INPUT"].count(jump) == 1
+    assert firewall.chains["DOCKER-USER"] == [jump, egress]
+
+    # P13: removing the setting closes it again.
+    await network_guard.apply(firewall.command)
+    assert firewall.chains["YUKI-PROXY"] == []
+    assert firewall.chains["INPUT"].count(jump) == 1
+
+
+async def test_network_guard_keeps_the_proxy_jump_above_a_reinserted_egress_jump():
+    from yuki.sandbox import network_guard
+
+    # An upgrade from a release without the proxy chain: egress jump already first.
+    firewall = Firewall("iptables-nft")
+    firewall.chains["DOCKER-USER"] = [["-i", "yuki-egress0", "-j", "YUKI-EGRESS"]]
+    await network_guard.apply(firewall.command, proxy=(("172.30.0.1",), 3128))
+    assert firewall.chains["DOCKER-USER"] == [
+        ["-i", "yuki-egress0", "-j", "YUKI-PROXY"],
+        ["-i", "yuki-egress0", "-j", "YUKI-EGRESS"],
+    ]
 
 
 async def test_network_guard_refuses_a_docker_without_the_user_chain():
