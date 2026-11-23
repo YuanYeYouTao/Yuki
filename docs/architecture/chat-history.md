@@ -24,6 +24,13 @@ platform 为真实平台标识，scope 可选 private/group；所有来源条件
 跨入口命中作为有来源的工具证据返回，不拼接各 Conversation 的自动上下文。
 人物筛选使用原作者 Person 的当前同人族；账号转移、改名、解绑或无账号不改写旧作者。
 
+**读取范围不按提问者收窄（明确取舍，所有者 2026-11-23 拍板）**。普通用户轮、群 SELF 与定时轮的 `read_chat`
+可检索 Yuki 参与过的全部获准 Conversation，包括提问者以外的人与 Yuki 的私聊；群里任何人都可能让 Yuki 读到别人的私聊。
+所有者选择保留这份自由，按提问者收窄（只读群与提问者本人的私聊）被认为收得过紧。只有委托读取（`read_target_id`）
+与插件后台轮按各自范围收窄。`set_short_note`、`get_tasks` 的全局可见同样维持现状。
+依据见[长期在意与跨会话感知调研](Yuki-长期在意与跨会话感知调研-2026-11-23.md) §8；与 Memory 的
+[共同群可读取舍](memory-v2.md)并列，常驻段与经历目录的自动出现规则不受这条影响。
+
 `find_contacts(name?, target?, type?, platform?, limit?, cursor?)` 查询人物（type=person）或群（type=group）
 主体，每项返回当前可联系入口（binding_id、platform）与真实历史 Conversation（原 find_conversations 已并入）。
 name 按名称包含查询，已知内部 ID 用 target 直接读取（停用的人物和已结束的入口仍可发现）；
