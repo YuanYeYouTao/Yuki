@@ -257,10 +257,9 @@ async def test_checkpoint_upgrade_removes_fixed_ceiling_and_preserves_media(tmp_
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("contract_changed", [False, True])
-async def test_root_resume_uses_current_chat_and_task_material(
-    database, tmp_path, contract_changed
-):
+async def test_root_contract_change_uses_current_chat_and_task_material(database, tmp_path):
+    # A paired wakeup on an unchanged contract appends to its chain (#646); only a
+    # contract change starts a new chain on the current chat and task material.
     control = await _control(database, tmp_path)
     task = ChatMessage(
         "user",
@@ -310,10 +309,8 @@ async def test_root_resume_uses_current_chat_and_task_material(
     await first.save("paired")
     control.current = await control.repository.get(control.current["id"])
     fresh_task = ChatMessage("user", "new wakeup and refreshed runtime data")
-    fresh_system = ChatMessage(
-        "system", "new fixed contract" if contract_changed else initial[0].content
-    )
-    resumed = WorkSession(control, "new-contract" if contract_changed else "original")
+    fresh_system = ChatMessage("system", "new fixed contract")
+    resumed = WorkSession(control, "new-contract")
     restored = await resumed.restore(TurnTranscript((fresh_system, fresh_task)))
     assert restored.chain_id != transcript.chain_id
     assert restored.request().messages[:2] == (fresh_system, fresh_task)
@@ -324,12 +321,11 @@ async def test_root_resume_uses_current_chat_and_task_material(
     assert (await control.runtime_state())["goal"] == "retain the actual task"
     assert material["original_request"] == {"event_id": 1, "text": "hello"}
     assert material["execution_evidence"][0]["run_id"] == "original-execution"
-    if contract_changed:
-        source_message = restored.request().messages[2].content
-        assert "https://example.org/verified-source" in source_message
-        assert "Public search excerpt from the earlier investigation" in source_message
-        assert '"truncated": false' in source_message
-        assert "file:///private/secret" not in source_message
+    source_message = restored.request().messages[2].content
+    assert "https://example.org/verified-source" in source_message
+    assert "Public search excerpt from the earlier investigation" in source_message
+    assert '"truncated": false' in source_message
+    assert "file:///private/secret" not in source_message
     current_initial = restored.request().messages
     for _ in range(20):
         restored.append(ChatMessage("assistant", "Completed public investigation notes. " * 200))
@@ -1393,9 +1389,7 @@ async def test_main_entry_captures_current_task_before_work_status(database, tmp
 
 
 @pytest.mark.asyncio
-async def test_original_trigger_requirements_survive_goal_rewrite_and_business_resume(
-    database, tmp_path
-):
+async def test_original_trigger_requirements_survive_goal_rewrite_and_wakeup(database, tmp_path):
     from yuki.persistence.models import ChatEventModel
 
     control = await _control(database, tmp_path)
@@ -1420,8 +1414,15 @@ async def test_original_trigger_requirements_survive_goal_rewrite_and_business_r
     resumed = WorkSession(control, "same")
     control.session = resumed
     restored = await resumed.restore(TurnTranscript(fresh))
-    assert restored.request().messages[:2] == fresh
-    material = json.loads(restored.request().messages[-1].content)
+    # The wakeup appends to the original chain (#646); its first material still
+    # carries the original trigger after the goal rewrite.
+    assert restored.chain_id == first.transcript.chain_id
+    assert restored.request().messages[:2] == initial
+    material = next(
+        json.loads(message.content)
+        for message in restored.request().messages
+        if (message.content or "").startswith("{") and "original_request" in message.content
+    )
     assert (await control.runtime_state())["goal"] == "Verify the source"
     assert material["original_request"] == {"event_id": event_id, "text": original}
     current_initial = restored.request().messages

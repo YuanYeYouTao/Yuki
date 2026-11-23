@@ -4,10 +4,13 @@ The App, router, Work scheduler and connector transport are real. Scripted Main
 responses drive delegation, progress, permission and completion (P1–P4), an
 observed terminal permission (P5), and two children settling in reverse order
 (P6). Compare production Claude Messages, Chat Completions and OpenAI Responses
-payloads after removing moving cache markers. The Responses model returns native
-function calls through the production parser so the runner supplies continuation
-items and tool outputs on later requests. Per-protocol hashes and wake boundaries
-are written under test-results/external-agent-prompt-prefix/.
+payloads after removing moving cache markers. Every protocol, with or without a
+provider continuation, resumes a released Work by appending to its original chain:
+the request before a wait is a byte-for-byte prefix of the wake request (#646).
+The Responses model returns native function calls through the production parser so
+the runner supplies continuation items and tool outputs on later requests.
+Per-protocol hashes and wake boundaries are written under
+test-results/external-agent-prompt-prefix/.
 """
 
 import asyncio
@@ -273,7 +276,9 @@ async def test_dispatch_and_settlement_only_append_after_the_stable_prefix(
         before = items(wake - 1)
         common = common_prefix(before, items(wake))
         history = next(index for index, item in enumerate(before) if b'\\"current_time\\"' in item)
-        assert history > 0 and common >= history
+        # Every protocol appends a wakeup to the original chain (#646): the whole
+        # earlier request, not only its public history, is the wake's prefix.
+        assert history > 0 and common == len(before), (common, len(before))
         after = items(wake)
         assert b"external_agent_card" in delivery.encode()
         assert occurrences(payloads[wake - 1][items_key], delivery) == 0
@@ -489,7 +494,7 @@ async def test_two_delegations_complete_in_reverse_order(wire, native_app, monke
         history = next(
             index for index, item in enumerate(before) if b'\\"current_time\\"' in encoded(item)
         )
-        assert history > 0 and common >= history
+        assert history > 0 and common == len(before), (common, len(before))
         cards = [
             json.loads(row["payload_json"])["text"]
             for row in settled["inputs"]

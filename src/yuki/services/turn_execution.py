@@ -316,19 +316,14 @@ class TurnExecution:
                     self.state.fixed_definitions,
                 )
             if pending_response:
-                session = self.runtime.work_control.session
-                self.state.calls_used = self.runtime.work_control.tools_started
                 # _resume_tool_response paired the original response and saved the
-                # old signed chain. Continue this activation on current public
-                # history, carrying only its unobserved portable round.
-                if await session.rebase_business(TurnTranscript(self.initial_messages)):
-                    assert session.transcript is not None
-                    self.state.transcript = session.transcript
+                # chain; this activation continues by appending to it.
+                self.state.calls_used = self.runtime.work_control.tools_started
             session = self.runtime.work_control.session
             self._execution_checkpoint_summary = session.progress.get("task_material", {}).get(
                 "execution_checkpoint"
             )
-            if session.exact_recovery and session.source_guard is not None:
+            if session.uses_recovery_transcript and session.source_guard is not None:
                 observed = set(session.source_guard.version.visible_event_ids) | set(
                     session.event_ids
                 )
@@ -782,7 +777,7 @@ class TurnExecution:
         if (
             self.tools is None
             or self.state.provider_pause_replay
-            or (request_index == 0 and session is not None and session.exact_recovery)
+            or (request_index == 0 and session is not None and session.uses_recovery_transcript)
         ):
             return None
         return await self.tools.participation_context(self.runtime)
