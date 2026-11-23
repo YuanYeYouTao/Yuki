@@ -200,7 +200,11 @@ async def test_memory_commit_is_consumed_by_original_main_or_worker(
     observed = "\n".join(message.content or "" for message in provider.requests[-1].messages)
     assert str(fact_id) in observed
     assert "execution_outcome_unknown" not in observed
-    assert "remember-once" in observed
+    # The resume appends to the original chain (#646): the committed call stays as
+    # its original declaration, paired once with the recovered receipt.
+    messages = provider.requests[-1].messages
+    assert [m.tool_call_id for m in messages if m.role == "tool"].count("remember-once") == 1
+    assert any(call.id == "remember-once" for m in messages for call in m.tool_calls)
     recovered = next(item for item in observed_effects if item.get("effect_key") == boundary.key)
     assert (
         recovered.get("ok") is not False

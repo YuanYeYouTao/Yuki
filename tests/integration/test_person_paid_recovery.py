@@ -89,17 +89,20 @@ async def test_merge_cold_work_observes_original_paired_result_once(
     )
 
     def complete_from_recorded_result(request):
-        evidence = [
-            json.loads(item.content)
-            for item in request.messages
-            if item.content and '"kind": "work_unobserved_tool_round"' in item.content
+        # The merged person's Work appends to its paid chain (#646): the original
+        # call and its recorded result appear once, nothing is executed again.
+        previous = original_requests[-1].messages
+        assert request.messages[: len(previous)] == previous
+        calls = [call for item in request.messages for call in item.tool_calls]
+        assert [call.id for call in calls if call.function.name == "set_short_note"] == [
+            "original-mutation"
         ]
-        assert len(evidence) == 1
-        calls = evidence[0]["calls"]
-        assert len(calls) == 1 and calls[0]["call_id"] == "original-mutation"
-        assert calls[0]["effect_key"] == mutation_receipt["effect_key"]
-        assert calls[0]["tool"] == "set_short_note"
-        assert "committed-original" in calls[0]["result"]
+        results = [
+            item.content
+            for item in request.messages
+            if item.role == "tool" and item.tool_call_id == "original-mutation"
+        ]
+        assert len(results) == 1 and "committed-original" in results[0]
         return _tool("manage_task", {"action": "finish"}, "original-finish")
 
     provider._responder = complete_from_recorded_result

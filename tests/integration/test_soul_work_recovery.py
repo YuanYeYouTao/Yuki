@@ -191,7 +191,9 @@ async def test_hot_soul_edit_keeps_lost_paid_dispatch_unknown(database, tmp_path
         )
 
 
-async def test_paired_work_new_business_activation_uses_new_soul(database, tmp_path):
+async def test_paired_work_wakeup_keeps_its_soul_until_a_new_chain(database, tmp_path):
+    """A wakeup appends to the paid chain on every protocol (#646): a renamed SOUL
+    takes effect only when compaction or a contract change starts a new chain."""
     from tests.conftest import MemorySender
     from tests.integration.test_person_paid_recovery import _facts
     from tests.unit.test_history_dispatch_ownership import _scene, _tool, retry_due_now
@@ -216,8 +218,10 @@ async def test_paired_work_new_business_activation_uses_new_soul(database, tmp_p
     await database.engine.dispose()
 
     def finish(request):
-        assert "Aurora" in request.messages[0].content
-        assert "初雪" not in request.messages[0].content
+        previous = original_requests[-1].messages
+        assert request.messages[: len(previous)] == previous
+        assert "初雪" in request.messages[0].content
+        assert "Aurora" not in request.messages[0].content
         assert "committed-original" in str(request.messages)
         return _tool("manage_task", {"action": "finish"}, "finish-existing-work")
 

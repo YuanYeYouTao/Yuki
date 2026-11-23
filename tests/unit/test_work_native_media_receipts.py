@@ -41,7 +41,7 @@ def _image(control, identity):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("crash_phase", ["response", "paired"])
-async def test_root_business_resume_keeps_pending_selected_pixels_without_old_tool_replay(
+async def test_root_wakeup_keeps_selected_pixels_on_its_chain_without_old_tool_replay(
     database, tmp_path, crash_phase
 ):
     control, session, _store = await owned_session(database, tmp_path)
@@ -65,15 +65,20 @@ async def test_root_business_resume_keeps_pending_selected_pixels_without_old_to
         session.transcript.append_result(call.id, receipt)
         session.transcript.append_tool_media(((call.id, receipt),))
         await session.save("paired")
+    chain = session.transcript.chain_id
     initial = TurnTranscript((ChatMessage("user", "continue original task"),))
     restored = await WorkSession(control, "result-test").restore(initial)
-    assert [image for message in restored.request().messages for image in message.images] == [image]
-    # A business resume is a legal new input chain: no old assistant call is replayed.
-    assert not any(message.tool_calls for message in restored.request().messages)
-    assert not any(
-        "retired conversation text" in (message.content or "")
-        for message in restored.request().messages
-    )
+    messages = restored.request().messages
+    # The wakeup appends to the original paid chain (#646): its inbound image and
+    # call stay where they were, the selected pixels follow the result once, and
+    # the original call is paired from its receipt instead of being executed again.
+    assert restored.chain_id == chain
+    assert "continue original task" not in str(messages)
+    assert [image for message in messages for image in message.images] == [old_inbound, image]
+    assert [message.tool_calls for message in messages if message.tool_calls] == [(call,)]
+    assert [message.tool_call_id for message in messages if message.role == "tool"] == [call.id]
+    result_index = next(index for index, message in enumerate(messages) if message.role == "tool")
+    assert image in messages[result_index + 1].images
     assert executed == 1
     assert control.tools_started == 1
 
@@ -108,11 +113,14 @@ async def test_accepted_media_receipts_restore_before_paired_without_read_or_ree
     old_call_key = session.call_key(calls[0].id)
     restored = await resumed.restore(TurnTranscript(()))
     messages = restored.request().messages
-    assert not any(message.role == "tool" or message.tool_calls for message in messages)
-    assert any(
-        "one" in (message.content or "") and "two" in (message.content or "")
-        for message in messages
-    )
+    # The worker resumes its own chain (#646): the original response is paired from
+    # its accepted receipts, each pixel set follows the results once.
+    assert restored.chain_id == session.transcript.chain_id
+    assert [message.tool_calls for message in messages if message.tool_calls] == [calls]
+    assert [message.tool_call_id for message in messages if message.role == "tool"] == [
+        "one",
+        "two",
+    ]
     assert [image for message in messages for image in message.images] == originals
     first_image = next(index for index, message in enumerate(messages) if message.images)
     assert all(message.role != "tool" for message in messages[first_image:])

@@ -164,14 +164,13 @@ async def test_saved_legacy_readonly_alias_restores_original_receipt_without_dis
     control.session = restored
     await restored.restore(TurnTranscript((ChatMessage("user", "original task"),)))
     assert not restored.pending
-    observation = next(
-        json.loads(item.content)
-        for item in restored.transcript.entries()
-        if isinstance(item, ChatMessage)
-        and item.role == "user"
-        and item.content
-        and '"kind": "work_unobserved_tool_round"' in item.content
-    )
-    assert observation["calls"][0]["call_id"] == alias.id
-    assert observation["calls"][0]["result"] == result
+    # The alias is paired from the original read receipt on the original chain
+    # (#646); the read is not dispatched again.
+    assert restored.transcript.chain_id == session.transcript.chain_id
+    outputs = [
+        item.content
+        for item in restored.transcript.request().messages
+        if item.role == "tool" and item.tool_call_id == alias.id
+    ]
+    assert outputs == [result]
     read.assert_awaited_once()
