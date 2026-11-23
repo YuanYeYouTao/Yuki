@@ -640,7 +640,12 @@ class ScopedEventLedgerUnitOfWork:
         return rows[0] if rows else None
 
     async def _require_causal_source(self, session: AsyncSession, row: ChatEventModel) -> None:
-        """Validate durable causality before appending a proactive plugin reply."""
+        """Validate durable causality before appending a caused Yuki message.
+
+        A plugin reply answers an external event of its own Conversation. Any other
+        Yuki message may name the kept inbound message that requested it, including one
+        in another Conversation (a relay keeps its request as provenance).
+        """
 
         plugin_outbound = (
             row.origin == "plugin_background"
@@ -651,27 +656,25 @@ class ScopedEventLedgerUnitOfWork:
             raise CanonicalIdentityError("causal_source_required")
         if row.caused_by_event_id is None:
             return
-        task_outbound = (
-            row.origin == "system_task"
-            and row.direction == "outbound"
-            and row.event_kind == "message"
-        )
-        if not plugin_outbound and not task_outbound:
+        if row.direction != "outbound" or row.event_kind != "message":
             raise CanonicalIdentityError("causal_source_not_allowed")
         source = await session.get(ChatEventModel, row.caused_by_event_id)
         if (
             source is None
-            or source.canonical_conversation_id != row.canonical_conversation_id
+            or source.suppression_status != "keeper"
             or (
                 plugin_outbound
                 and (
-                    source.event_kind != "external_event"
+                    source.canonical_conversation_id != row.canonical_conversation_id
+                    or source.event_kind != "external_event"
                     or source.direction != "external"
                     or source.origin != "plugin_background"
                 )
             )
-            or (task_outbound and (source.event_kind != "message" or source.direction != "inbound"))
-            or source.suppression_status != "keeper"
+            or (
+                not plugin_outbound
+                and (source.event_kind != "message" or source.direction != "inbound")
+            )
         ):
             raise CanonicalIdentityError("causal_source_invalid")
 

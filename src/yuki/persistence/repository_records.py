@@ -90,6 +90,8 @@ class EventRecord:
     caused_by_event_id: int | None = None
     caused_by_external_source: str | None = None
     caused_by_external_event_type: str | None = None
+    # Where a relayed Yuki message was requested, hydrated for prompts; never the body.
+    caused_by_relay: str | None = None
     observed_at: datetime | None = None
 
     @property

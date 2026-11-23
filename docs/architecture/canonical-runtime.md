@@ -134,6 +134,8 @@ compact 检查点、raw history、按需 Memory 工具、Prompt compiler、工�
 最后一条临时 user input，既不落入聊天历史，也不形成插件专属短上下文。Yuki 成功发送的主动消息
 仍是普通 outbound `message`，并通过 `caused_by_event_id` 永久指向来源 external event。模型历史与
 公共消息渲染保留因果来源标签，平台正文不被改写。
+Yuki 的其他出站消息也可以用 `caused_by_event_id` 指向请求它的已入账真人消息（可在另一个 Conversation），
+用于跨会话转达的来源标签（见[主 Agent](main-agent-runtime.md)）；插件回复仍只指向本会话的 external event。
 
 ACP 使用共享 Presence 与每个原 Person 的稳定 Binding；每次 `session/new` 在该入口新建独立 thread／Conversation，`sessionId` 就是 Conversation UUID。原 App、QQ、TG 的空 thread 入口保持不变，人物资料与记忆仍归 Person。请求按实际 ACP Conversation＋原 UUID 查证，不按平台消息号重建归属。协议、结束与取消见[个人 API](client-api.md#acp-方向-a)。
 
