@@ -1242,6 +1242,11 @@ async def test_event_waiting_for_real_sqlite_commit_does_not_block_rpc_responses
                 operation,
                 bridge.source,
             )
+            # The watch dispatch runs in the background and its receipt event shares the
+            # connection's event worker. Settle it first, or that receipt can sit in the
+            # original receive_events behind the writer barrier below and keep the new
+            # event from ever reaching the worker.
+            await settled(bridge)
             entered = asyncio.Event()
             receive = bridge.service.receive_events
 
