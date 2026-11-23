@@ -180,7 +180,7 @@ Dream 每日批次在全部簇处理完后对到期主人运行一次挑选步�
 可用 search_memory 查”。
 
 **读写代价**：每轮多一条语句，取水位以内、status 为 active / superseded 的 concern ID（水位是同一语句里的标量子查询），
-走部分索引 `ix_memory_facts_self_concern (scope_type, category, id) WHERE category='concern'`（迁移 `0167`，只加索引）；
+走部分索引 `ix_memory_facts_self_concern (scope_type, category, id) WHERE category='concern'`（迁移 `0168`，只加索引）；
 category 条件写成字面量，部分索引才可用。这些 ID 与核心集一起进同一次后继解析和证据查询，语句数与 concern 条数无关
 （`tests/integration/test_memory_concerns_e2e.py` K9 记录语句数与查询计划）。
 

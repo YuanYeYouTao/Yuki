@@ -200,19 +200,17 @@ def test_management_intent_admission_is_separate_from_remote_prompt_completion(a
     assert view.get("status") in (None, "running")
 
 
-@pytest.mark.parametrize("code_enabled", [False, True])
-async def test_fixed_main_and_code_contract_exposes_native_executor_without_operator_secrets(
-    database, tmp_path, code_enabled
+async def test_fixed_main_contract_exposes_native_executor_without_operator_secrets(
+    database, tmp_path
 ):
     from tests.integration.test_current_material_main_contract import _deployment
 
     from yuki.llm.fake import FakeLLMProvider
 
-    app, *_ = await _deployment(database, tmp_path, FakeLLMProvider(), code_enabled=code_enabled)
+    app, *_ = await _deployment(database, tmp_path, FakeLLMProvider())
     try:
         contract = app.main_agent_contract
         full = await contract.definitions()
-        direct = await contract.model_definitions()
 
         def property_names(schema):
             if isinstance(schema, dict):
@@ -228,25 +226,20 @@ async def test_fixed_main_and_code_contract_exposes_native_executor_without_oper
         # A native agent is only an executor of the one subtask tool set.
         assert not {"get_coding_agents", "use_coding_agent"} & names
         for name in ("start_subtask", "message_task", "manage_task", "get_tasks", "wait"):
-            declared = next(tool for tool in direct if tool.name == name)
-            assert declared == next(tool for tool in full if tool.name == name)
+            declared = next(tool for tool in full if tool.name == name)
             assert not {"command", "argv", "env", "peer_id", "agent_id"} & set(
                 property_names(declared.parameters)
             )
-            if code_enabled:
-                assert contract.script_api.schemas[name] == declared.parameters
-        start = next(tool for tool in direct if tool.name == "start_subtask").parameters
+        start = next(tool for tool in full if tool.name == "start_subtask").parameters
         assert start["properties"]["executor"]["properties"].keys() == {"device", "agent"}
         assert start["properties"]["relationship"]["enum"] == ["delegate", "observe", "takeover"]
-        message = next(tool for tool in direct if tool.name == "message_task").parameters
+        message = next(tool for tool in full if tool.name == "message_task").parameters
         assert message["properties"]["mode"]["enum"] == ["queue", "steer"]
-        manage = next(tool for tool in direct if tool.name == "manage_task").parameters
+        manage = next(tool for tool in full if tool.name == "manage_task").parameters
         assert {"cancel", "resume", "release"} <= set(manage["properties"]["action"]["enum"])
-        tasks = next(tool for tool in direct if tool.name == "get_tasks").parameters
+        tasks = next(tool for tool in full if tool.name == "get_tasks").parameters
         assert tasks["properties"]["agents"]["properties"].keys() == {"device", "agent", "session"}
         assert "external_agent" not in {tool.name for tool in full}
-        if not code_enabled:
-            assert contract.script_api is None
     finally:
         assert not await app.lifecycle._close_entries(app.lifecycle._entries)
 

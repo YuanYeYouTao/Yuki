@@ -24,7 +24,7 @@ from yuki.memory.context import MEMORY_GROUNDING_RULE
 from yuki.persistence.database import Database
 from yuki.persistence.event_repository import ConversationReadVersion
 from yuki.persistence.repository_records import EventRecord
-from yuki.prompting.contracts import core_contract
+from yuki.prompting.contracts import CORE_CONTRACT
 from yuki.runtime.origin import TurnOrigin
 from yuki.runtime.trigger import ExternalEventTurnTrigger
 from yuki.services.agent_tools import ToolRuntime
@@ -532,9 +532,8 @@ async def test_external_wakeup_assembles_the_same_stable_conversation_window() -
     assert "external_event_wakeup" in (wakeup_context.current_message.content or "")
 
 
-@pytest.mark.parametrize("code_enabled", (False, True))
-def test_external_wakeup_uses_the_same_main_agent_prompt_program(code_enabled) -> None:
-    settings = make_settings("sqlite+aiosqlite:///:memory:", code_mode_enabled=code_enabled)
+def test_external_wakeup_uses_the_same_main_agent_prompt_program() -> None:
+    settings = make_settings("sqlite+aiosqlite:///:memory:")
     composer = PromptComposer(settings)
     current = ChatMessage(role="user", content="[external] current summary")
     history = (ChatMessage(role="user", content="hello from a person"),)
@@ -569,7 +568,7 @@ def test_external_wakeup_uses_the_same_main_agent_prompt_program(code_enabled) -
     assert "PushEvent" not in system_text
     for component in (
         settings.character_prompt,
-        core_contract(code_enabled=settings.code_mode_enabled),
+        CORE_CONTRACT,
         MEMORY_GROUNDING_RULE,
     ):
         assert system_text.count(component) == 1

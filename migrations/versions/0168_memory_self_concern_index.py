@@ -12,8 +12,8 @@ Downgrade drops the index. Frozen: does not import mutable ORM models.
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0167"
-down_revision = "0166"
+revision = "0168"
+down_revision = "0167"
 branch_labels = None
 depends_on = None
 

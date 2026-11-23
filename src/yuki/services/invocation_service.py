@@ -1,4 +1,4 @@
-"""One original-call execution boundary for direct and composed tool calls."""
+"""One original-call execution boundary for direct tool calls."""
 
 from __future__ import annotations
 
@@ -11,7 +11,6 @@ from typing import TYPE_CHECKING, Any
 
 from yuki.capabilities.invocation import (
     Invocation,
-    child_operation_id,
     counts_toward_business_limit,
 )
 from yuki.domain.messages import ToolCall
@@ -102,22 +101,12 @@ class InvocationService:
         if control is None or session is None:
             return await execute()
         call, identity = invocation.call, invocation.identity
-        if identity.parent_operation_id is None:
-            if session.call_key(call.id) != identity.operation_id:
-                raise ValueError("invocation_journal_identity_conflict")
-        elif (
-            identity.child_ordinal is None
-            or child_operation_id(identity.parent_operation_id, identity.child_ordinal)
-            != identity.operation_id
-        ):
-            # A child is keyed by its parent and Host admission ordinal only.
+        if session.call_key(call.id) != identity.operation_id:
             raise ValueError("invocation_journal_identity_conflict")
         # Direct sends retain the original boundary for responding to steer.
-        allow_pending = call.function.name in WORK_CONTROL_NAMES or (
-            call.function.name == "send" and identity.parent_operation_id is None
-        )
+        allow_pending = call.function.name in WORK_CONTROL_NAMES or call.function.name == "send"
         journal = session.journal
-        # The original Host operation, including a composition child's identity.
+        # The original Host operation identity.
         key = identity.operation_id
         if control.current is not None:
             if identity.owner_execution_id != control.current["id"]:

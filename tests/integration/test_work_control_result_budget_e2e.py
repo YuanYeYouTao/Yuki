@@ -20,8 +20,6 @@ Failure cases written before the implementation:
 4. The receipt persisted for a control call differs from, or is larger than, what
    the model saw, so a recovery replay of the original call key would hand back
    an unbounded text (replay itself must not re-execute; it returns the receipt).
-5. The Code Mode child entry (``_execute_control_call`` without an invocation)
-   renders control results differently from the direct path.
 6. Control payload outside ``steps`` (for example a long goal) is not budgeted;
    the bound must hold for the whole control result, not only for nested steps.
 7. ``get_tasks`` without ``id`` (directory listing) starts carrying steps.
@@ -53,7 +51,6 @@ from tests.integration.test_execution_continuity_e2e import (
 )
 
 from yuki.runtime.work_schema_v1 import effects, work
-from yuki.services.agent_runner import AgentRunner
 from yuki.tool_results.artifacts import ToolArtifactRepository
 
 BUDGET = 6000
@@ -187,7 +184,7 @@ async def test_polling_own_work_with_get_tasks_stays_bounded(database, tmp_path)
 async def test_huge_existing_receipt_and_goal_are_bounded_in_an_ordinary_turn(
     database, tmp_path, monkeypatch
 ):
-    """Cases 2, 3, 5 and 6: a previous Work holds a huge legacy receipt and goal."""
+    """Cases 2, 3 and 6: a previous Work holds a huge legacy receipt and goal."""
     phase: dict[str, Any] = {"name": "first"}
     long_goal = "整理并核对外部 Agent 事件化改造的全部回执。" * 600
 
@@ -211,18 +208,6 @@ async def test_huge_existing_receipt_and_goal_are_bounded_in_an_ordinary_turn(
             return _call("send", {"text": "看过了"}, "answer")
         return "done"
 
-    child_entry: list[str] = []
-    original = AgentRunner._execute_control_call
-
-    async def probe(self, call, tools, runtime, declared, key, invocation=None):
-        text, executed = await original(self, call, tools, runtime, declared, key, invocation)
-        if invocation is not None and call.id == "lookup":
-            # The Code Mode child entry: same call, no direct invocation.
-            child, _ = await original(self, call, tools, runtime, declared, f"code:{key}")
-            child_entry.append(child)
-        return text, executed
-
-    monkeypatch.setattr(AgentRunner, "_execute_control_call", probe)
     provider = ScriptedProvider(respond)
     env, harness, _ = await _scene(database, tmp_path, provider)
     first = await harness.processor.handle(_private(env, "复制一下", "first"), MemorySender())
@@ -274,10 +259,6 @@ async def test_huge_existing_receipt_and_goal_are_bounded_in_an_ordinary_turn(
     assert len(lookup_text) <= BUDGET
     assert lookup["truncated"] is True and lookup["artifact_handle"]
     assert lookup["original_characters"] > 400_000
-    # Case 5: the Code Mode child entry renders the same bounded shape.
-    assert len(child_entry) == 1 and len(child_entry[0]) <= BUDGET
-    child_view = json.loads(child_entry[0])
-    assert child_view["truncated"] is True and child_view["artifact_handle"]
     async with database.read_session() as reader:
         state = await reader.scalar(select(work.c.state).where(work.c.id == work_id))
     RESULTS["huge_existing_receipt_ordinary_turn"] = {
@@ -286,7 +267,6 @@ async def test_huge_existing_receipt_and_goal_are_bounded_in_an_ordinary_turn(
         "own_original_characters": own_view["original_characters"],
         "lookup_result_characters": len(lookup_text),
         "lookup_original_characters": lookup["original_characters"],
-        "code_child_entry_characters": len(child_entry[0]),
         "ordinary_turn_owner": phase["ownership"],
         "ordinary_turn_reason": second.reason,
     }

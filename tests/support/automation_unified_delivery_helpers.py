@@ -81,7 +81,6 @@ async def setup_run(
     chat._tools.social_service = env.service
     env.service.runtime_config = chat._runtime_config
     chat.runtime.runner.main_contract = MainAgentContract(chat, ShortState(env.store))
-    chat.runtime.runner.code_mode_settings = settings
     repository = AutomationRepository(database)
     clock = FakeClock(datetime.now(UTC))
     time_service = TimeContextService(default_timezone=settings.default_timezone, clock=clock)

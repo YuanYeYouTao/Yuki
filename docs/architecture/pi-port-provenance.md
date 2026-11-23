@@ -1,14 +1,16 @@
-# 设计参考与 Monty 依赖来源
+# 设计参考与依赖来源
 
 取得日期：2026-10-04；参考关系于 2026-10-05 按用户要求澄清。Pi 只作为设计思路和行为
 对照的参考，不作为安装、运行或构建依赖。Yuki 的 Python 核心使用自有消息模型、固定
-执行边界、持久回执及预算机制；Monty 则是实际构建、加载和执行的第三方组件。
+执行边界、持久回执及预算机制。Monty 曾是 Code Mode 实际构建、加载和执行的第三方组件，
+已随 Code Mode 删除（#573）；下文 Monty 行与 P09、Notice 两节是当时的来源记录，所述
+`vendor/monty/`、构建脚本与根 `THIRD_PARTY_NOTICES.md` 已不在仓库。
 
 | 项目 | 固定 SHA | 关系 |
 | --- | --- | --- |
 | Yuki | `8204b28ebc8939213dae60dbab94ab1c16d1263a` | 本项目基线；保留原项目许可 |
 | Pi | `200387122ca450d6387f033949423114a270b96c` | 设计参考与行为对照；不加入依赖清单或制品 |
-| Monty | `3f9d6ef413fb951e5b80113b7088d535bd028fcb` | 实际依赖，MIT，Copyright Pydantic Services Inc.；598 个锁定包（580 份 registry 归档逐 checksum 校验、18 个本地 workspace 包）；typeshed 原 Apache 2.0 许可已保留，全文清单已补齐，上游两份 MIT 署名缺失单独记录 |
+| Monty | `3f9d6ef413fb951e5b80113b7088d535bd028fcb` | 已随 Code Mode 删除（#573）；原为实际依赖，MIT，Copyright Pydantic Services Inc.；598 个锁定包（580 份 registry 归档逐 checksum 校验、18 个本地 workspace 包）；typeshed 原 Apache 2.0 许可已保留，全文清单已补齐，上游两份 MIT 署名缺失单独记录 |
 
 早期记录中的“语义移植”统一改为“参考行为、在 Yuki 合同下实现”。当前没有 Pi SDK、
 TypeScript 源文件或 Pi 的依赖链进入运行环境。下表保留查阅对象以便复核思路，不将
@@ -27,11 +29,8 @@ wheel 和 Dockerfile 已取消这项打包配置。本次改动不改变模型�
 | 同上 L478-L503、L689-L691 | 截断调用不执行、批次结算后决定继续；实际回执和派发仍由 Coordinator＋InvocationService 持有 | `agent_core/loop.py`、`InvocationBoundary` | 已实现；`test_truncated_response_fails_every_call_in_band_without_dispatch` |
 | Pi `packages/agent/src/agent.ts` L565-L611 | 事件投影思路；Yuki 使用不可变状态和有界同步队列，不采用 Pi 的可变 Agent 实例与异步流 | `agent_core/state.py`、`events.py` | 已实现；`test_event_order_and_state_reduction`、`test_event_backpressure_drops_diagnostics_never_execution` |
 | Pi `packages/agent/src/types.ts` L147、L514-L529 | 继续 / 结束和轮次事件的思路；Yuki 使用自有 dataclass、ChatResponse 和 ToolCall | `agent_core/types.py` | 已实现 |
-| Monty `crates/monty-python`（`pydantic-monty-client` 1.0.1） | AsyncMonty、Function/NameLookup/FutureSnapshot、手动 resume、dump/load_snapshot | `codemode/engine_monty.py` | 已接入，真实 worker 验证 |
-| Monty `crates/monty-pool/src/worker.rs:185-194` | 原生 subprocess：`env_clear`、piped stdio、`kill_on_drop` | 经绑定使用，不另实现传输 | 已验证（worker-only 构建） |
 
 Pi SDK、pi-ai Provider、durable/chord、CLI/TUI/RPC 均不进入本交付。
-实际 Monty 依赖及其传递依赖的来源、许可和上游 notice 状态由当前审计记录。
 
 ## 刻意差异
 
@@ -42,10 +41,10 @@ Pi SDK、pi-ai Provider、durable/chord、CLI/TUI/RPC 均不进入本交付。
 - Work inputs 是持久输入真源，不复制 Pi 内存 queue 作为恢复账本。
 - 当前 complete Provider 映射完整 frame；partial 只用于边界测试且不得执行工具。
 - Provider 原私有签名/opaque 不经业务 JSON canonicalizer 重写。
-- 原领域回执是效果证据；Pi 事件、nested calls 和 VM return 不承担持久真源。
+- 原领域回执是效果证据；Pi 事件与 nested calls 不承担持久真源。
 
-唯一模型循环与执行责任见[主 Agent 合同](main-agent-runtime.md)，工具模式、
-原调用与 Code VM 恢复见[Tool Kernel](tool-kernel.md)。历史差分样本和阶段导出保留在
+唯一模型循环与执行责任见[主 Agent 合同](main-agent-runtime.md)，工具声明、
+原调用与恢复见[Tool Kernel](tool-kernel.md)。历史差分样本和阶段导出保留在
 `pi-codemode-evidence/`；它们记录当时实现，不构成源码形状或测试数量门槛。
 
 ## P09 固定分发与许可证据（2026-10-05）

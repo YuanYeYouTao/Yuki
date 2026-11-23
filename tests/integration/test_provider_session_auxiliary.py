@@ -171,7 +171,7 @@ async def test_auxiliary_session_header_keeps_original_body(database, tmp_path, 
                     execution = TurnExecution(runner, initial, runtime, None)
                     if kind == "execution_compact":
                         execution.state.transcript = session.transcript
-                    execution.state.definitions = await runner.main_contract.model_definitions()
+                    execution.state.definitions = await runner.main_contract.definitions()
                     execution.state.fixed_definitions = execution.state.definitions
                     prepared = await execution.prepare_request(0, (), WebMode.DISABLED)
                     main = prepared.request

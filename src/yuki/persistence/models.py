@@ -520,7 +520,7 @@ class MemoryFactModel(Base):
             "supersedes_id",
             sqlite_where=text("supersedes_id IS NOT NULL"),
         ),
-        # The resident "[我在意的事]" reads SELF concerns every turn (#541, migration 0167).
+        # The resident "[我在意的事]" reads SELF concerns every turn (#541, migration 0168).
         Index(
             "ix_memory_facts_self_concern",
             "scope_type",

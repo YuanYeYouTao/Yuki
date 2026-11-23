@@ -19,7 +19,6 @@ services:
       all_proxy: "${all_proxy-${ALL_PROXY-}}"
       NO_PROXY: "${no_proxy-${NO_PROXY-localhost,127.0.0.1,::1,bot,snowluma}}"
       no_proxy: "${no_proxy-${NO_PROXY-localhost,127.0.0.1,::1,bot,snowluma}}"
-      CODE_MODE_ENABLED: "false"
       COMPOSE_PROFILES: ${COMPOSE_PROFILES:-}
       APP_HOST: 0.0.0.0
       APP_PORT: 8080

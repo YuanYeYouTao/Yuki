@@ -186,7 +186,7 @@ cd Yuki
 uv sync --all-extras --managed-python
 uv run ruff check .
 uv run mypy --platform linux src
-uv run pytest tests/unit -q -m "not native_worker"
+uv run pytest tests/unit -q
 ```
 
 The management CLI is `yuki` and the server entry point is `yuki-bot`. Before changing the architecture, runtime, tools or persistence, read the [development contract](docs/architecture/development-contract.md) and the [architecture index](docs/architecture/README.md).

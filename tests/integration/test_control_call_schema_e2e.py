@@ -12,8 +12,7 @@ Failure cases listed before the implementation
   their original order; refusals charge no business tool budget;
 * recovery: a control call that already has a receipt returns that original
   receipt byte for byte without being validated again, while an undispatched
-  pending control call is validated against the current schema;
-* the Code Mode child entry (``invocation=None``) uses the same check.
+  pending control call is validated against the current schema.
 
 Each scenario writes normalized evidence under ``test-results/control-call-schema/``.
 """
@@ -250,20 +249,3 @@ async def test_recovery_returns_original_receipt_and_validates_only_undispatched
             "model_requests": len(probe.provider.requests),
         },
     )
-
-
-async def test_code_mode_child_entry_uses_the_same_schema_check(database, tmp_path):
-    """``CodeHost.execute_control`` passes children to this entry without an invocation."""
-    probe = await case(database, tmp_path, [])
-    declared = frozenset(item.name for item in probe.runtime.fixed_tools)
-    before = await probe.repository.get(probe.control.current["id"])
-    results = {}
-    for name, args, identity in INVALID:
-        text, executed = await probe.runner._execute_control_call(
-            tool(name, args, identity), probe.backend, probe.runtime, declared, f"child:{identity}"
-        )
-        results[identity] = json.loads(text)
-        assert executed is True
-        assert results[identity]["error"] == "tool_input_validation_failed"
-    assert await probe.repository.get(probe.control.current["id"]) == before
-    _write("code-mode-child-entry", results)

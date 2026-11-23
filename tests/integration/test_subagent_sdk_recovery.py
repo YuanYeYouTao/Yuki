@@ -126,28 +126,6 @@ async def test_sdk_child_recovers_original_self_source_and_current_plugin_grant(
         await restored.close_host_resources()
 
 
-async def test_code_child_uses_main_script_api_and_fixed_direct_tools(database, tmp_path):
-    provider = FakeLLMProvider()
-    env, _harness, chat, _state, _message = await _scene(
-        database, tmp_path, provider, code_enabled=True
-    )
-    executor = make_child_executor(
-        WorkRepository(database),
-        chat=chat,
-        config=chat._runtime_config,
-        runner=chat.runtime.runner,
-        load_tools=chat.runtime.runner.main_contract.definitions,
-        router=env.router,
-    )
-    await executor.prepare()
-    contract = chat.runtime.runner.main_contract
-    assert executor.script_api is contract.script_api
-    assert executor.definitions == await contract.definitions()
-    assert {"send", "start_subtask", "message_task", "set_short_note"} <= set(
-        executor.script_api.schemas
-    )
-
-
 async def test_sdk_message_child_keeps_original_plugin_origin_and_delegation(database, tmp_path):
     from tests.support.canonical_identity import ensure_space
 
