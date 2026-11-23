@@ -8,6 +8,12 @@ FAKE_ACP_STEERING advertises the ``_session/steering`` extension (top-level
 ``_meta.steering.supported``, as codex-acp 2.9 and claude-agent-acp 0.109 do);
 FAKE_ACP_NO_LIST leaves out session/list and session/resume (Gemini CLI declares
 only loadSession).
+
+FAKE_ACP_USER_ALLOW stands in for the user's own Claude allow rules, which
+claude-agent-acp loads in every mode: a permission step whose ``native_tool`` it
+names runs without session/request_permission, unless the session was opened with
+an ``ask`` rule for that tool in ``_meta.claudeCode.options.settings`` (ask beats
+allow, as in Claude Code). FAKE_ACP_STORED lists stored sessions for session/list.
 """
 
 import json
@@ -19,6 +25,8 @@ from pathlib import Path
 sequence = 100
 trace = Path(os.environ["FAKE_ACP_TRACE"])
 modes = [item for item in os.environ.get("FAKE_ACP_MODES", "").split(",") if item]
+user_allow = {item for item in os.environ.get("FAKE_ACP_USER_ALLOW", "").split(",") if item}
+asks: dict[str, list[str]] = {}
 
 
 def record(**value):
@@ -56,6 +64,16 @@ def steering(message):
     return text
 
 
+def asked_natively(session, tool):
+    """False when the user's allow rule runs ``tool`` without asking anyone."""
+    if tool not in user_allow:
+        return None
+    return any(
+        rule == tool or (rule.endswith("*") and tool.startswith(rule[:-1]))
+        for rule in asks.get(session, [])
+    )
+
+
 def run(session, steps):
     """Run the steps; a returned stop reason ends the prompt early."""
     for step in steps:
@@ -84,6 +102,8 @@ def run(session, steps):
             update(session, {"sessionUpdate": "tool_call", **step["tool"]})
         elif "update" in step:
             update(session, step["update"])
+        elif "permission" in step and asked_natively(session, step.get("native_tool")) is False:
+            record(method="ran_unasked", tool=step["permission"]["toolCall"]["toolCallId"])
         elif "permission" in step:
             response = request(
                 "session/request_permission", {"sessionId": session, **step["permission"]}
@@ -170,12 +190,22 @@ for line in sys.stdin:
         # No prompt of this session is in flight here.
         steering(message)
         result = {"outcome": "promptRequired", "reason": "noRunningTurn"}
-    elif method in {"session/new", "session/load"}:
+    elif method == "session/list":
+        result = {"sessions": json.loads(os.environ.get("FAKE_ACP_STORED", "[]"))}
+    elif method in {"session/new", "session/load", "session/resume"}:
         if method == "session/new":
             result = {"sessionId": f"session-{sequence}"}
             sequence += 1
         session = parameters.get("sessionId") or result["sessionId"]
-        record(method=method, cwd=parameters["cwd"], session=session)
+        meta = parameters.get("_meta")
+        options = ((meta or {}).get("claudeCode") or {}).get("options") or {}
+        asks[session] = ((options.get("settings") or {}).get("permissions") or {}).get("ask", [])
+        record(
+            method=method,
+            cwd=parameters["cwd"],
+            session=session,
+            **({"meta": meta} if meta else {}),
+        )
         if modes:
             result["modes"] = {
                 "currentModeId": os.environ.get("FAKE_ACP_CURRENT_MODE", modes[-1]),

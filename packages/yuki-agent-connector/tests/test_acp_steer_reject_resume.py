@@ -312,6 +312,8 @@ async def test_resume_without_session_list_uses_the_cwd_recorded_at_creation(
         assert "error" not in resumed, resumed
         assert resumed["session_id"] == created["session_id"]
         [loaded] = acp.traced(trace, "session/load")
+        # The scoped load also carries the `ask` override (0.9.8, #650).
+        assert loaded.pop("meta")["claudeCode"]["options"]["settings"]["permissions"]["ask"]
         assert loaded == {
             "method": "session/load",
             "cwd": str(project),

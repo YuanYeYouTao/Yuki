@@ -38,7 +38,7 @@ from acp.stdio import spawn_agent_process
 from .. import __version__
 from ..config import Instance
 from ..journal import followup_id
-from ..scope import Scope, expand_home
+from ..scope import SCOPE_ASK, SCOPE_REPORTED, Scope, expand_home
 from . import DriverError, Emit
 
 # Agent modes that ask before side effects, strictest first (§15 E5). A mode that
@@ -53,6 +53,21 @@ ONE_TIME_KINDS = {"allow_once", "reject_once"}
 
 def dump(value: Any) -> Any:
     return value.model_dump(mode="json", by_alias=True, exclude_none=True)
+
+
+def ask_override(scope: dict[str, Any] | None, cwd: str) -> dict[str, Any]:
+    """The `_meta` that makes claude-agent-acp ask despite the user's allow rules.
+
+    claude-agent-acp loads the user's settings in every mode, so an allowed command or
+    MCP tool runs without session/request_permission (§16.4 S2, #650). It passes
+    `_meta.claudeCode.options` to Claude, where `ask` beats allow; other agents
+    ignore it. A full scope narrows nothing and keeps the agent's own settings.
+    """
+    bounds = Scope.parse(scope, cwd)
+    if bounds is None or bounds.full:
+        return {}
+    ask = [*SCOPE_ASK, *SCOPE_REPORTED]
+    return {"claudeCode": {"options": {"settings": {"permissions": {"ask": ask}}}}}
 
 
 def modes(response: Any) -> list[str]:
@@ -74,6 +89,8 @@ class Session:
     admitted: asyncio.Future[bool] | None = None
     modes: list[str] = field(default_factory=list)
     scope_mode: str | None = None
+    # Opened with the `ask` override; only such a session can serve a narrowed scope.
+    asks: bool = False
     # Yuki's prompt is in flight until its response arrives (its JSON-RPC ID is
     # known only after the request was written).
     prompting: bool = False
@@ -763,11 +780,14 @@ class ACPDriver:
         if action == "prompt":
             if not identity:
                 cwd = expand_home(arguments.get("cwd") or self.spec.cwd)
+                meta = ask_override(arguments.get("scope"), cwd)
                 created = await self._native_request(
-                    self.connection.new_session(cwd=cwd, mcp_servers=[])
+                    self.connection.new_session(cwd=cwd, mcp_servers=[], **meta)
                 )
                 identity = created.session_id
-                self.sessions[identity] = Session(identity, cwd, modes=modes(created))
+                self.sessions[identity] = Session(
+                    identity, cwd, modes=modes(created), asks=bool(meta)
+                )
             elif identity not in self.sessions:
                 if not arguments.get("resume"):
                     raise DriverError(
@@ -802,21 +822,34 @@ class ACPDriver:
                         "cwd_unknown", "Agent cannot reveal this stored session's cwd"
                     )
                 capabilities = self.native_capabilities.get("sessionCapabilities", {})
+                meta = ask_override(arguments.get("scope"), cwd)
                 if capabilities.get("resume") is not None:
                     loaded = await self._native_request(
-                        self.connection.resume_session(session_id=identity, cwd=cwd, mcp_servers=[])
+                        self.connection.resume_session(
+                            session_id=identity, cwd=cwd, mcp_servers=[], **meta
+                        )
                     )
                 elif self.native_capabilities.get("loadSession"):
                     loaded = await self._native_request(
-                        self.connection.load_session(session_id=identity, cwd=cwd, mcp_servers=[])
+                        self.connection.load_session(
+                            session_id=identity, cwd=cwd, mcp_servers=[], **meta
+                        )
                     )
                 else:
                     raise DriverError("unsupported_action", "Agent does not advertise load/resume")
-                self.sessions[identity] = Session(identity, cwd, modes=modes(loaded))
+                self.sessions[identity] = Session(
+                    identity, cwd, modes=modes(loaded), asks=bool(meta)
+                )
             session = self._session(identity)
             if session.task and not session.task.done():
                 raise DriverError("conflict", "Original ACP session has an active prompt")
             scope = Scope.parse(arguments.get("scope"), session.cwd)
+            if scope is not None and not scope.full and not session.asks:
+                # Opened without the `ask` override: the user's allow rules would
+                # bypass this scope. Release it, then delegate again.
+                raise DriverError(
+                    "scope_conflict", "This ACP session is held without a scope; release it first"
+                )
             if scope is not None:
                 if not scope.full:
                     # ACP has no standard full-access mode: a full scope keeps the

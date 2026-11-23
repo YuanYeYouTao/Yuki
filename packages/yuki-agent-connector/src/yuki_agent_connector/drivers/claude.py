@@ -32,14 +32,9 @@ from claude_agent_sdk import (
 from ..config import Instance
 from ..discovery import profile_environment, refresh
 from ..journal import followup_id
-from ..scope import Scope, expand_home
+from ..scope import SCOPE_ASK, SCOPE_REPORTED, Scope, expand_home
 from . import DriverError, Emit
 
-# Side-effect tools a scoped delegation sends through can_use_tool. `ask` wins over
-# the user's own allow rules while setting sources stay loaded (§15 E6).
-SCOPE_ASK = ("Bash", "Edit", "Write", "MultiEdit", "NotebookEdit", "WebFetch", "WebSearch")
-# Cross-session messages reach the user's other sessions: always reported (§15 E4).
-SCOPE_REPORTED = ("SendMessage",)
 _WRITE_TOOLS = {"Edit": "file_path", "Write": "file_path", "MultiEdit": "file_path"}
 _REGISTRY_STATUS = {"idle": "idle", "busy": "running", "waiting": "requires_action"}
 
