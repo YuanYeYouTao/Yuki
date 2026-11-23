@@ -200,7 +200,6 @@ class Settings(BaseSettings):
     memory_context_limit_per_entity: int = 4
     memory_overview_limit_per_entity: int = 10
     memory_query_term_limit: int = 12
-    memory_short_query_fallback_enabled: bool = True
     memory_semantic_enabled: bool = True
     memory_semantic_candidate_limit: int = 50
     memory_hybrid_lexical_weight: float = 1.0

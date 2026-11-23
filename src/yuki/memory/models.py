@@ -399,7 +399,6 @@ class MemoryQuery(_MemoryModel):
     candidate_limit: int = Field(gt=0)
     limit_per_target: int = Field(gt=0)
     query_term_limit: int = Field(gt=0)
-    short_query_fallback_enabled: bool = True
     semantic_enabled: bool = True
     semantic_candidate_limit: int = Field(default=50, gt=0)
     hybrid_lexical_weight: float = Field(default=1.0, ge=0)

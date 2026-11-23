@@ -50,7 +50,6 @@ class MemoryLexicalIndex(Protocol):
         *,
         candidate_limit: int,
         kinds: tuple[MemoryKind, ...] = (),
-        short_query_fallback_enabled: bool = True,
         temporal: MemoryTemporalIntent | None = None,
     ) -> tuple[tuple[int, ...], bool]: ...
 
@@ -94,7 +93,6 @@ class SQLiteMemoryFTSIndex:
         *,
         candidate_limit: int,
         kinds: tuple[MemoryKind, ...] = (),
-        short_query_fallback_enabled: bool = True,
         temporal: MemoryTemporalIntent | None = None,
     ) -> tuple[tuple[int, ...], bool]:
         """The same candidates inside one resolved target."""
@@ -109,7 +107,6 @@ class SQLiteMemoryFTSIndex:
                     terms,
                     [*scope, *_live(kinds, temporal)],
                     candidate_limit,
-                    scan=short_query_fallback_enabled,
                 )
         except DatabaseError as exc:
             raise MemoryRetrievalError("memory_index_unavailable") from exc
@@ -219,8 +216,6 @@ async def _candidates(
     terms: LexicalTerms,
     conditions: list[Any],
     limit: int,
-    *,
-    scan: bool = True,
 ) -> tuple[tuple[int, ...], bool]:
     fact = MemoryFactModel
     found: list[int] = []
@@ -239,7 +234,7 @@ async def _candidates(
         truncated = len(rows) > limit
         found.extend(rows[:limit])
     names = entity_terms(terms)
-    if scan and (terms.scan_terms or names):
+    if terms.scan_terms or names:
         fields = (fact.normalized_content, fact.memory_key, fact.category, fact.title)
         score: Any = literal(0)
         for term in terms.scan_terms:

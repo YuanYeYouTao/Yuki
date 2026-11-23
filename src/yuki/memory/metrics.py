@@ -24,7 +24,6 @@ class MemoryRetrievalMetric:
     fts_latency: float
     total_latency: float
     overview_used: bool
-    short_query_fallback_used: bool
     referenced_person_count: int
     semantic_candidate_count: int = 0
     semantic_selected_count: int = 0
@@ -41,7 +40,7 @@ class MemoryRetrievalMetrics:
         logger.debug(
             "memory_retrieval mode=%s query_hash=%s targets=%d candidates=%d "
             "selected=%d context_selected=%d fts_latency=%.6f total_latency=%.6f "
-            "overview=%s short_fallback=%s referenced_people=%d semantic_candidates=%d "
+            "overview=%s referenced_people=%d semantic_candidates=%d "
             "semantic_selected=%d hybrid_selected=%d semantic_degraded=%s "
             "semantic_latency=%.6f hybrid_latency=%.6f",
             metric.mode.value,
@@ -53,7 +52,6 @@ class MemoryRetrievalMetrics:
             metric.fts_latency,
             metric.total_latency,
             metric.overview_used,
-            metric.short_query_fallback_used,
             metric.referenced_person_count,
             metric.semantic_candidate_count,
             metric.semantic_selected_count,

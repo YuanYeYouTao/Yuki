@@ -393,7 +393,6 @@ class MemoryRetriever:
         semantic_candidate_count = 0
         candidate_truncated = False
         all_hits: list[MemoryRetrievalHit] = []
-        short_fallback_used = False
         query_vector = None
         semantic_degraded = False
         semantic_status = "disabled"
@@ -467,14 +466,10 @@ class MemoryRetriever:
                 terms,
                 candidate_limit=query.candidate_limit,
                 kinds=query.kinds,
-                short_query_fallback_enabled=query.short_query_fallback_enabled,
                 temporal=query.intent.temporal if query.intent is not None else None,
             )
             fts_latency += time.perf_counter() - search_started
             candidate_truncated = candidate_truncated or lexical_truncated
-            short_fallback_used = short_fallback_used or bool(
-                terms.scan_terms and query.short_query_fallback_enabled
-            )
             semantic_candidates: tuple[MemorySemanticCandidate, ...] = ()
             if query_vector is not None:
                 assert self._semantic_index is not None
@@ -632,7 +627,6 @@ class MemoryRetriever:
                 fts_latency=fts_latency,
                 total_latency=time.perf_counter() - started,
                 overview_used=query.mode is MemoryRetrievalMode.OVERVIEW,
-                short_query_fallback_used=short_fallback_used,
                 referenced_person_count=len(referenced - {None}),
                 semantic_candidate_count=semantic_candidate_count,
                 semantic_selected_count=sum(1 for hit in all_hits if "semantic" in hit.sources),

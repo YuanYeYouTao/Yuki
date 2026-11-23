@@ -1590,7 +1590,6 @@ class RuntimeConfigService:
                 context_limit_per_entity=int(cast(int, value("memory.context_limit_per_entity"))),
                 overview_limit_per_entity=int(cast(int, value("memory.overview_limit_per_entity"))),
                 query_term_limit=int(cast(int, value("memory.query_term_limit"))),
-                short_query_fallback_enabled=bool(value("memory.short_query_fallback_enabled")),
                 semantic_enabled=bool(value("memory.semantic_enabled")),
                 semantic_candidate_limit=int(cast(int, value("memory.semantic_candidate_limit"))),
                 hybrid_lexical_weight=float(
