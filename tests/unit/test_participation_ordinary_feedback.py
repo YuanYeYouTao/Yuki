@@ -44,7 +44,9 @@ from yuki.social.db_models import SocialOperationModel
 
 async def ordinary_backend(database, content, *, callback=None):
     provider = FakeLLMProvider(lambda _: ChatResponse(content, 0, provider_request_id="response-1"))
-    chat = build_harness(database, make_settings(database.url), provider).processor._chat
+    # Own reports are consumed only by semantic participation (#565).
+    settings = make_settings(database.url, conversation_semantic_participation_enabled=True)
+    chat = build_harness(database, settings, provider).processor._chat
     chat.observe_main_response = callback
     config = await chat._runtime_config.snapshot()
     inbound = InboundMessage(
