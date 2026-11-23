@@ -10,26 +10,21 @@ from copy import deepcopy
 from typing import TYPE_CHECKING, Any
 
 from yuki.capabilities.validation import CapabilitySchemaView, JsonSchemaCapabilityValidator
-from yuki.codemode.contract import CODE_API_REVISION
-from yuki.codemode.tool_visibility import DIRECT_TOOL_NAMES, LOOKUP_TOOLS, model_definitions
 from yuki.domain.messages import ChatMessage, ChatTool
 from yuki.runtime.work_control import work_control_tools
 from yuki.services.agent_tools import ToolRuntime
 from yuki.workspace.short_state import STATE_TOOL, ShortState
 
 if TYPE_CHECKING:
-    from yuki.codemode.api_projection import ScriptApi
     from yuki.services.prompt_composer import PromptComposer
 
 
 class MainAgentContract:
-    def __init__(self, chat: Any, state: ShortState, *, code_enabled: bool = False) -> None:
+    def __init__(self, chat: Any, state: ShortState) -> None:
         self.chat, self.state = chat, state
-        self.mode = "code" if code_enabled else "direct"
         self._tools: tuple[ChatTool, ...] | None = None
         self.schema_view: CapabilitySchemaView
         self.revision = ""
-        self.script_api: ScriptApi | None = None
         self.plugin_contracts: dict[str, str] = {}
         self._stale_plugins: set[str] = set()
         self._lock = asyncio.Lock()
@@ -47,10 +42,6 @@ class MainAgentContract:
             "frozen": self._tools is not None,
             "revision": self.revision,
             "tool_count": len(names),
-            "model_tool_count": len(names & DIRECT_TOOL_NAMES)
-            if self.mode == "code"
-            else len(names),
-            "mode": self.mode,
             "restart_required": bool(self._stale_plugins),
             "persistent_environment_tools_complete": (SANDBOX_TOOLS | WORKSPACE_TOOLS) <= names,
         }
@@ -60,7 +51,7 @@ class MainAgentContract:
         return composer.invariant_messages()
 
     async def definitions(self) -> tuple[ChatTool, ...]:
-        """Full execution contract; the Provider uses model_definitions instead."""
+        """The frozen contract the Provider declares and every executor checks."""
         async with self._lock:
             if self._tools is not None:
                 return deepcopy(self._tools)
@@ -81,12 +72,6 @@ class MainAgentContract:
 
             tools.extend(work_control_tools())
             tools.extend(subagent_tools())
-            from yuki.codemode.contract import EXECUTE_CODE_TOOL
-
-            # Code composition is calling syntax over this same frozen manifest.
-            if self.mode == "code":
-                tools.append(EXECUTE_CODE_TOOL)
-                tools.append(LOOKUP_TOOLS)
             names = [tool.name for tool in tools]
             if len(names) != len(set(names)):
                 raise ValueError("duplicate Main Agent manifest tool")
@@ -124,10 +109,8 @@ class MainAgentContract:
                         # 40: one subtask tool set; native agents are executors of
                         #     start_subtask (delegate/observe/takeover, fixed scope) and the
                         #     two coding-agent tools are retired without successor.
-                        "version": 40,
-                        "mode": self.mode,
-                        "code_api": CODE_API_REVISION,
-                        "direct_names": sorted(DIRECT_TOOL_NAMES),
+                        # 41: Code Mode retired; one direct declaration (#573).
+                        "version": 41,
                         "plugin_contracts": self.plugin_contracts,
                         "tools": [
                             {
@@ -150,17 +133,10 @@ class MainAgentContract:
             self.schema_view = validator.freeze()
             self._tools = frozen
             self.revision = revision
-            from yuki.codemode.api_projection import project
-
-            if self.mode == "code":
-                self.script_api = project(self._tools, self.revision)
             logging.getLogger(__name__).info(
                 "main_agent_manifest_frozen tools=%d revision=%s", len(self._tools), self.revision
             )
             return deepcopy(self._tools)
-
-    async def model_definitions(self) -> tuple[ChatTool, ...]:
-        return model_definitions(await self.definitions(), enabled=self.mode == "code")
 
     def plugin_binding_current(self, name: str) -> bool:
         expected = self.plugin_contracts.get(name)

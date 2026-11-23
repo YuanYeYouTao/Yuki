@@ -65,7 +65,6 @@ class Fixture:
             conversation_media_cache_directory=tmp_path / "conversation-media",
             social_transfer_directory=tmp_path / "transfer",
             semantic_participation_state_path=tmp_path / "participation.sqlite3",
-            code_mode_enabled=False,
             memory_embedding_enabled=False,
             memory_embedding_worker_enabled=False,
             memory_self_reflection_enabled=False,

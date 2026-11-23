@@ -12,11 +12,10 @@ from tests.support.event_seed import seed_scoped_event
 from tests.support.work_runner_helpers import case, run, tool
 from tests.unit.test_subagent_lifecycle import worker_case
 
-from yuki.capabilities.coordinator import CoordinatedToolResult
 from yuki.capabilities.media import MediaResultText
 from yuki.capabilities.results import ToolExecutionResult
 from yuki.domain.conversations import ConversationScope
-from yuki.domain.messages import ChatImage, ChatMessage, ChatResponse, ChatTool
+from yuki.domain.messages import ChatImage, ChatMessage, ChatResponse
 from yuki.model_runtime.models import ModelCapability
 from yuki.persistence.models import ChatEventModel
 from yuki.runtime.effect_outcomes import current_result_capture
@@ -24,7 +23,6 @@ from yuki.runtime.work_budget_schema import budgets
 from yuki.runtime.work_control import WorkControl
 from yuki.runtime.work_schema_v1 import effects, work
 from yuki.runtime.work_session import WorkSession
-from yuki.services.agent_runner import CODE_COMPOSITION_YIELDED
 from yuki.services.turn_transcript import TurnTranscript
 
 
@@ -276,20 +274,14 @@ async def test_new_response_may_reuse_provider_id_without_losing_its_undispatche
     assert len(probe.provider.requests) == 2
 
 
-async def _media_recovery_case(database, tmp_path, monkeypatch, *, new_image=False, code=False):
+async def _media_recovery_case(database, tmp_path, monkeypatch, *, new_image=False):
     calls = (
         tool("manage_task", {"action": "update", "goal": "original child goal"}, "update"),
         tool("write_fixture", {}, "prefix-image"),
         *((tool("write_fixture", {}, "new-image"),) if new_image else ()),
-        *((tool("execute_code", {"code": "1"}, "code"),) if code else ()),
         tool("send", {"text": "original tail"}, "last-tail"),
     )
     probe, _parent, _workers, _identity = await worker_case(database, tmp_path, calls)
-    if code:
-        probe.runtime = replace(
-            probe.runtime,
-            fixed_tools=(*probe.runtime.fixed_tools, ChatTool("execute_code", "code", {})),
-        )
     pixel = (
         "data:image/png;base64,"
         "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6ZKsAAAAASUVORK5CYII="
@@ -389,79 +381,15 @@ async def test_recovered_worker_pairs_complete_response_before_prefix_and_new_to
     assert not any(
         entry.images for entry in transcript.portable_entries() if isinstance(entry, ChatMessage)
     )
-    assert (
-        await probe.runner._resume_tool_response(
-            session.pending,
-            transcript,
-            probe.backend,
-            replace(probe.runtime, work_control=recovered),
-            probe.runtime.fixed_tools,
-        )
-        is False
+    await probe.runner._resume_tool_response(
+        session.pending,
+        transcript,
+        probe.backend,
+        replace(probe.runtime, work_control=recovered),
+        probe.runtime.fixed_tools,
     )
     expected = [images["prefix-image"]]
     if new_image:
         expected.append(images["new-image"])
     _assert_media_after_all_results(transcript, expected)
     assert executed == ["prefix-image", *(("new-image",) if new_image else ()), "last-tail"]
-
-
-async def test_recovered_worker_defers_all_tool_media_across_another_code_segment(
-    database, tmp_path, monkeypatch
-):
-    probe, executed, images = await _media_recovery_case(
-        database, tmp_path, monkeypatch, new_image=True, code=True
-    )
-    execute = probe.runner._execute_tool_batch
-    remaining_code_yields = 2
-
-    async def code_boundary(pending, *args, **kwargs):
-        nonlocal remaining_code_yields
-        if pending[0].id != "code":
-            return await execute(pending, *args, **kwargs)
-        # This unit case exercises the caller's actual Code yield signal. Native
-        # worker execution and its writer are covered by Code lifecycle tests.
-        if remaining_code_yields:
-            remaining_code_yields -= 1
-            await kwargs["runtime"].work_control.session.save("response", kwargs["batch_calls"])
-            return CoordinatedToolResult(((pending[0], CODE_COMPOSITION_YIELDED, True),), 0)
-        return CoordinatedToolResult(
-            ((pending[0], '{"ok":true,"data":{"output":"done"}}', True),), 0
-        )
-
-    async def intercept(pending, backend, runtime, **kwargs):
-        return await code_boundary(pending, backend, runtime=runtime, **kwargs)
-
-    monkeypatch.setattr(probe.runner, "_execute_tool_batch", intercept)
-    for _segment in range(2):
-        recovered, session, transcript = await _restore_worker_response(probe)
-        assert (
-            await probe.runner._resume_tool_response(
-                session.pending,
-                transcript,
-                probe.backend,
-                replace(probe.runtime, work_control=recovered),
-                probe.runtime.fixed_tools,
-            )
-            is True
-        )
-        assert not any(
-            entry.images
-            for entry in transcript.portable_entries()
-            if isinstance(entry, ChatMessage)
-        )
-        assert executed == ["prefix-image", "new-image"]
-        probe.control = recovered
-    recovered, session, transcript = await _restore_worker_response(probe)
-    assert (
-        await probe.runner._resume_tool_response(
-            session.pending,
-            transcript,
-            probe.backend,
-            replace(probe.runtime, work_control=recovered),
-            probe.runtime.fixed_tools,
-        )
-        is False
-    )
-    _assert_media_after_all_results(transcript, [images["prefix-image"], images["new-image"]])
-    assert executed == ["prefix-image", "new-image", "last-tail"]

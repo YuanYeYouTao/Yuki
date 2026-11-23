@@ -7,13 +7,10 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
-import pytest
 from tests.conftest import build_harness, make_settings
-from tests.support.codemode_cases import effect_rows, environment, outer_call, requires_worker
 
 from yuki import __version__
 from yuki.capabilities.invocation import direct_invocations
-from yuki.codemode.driver import CodeModeDriver
 from yuki.domain.conversations import ScopeType
 from yuki.domain.messages import InboundMessage, SenderIdentity, ToolCall, ToolFunction
 from yuki.persistence.database import Database
@@ -28,7 +25,6 @@ from yuki.plugin_host.repository import PluginInstallationRepository
 from yuki.runtime.origin import TurnOrigin
 from yuki.services.agent_runner import AgentRuntime
 from yuki.services.agent_tools import ToolRuntime
-from yuki.services.invocation_service import InvocationService
 from yuki.services.main_agent_backend import MainAgentBackend
 from yuki.services.main_agent_contract import MainAgentContract
 from yuki.workspace.short_state import ShortState
@@ -74,7 +70,7 @@ class Fixture:
 ''')
 
 
-async def run(*, native_child=False):
+async def run():
     with tempfile.TemporaryDirectory(prefix="yuki-r3-plugin-") as d:
         base = Path(d)
         root = base / "plugins" / "test.contract"
@@ -121,9 +117,7 @@ async def run(*, native_child=False):
             )
             chat = build_harness(db, make_settings(db.url)).processor._chat
             chat.set_plugin_tools(adapter)
-            contract = MainAgentContract(
-                chat, ShortState(WorkspaceStore(base / "workspace")), code_enabled=True
-            )
+            contract = MainAgentContract(chat, ShortState(WorkspaceStore(base / "workspace")))
             chat.runtime.runner.main_contract = contract
             before = await contract.definitions()
             original_revision = contract.revision
@@ -216,41 +210,6 @@ async def run(*, native_child=False):
                 "result": await execute(backend, {"value": "fixture"}, 2),
             }
             out["after_risk_change"]["fixture_file_committed"] = ctx.effect_file.exists()
-            if native_child:
-                # Real frozen API -> pinned VM -> typed child -> real Work journal.
-                # The new MUTATE implementation must not run under old READ facts.
-                env = await environment(db, base / "code-child")
-                env.host.api = contract.script_api
-                service = InvocationService()
-
-                async def child(invocation, side_effecting):
-                    return await service.invoke(
-                        invocation,
-                        lambda: backend.execute_call(invocation),
-                        side_effecting=side_effecting,
-                    )
-
-                env.host.execute_business = child
-                wrapper = next(key for key, value in env.host.api.wrappers.items() if value == name)
-                outer = outer_call(env, f"await {wrapper}({{'value': 'synthetic'}})")
-                raw = await CodeModeDriver(env.host, outer).run()
-                body = json.loads(raw)
-                rows, tools, budget = await effect_rows(db, env.control.current["id"])
-                assert tools == budget == 1 and len(rows) == 2
-                # A contract mismatch is rejected before the handler starts.
-                assert body["operations"][0]["status"] == "not_executed"
-                leaf = next(
-                    row for row in rows.values() if row["effect_key"] != outer.identity.operation_id
-                )
-                receipt = json.loads(leaf["receipt_json"])
-                refusal = json.loads(receipt["result"])
-                assert refusal["error"] == "plugin_tool_contract_changed"
-                assert refusal["executed"] is False
-                # The commit fact stays in the typed receipt outcome.
-                assert receipt["outcome"]["mutation_committed"] is False
-                assert await CodeModeDriver(env.host, outer).run() == raw
-                assert await effect_rows(db, env.control.current["id"]) == (rows, tools, budget)
-                assert not ctx.effect_file.exists()
             # Again through supported lifecycle; schema is now different under the same model name.
             await manager.disable("test.contract", actor_user_id="9000")
             write_plugin(root, 3, "READ", "replacement")
@@ -299,9 +258,3 @@ async def run(*, native_child=False):
 
 async def test_approved_hot_upgrade_does_not_replace_frozen_binding():
     await run()
-
-
-@pytest.mark.native_worker
-@requires_worker
-async def test_hot_upgrade_refusal_keeps_native_child_and_work_receipt():
-    await run(native_child=True)

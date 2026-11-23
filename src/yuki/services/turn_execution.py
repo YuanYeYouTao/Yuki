@@ -57,7 +57,6 @@ from yuki.runtime.origin import TurnOrigin
 from yuki.runtime.work_control import WORK_CONTROL_NAMES, WorkControl, WorkInputsPreparing
 from yuki.runtime.work_repository import WorkCapacityError
 from yuki.services.agent_runner import (
-    CODE_COMPOSITION_YIELDED,
     AgentRunner,
     AgentRunResult,
     AgentRuntime,
@@ -273,12 +272,8 @@ class TurnExecution:
             self.state.fixed_definitions = self.runtime.fixed_tools
         elif self.runner.main_contract is not None:
             manifest = self.runner.main_contract
-            self.state.fixed_definitions = await manifest.model_definitions()
-            self.runtime = replace(
-                self.runtime,
-                script_api=manifest.script_api,
-                manifest_revision=manifest.revision,
-            )
+            self.state.fixed_definitions = await manifest.definitions()
+            self.runtime = replace(self.runtime, manifest_revision=manifest.revision)
             if not self.runtime.dynamic_context_prepared:
                 raise LLMError("main_agent_composition_required")
             if self.tools is None:
@@ -291,7 +286,6 @@ class TurnExecution:
                 self.runtime.runtime_config,
                 self.initial_messages,
                 self.state.fixed_definitions,
-                script_api=self.runtime.script_api,
                 manifest_revision=self.runtime.manifest_revision,
             )
             self.runtime.work_control.session = WorkSession(self.runtime.work_control, contract)
@@ -312,22 +306,15 @@ class TurnExecution:
                 )
             pending_response = self.runtime.work_control.session.pending
             if pending_response:
-                # Original undispatched calls and open programs finish before
-                # an ending can settle or another model request can be bought.
-                if await self.runner._resume_tool_response(
+                # Original undispatched calls finish before an ending can
+                # settle or another model request can be bought.
+                await self.runner._resume_tool_response(
                     pending_response,
                     self.state.transcript,
                     self.tools,
                     self.runtime,
                     self.state.fixed_definitions,
-                ):
-                    return AgentRunResult(
-                        text="",
-                        tool_calls_used=0,
-                        model_requests=0,
-                        suppress_delivery=True,
-                        work_state="queued",
-                    )
+                )
             if pending_response:
                 # _resume_tool_response paired the original response and saved the
                 # chain; this activation continues by appending to it.
@@ -409,7 +396,6 @@ class TurnExecution:
             self.runtime.runtime_config,
             self.initial_messages,
             self.state.fixed_definitions,
-            script_api=self.runtime.script_api,
             manifest_revision=self.runtime.manifest_revision,
         )
         if saved["main_contract"] != contract:
@@ -1175,7 +1161,6 @@ class TurnExecution:
             self.runtime.runtime_config,
             self.initial_messages,
             self.state.fixed_definitions,
-            script_api=self.runtime.script_api,
             manifest_revision=self.runtime.manifest_revision,
         )
         self.state.transcript = plan.transcript
@@ -1515,8 +1500,6 @@ class TurnExecution:
     ) -> TurnDecision:
 
         batch = self.state.coordinated.calls
-        if any(result == CODE_COMPOSITION_YIELDED for _, result, _ in batch):
-            return End(await self._code_yield(request_index + 1))
         for call, result, _was_executed in batch:
             fact = self.state.coordinated.evidence.get(call.id, {})
             outcome = self.state.coordinated.outcomes.get(call.id)
@@ -1619,20 +1602,6 @@ class TurnExecution:
                 self.state.calls_used,
             )
         return Continue()
-
-    async def _code_yield(self, model_requests: int) -> AgentRunResult:
-        # The response with the pending code call is already journaled; no
-        # result is paired, so the next segment resumes the same program.
-        assert self.runtime.work_control is not None
-        self.runtime.work_control.yield_segment = True
-        self.runtime.work_control.ending = "queued"
-        return AgentRunResult(
-            text="",
-            tool_calls_used=self.state.calls_used,
-            model_requests=model_requests,
-            suppress_delivery=True,
-            work_state="queued",
-        )
 
     def _accepted_result(self, model_requests: int) -> AgentRunResult:
         control = self.runtime.work_control

@@ -115,16 +115,11 @@ async def test_retired_routes_are_absent_and_native_and_remote_computer_remain()
         assert (await client.post("/executor/v1/heartbeat")).status_code == 404
 
 
-@pytest.mark.parametrize("code_enabled", [False, True])
-async def test_fixed_contract_and_execution_retire_only_local_device(
-    database, tmp_path, code_enabled
-):
+async def test_fixed_contract_and_execution_retire_only_local_device(database, tmp_path):
     _, _, runtime = await active_work(database, tmp_path)
     harness = build_harness(database, make_settings(database.url))
     chat = harness.processor._chat
-    contract = MainAgentContract(
-        chat, ShortState(WorkspaceStore(tmp_path / "short-state")), code_enabled=code_enabled
-    )
+    contract = MainAgentContract(chat, ShortState(WorkspaceStore(tmp_path / "short-state")))
     names = {tool.name for tool in await contract.definitions()}
     assert "local_device" not in names
     assert {"start_subtask", "get_tasks", "run_command", "send"} <= names

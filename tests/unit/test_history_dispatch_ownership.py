@@ -88,7 +88,7 @@ async def retry_due_now(database):
         await writer.execute(update(recovery).values(not_before=0, attempts=0, failure_json="{}"))
 
 
-async def _scene(database, tmp_path, provider, *, yield_after=None, code_enabled=False):
+async def _scene(database, tmp_path, provider, *, yield_after=None):
     env = await social_env(database, tmp_path)
     if yield_after is not None:
         yield_activation_after(provider, yield_after)
@@ -98,15 +98,13 @@ async def _scene(database, tmp_path, provider, *, yield_after=None, code_enabled
             database.url,
             runtime_work_enabled=True,
             enabled_groups_csv="20001",
-            code_mode_enabled=code_enabled,
         ),
         provider,
     )
     chat = harness.processor._chat
     state = ShortState(WorkspaceStore(tmp_path / "state"))
     state.update({"slot": 1, "text": "original-snapshot"})
-    chat.runtime.runner.main_contract = MainAgentContract(chat, state, code_enabled=code_enabled)
-    chat.runtime.runner.code_mode_settings = harness.settings
+    chat.runtime.runner.main_contract = MainAgentContract(chat, state)
     chat._tools.short_state = state
     message = InboundMessage(
         ingress_key="history-ownership",

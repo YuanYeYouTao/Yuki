@@ -10,10 +10,10 @@
 原目标需要子结果时用 `wait(for=[{"run": id}])`；
 同时等会话输入的组合和一次命中后的剩余依赖接续见[主 Agent 等待合同](main-agent-runtime.md#预算等待与异常)。
 
-工作者沿部署的 direct / Code Mode 执行，复用 `MainAgentContract` 的完整声明、核心 system、
-原入口的 ScriptApi 和 `MainAgentBackend`。App 子任务保留 App 的工具合同，平台子任务保留平台入口的合同；不会把 App 请求换成 QQ 声明。`lookup_tools` 查询同一已提交目录，不维护独立工具
+工作者复用 `MainAgentContract` 的完整声明、核心 system 和 `MainAgentBackend`。
+App 子任务保留 App 的工具合同，平台子任务保留平台入口的合同；不会把 App 请求换成 QQ 声明，不维护独立工具
 上限。子目标、父子关系和 cwd 作为 brief 资料；实际来源与权限由 Host 绑定，模型不能
-通过资料包取得额外身份或授权。pending 沿原 run_id 等待，不以新脚本重做已提交子调用。
+通过资料包取得额外身份或授权。pending 沿原 run_id 等待，不重做已提交调用。
 
 用户要求继续聊天不表示取消后台工作。主 Yuki 发言使用 `send`；
 模型侧没有单独的回答动作。Agent 提交结束决定后，原 writer 只收拢真正活动的所属执行；没有活动执行的暂停/等待子目标保留自身状态，不否决父目标完成。fail/cancel 直接复用指定子树撤权，无需先逐一取消后代或等待远端全部确认。
@@ -34,7 +34,7 @@ JSON 叶文本保布尔、数值、null 与缺失的区别，继续沿原 `str(r
 
 工作者使用 Main 的固定工具合同，完整 schema 和工具顺序保持一致。原生或外部联网能力
 沿当前部署与 Profile 的实际声明，不在 worker 路径额外裁剪。工具执行按 child Work 保存
-原 invocation、调用键、结果和来源；direct 与 Code 路径共用原执行后端。
+原 invocation、调用键、结果和来源，与 Main 共用原执行后端。
 
 `view_file` 读取获准工作文件、聊天附件或不可变 artifact，图片及视频帧交原工作者模型，
 不另调视觉 Provider。媒体读取最多 20 MiB，主请求仍计入根预算；更大视频可先通过
@@ -54,7 +54,7 @@ JSON 叶文本保布尔、数值、null 与缺失的区别，继续沿原 `str(r
 Presence 与旧持久 alias 证明其入口；新的私聊按 Binding + Presence 分开，不借旧 alias 合并。
 
 子 Agent 用自己的 Work 作为嵌套子任务的父节点。`message_task` 指定 id 时联系
-自己的子任务；省略时联系自己的父任务（`ask=true` 表示提问并等待回答，`reply_to` 填所回答问题的 message_id）。实际提问保存后，只有父任务仍非终态时才接纳等待并返回 `status: "waiting_parent"`；父已经终态时仍保存问题，不暂停子任务或复活父任务。同一原批次、程序中剩余获准的通信、派生、保存和交付继续收拢。子孙通信和管理核验
+自己的子任务；省略时联系自己的父任务（`ask=true` 表示提问并等待回答，`reply_to` 填所回答问题的 message_id）。实际提问保存后，只有父任务仍非终态时才接纳等待并返回 `status: "waiting_parent"`；父已经终态时仍保存问题，不暂停子任务或复活父任务。同一原批次中剩余获准的通信、派生、保存和交付继续收拢。子孙通信和管理核验
 真实方向与树关系。只读 Work 目录使用 Main 的同一范围，目录信息不授予修改或取消权限。
 工作者默认跟随 Main 模型；Provider/合同变化沿原合法边界恢复，不暗换协议。
 
@@ -70,7 +70,7 @@ child 使用自己的 lease，在取得执行权后复用 root 的激活监督�
 
 0057 引入工作者资料、独立租约、根预算和媒体表。0105 将原关系迁入共同 Work.parent_work_id，工作者表不再混用 root_id。预算根按祖先关系读取，普通派生目标与工作者共用原树查询和管理。
 父子通信复用持久输入日志：消息 ID、关联问题、消费状态一起保存，重复通知不重复消费。
-工作者向仍可接续的父任务提问，原批次与程序收拢后进入 `waiting_parent`（存储状态为 `waiting_user`）；等待命令时进入 `waiting_external`，均释放执行名额。真实子问题属于父任务业务输入，可经原输入与 writer 接续尚未结算的结束决定或等待，既有 active wait 不遮住问题。
+工作者向仍可接续的父任务提问，原批次收拢后进入 `waiting_parent`（存储状态为 `waiting_user`）；等待命令时进入 `waiting_external`，均释放执行名额。真实子问题属于父任务业务输入，可经原输入与 writer 接续尚未结算的结束决定或等待，既有 active wait 不遮住问题。
 普通进度和完成通知仍按辅助输入保存；父任务在 `waiting_external` 且没有 active wait 时可由普通完成通知入队，已有等待则沿原条件和 `any` / `all` 语义处理。通知不撤销已接纳结束决定、不复活终态，也不解除独立的 `suspended` 原因。结果保存、入队、模型观察和用户送达分别核对，入队不承诺再次请求模型。父任务回答或命令回执到达后续接原历史。
 已接纳的提问等待复用原 `accepted_control` 和调用键持久保存，后来的真实提问按原控制顺序接续子任务，不因分段或崩溃丢掉等待决定、重发问题。终态父返回 `waiting_parent=false` 不撤销子任务原完成决定；父的独立 `suspended` 原因也不自动解除，问题保留供显式 resume 消费。
 暂停或等待父任务的子任务可直接 `resume` 原目标，无需新增 instruction 或伪造补充消息。

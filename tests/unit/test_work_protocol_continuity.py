@@ -1019,7 +1019,7 @@ async def test_provider_change_keeps_original_sequence_unknown_and_allows_new_ow
         invoked += 1
         return '{"ok":true}'
 
-    for _ in range(2):
+    for attempt in range(2):
         restarted_control, resumed, transcript = await restart()
         assert transcript.request().continuation is None
         assert any(
@@ -1033,10 +1033,9 @@ async def test_provider_change_keeps_original_sequence_unknown_and_allows_new_ow
         assert await resumed.journal.effect_state(effect_key) == "prepared"
         allowed = await invoke_tool(
             resumed,
-            ToolCall("new-operation", ToolFunction("workspace_write", "{}")),
+            ToolCall(f"new-operation-{attempt}", ToolFunction("workspace_write", "{}")),
             new_operation,
             side_effecting=True,
-            child_ordinal=0,
         )
         assert json.loads(allowed).get("ok") is not False
     assert invoked == 2

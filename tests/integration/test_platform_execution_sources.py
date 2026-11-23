@@ -279,14 +279,13 @@ async def test_telegram_host_continuation_quiet_keeps_topics_independent(
         await host.close()
 
 
-@pytest.mark.parametrize("code_enabled", [False, True])
 @pytest.mark.parametrize("transport", ["offline", "reconnect"])
 async def test_app_child_keeps_entry_contract_and_runs_without_connection_gate(
-    app_env, database, monkeypatch, code_enabled, transport
+    app_env, database, monkeypatch, transport
 ):
     env = app_env
     chat = env.harness.processor._chat
-    contract = MainAgentContract(chat, ShortState(env.store), code_enabled=code_enabled)
+    contract = MainAgentContract(chat, ShortState(env.store))
     chat.runtime.runner.main_contract = contract
     chat, runtime = await app_source(env, database, monkeypatch)
     actor = runtime.require_actor()
@@ -347,11 +346,7 @@ async def test_app_child_keeps_entry_contract_and_runs_without_connection_gate(
     assert child["state"] == "completed"
     assert len(env.provider.requests) == before + 2
     full = await contract.definitions()
-    if code_enabled:
-        assert "read_chat" in contract.script_api.schemas
-        assert "read_personal_entry" not in contract.script_api.schemas
-    else:
-        assert tuple(snapshots[0].tools) == full
+    assert tuple(snapshots[0].tools) == full
     async with database.read_session() as reader:
         presence = await reader.get(PresenceModel, actor.presence_id)
     assert presence.enabled and presence.platform == "app"
@@ -508,7 +503,6 @@ async def test_group_migration_preserves_original_work_and_native_send(
     await env.gateway.receive(initial)
     await drain_telegram(env)
     chat = env.harness.processor._chat
-    chat.runtime.runner.code_mode_settings = chat._settings  # application container binding
     async with database.read_session() as session:
         from yuki.conversation.canonical_db_models import CanonicalConversationModel
         from yuki.persistence.models import ChatEventModel

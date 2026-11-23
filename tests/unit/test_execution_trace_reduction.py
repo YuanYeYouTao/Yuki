@@ -263,7 +263,7 @@ async def test_tool_details_are_recorded_once_per_item_without_batch_copies(data
 
     runner = AgentRunner(SimpleNamespace(), ConcurrencyManager())
     runtime = SimpleNamespace(
-        work_control=None, execution_id="original-execution", script_api=None, manifest_revision=""
+        work_control=None, execution_id="original-execution", manifest_revision=""
     )
     backend = Backend()
     async with trace_span("turn", {}, recorder=TraceRecorder(database)):
