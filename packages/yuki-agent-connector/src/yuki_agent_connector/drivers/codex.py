@@ -5,10 +5,11 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import shlex
 import socket
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, ClassVar, cast
 from uuid import uuid4
 
@@ -21,6 +22,35 @@ from ..config import Instance
 from ..discovery import creation_flags, profile_environment
 from ..scope import Scope, expand_home
 from . import DriverError, Emit
+
+# Codex shows a command approval as the wrapper it runs: `/bin/zsh -lc '<script>'`
+# (codex-cli 0.169/0.171). Only these shells, bare or in these directories, count.
+WRAPPER_SHELLS = frozenset({"bash", "zsh", "sh"})
+WRAPPER_DIRECTORIES = frozenset({"/bin", "/usr/bin", "/usr/local/bin", "/opt/homebrew/bin"})
+
+
+def _wrapped_script(command: str | list[str]) -> str | list[str] | None:
+    """The script a ``<shell> -lc <script>`` wrapper runs, the command itself when it
+    starts with no shell, or None for any other shape (judged outside the scope)."""
+    try:
+        words = shlex.split(command) if isinstance(command, str) else command
+    except ValueError:
+        return None
+    shell = words[0] if words else ""
+    name = PurePosixPath(shell).name
+    if name not in WRAPPER_SHELLS:
+        return command
+    if shell != name and shell not in {f"{folder}/{name}" for folder in WRAPPER_DIRECTORIES}:
+        return None
+    return words[2] if len(words) == 3 and words[1] == "-lc" else None
+
+
+def _runs(scope: Scope, command: str | list[str]) -> bool:
+    if "*" in scope.commands:
+        return scope.runs(command)
+    script = _wrapped_script(command)
+    return script is not None and scope.runs(script)
+
 
 APPROVAL_METHODS = {
     "item/commandExecution/requestApproval",
@@ -884,7 +914,7 @@ class CodexDriver:
                 and not params.get("additionalPermissions")
                 and (scope.network or not params.get("networkApprovalContext"))
                 and isinstance(command, (str, list))
-                and scope.runs(command)
+                and _runs(scope, command)
             )
         if method == "item/fileChange/requestApproval":
             paths = self.item_paths.get(str(params.get("turnId")), {}).get(

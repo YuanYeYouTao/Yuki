@@ -238,6 +238,14 @@ the whole command outside. Not covered: the user's shell aliases, functions and
 `chpwd`-style hooks (a `cd` into `write_paths` runs them), a symlink an earlier
 segment creates before the `cd` runs, and PowerShell or cmd.exe syntax, which was
 not exercised. A `cd` that Claude's Bash runs also moves the cwd of its later calls.
+Codex shows a command approval as the wrapper it runs (`/bin/zsh -lc '<script>'`,
+codex-cli 0.169/0.171), so since 0.9.9 the Codex driver judges the script: exactly
+`<shell> -lc <script>` with `bash`, `zsh` or `sh` named bare or under `/bin`,
+`/usr/bin`, `/usr/local/bin` or `/opt/homebrew/bin`. A command starting with such a
+shell in any other shape (`-c`, extra words, words outside the quotes, unbalanced
+quotes, another directory) is outside; one starting with no shell is judged as is;
+`*` skips this. Claude's Bash command is the model's text, unwrapped; ACP `execute`
+requests are not unwrapped.
 The prefix check looks neither at the cwd nor at the paths a
 command writes, so `write_paths` does not confine an approved command: Claude runs
 it under the user's own account with no connector sandbox; Codex sandboxed

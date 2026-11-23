@@ -35,10 +35,17 @@ D  the Claude driver auto-approves inside compound commands and reports the othe
 H  real shells: every command judged inside runs only granted programs (whole-word
    prefix of argv) and only in the start directory or inside ``write_paths``.
    Artifact: test-results/connector-stability/scope-compound-<platform>.json.
+R3 (opt-in, paid, ``YUKI_REAL_CLAUDE=1``): a real Claude hands ``can_use_tool`` the
+   Bash string as written (no shell wrapper), so ``cd <write path> && ls`` is
+   auto-approved and ``cd <outside> && ls`` reported. Artifact:
+   test-results/connector-stability/scope-compound-real-claude-<platform>.json.
+Codex wraps commands (``/bin/zsh -lc '…'``): see test_codex_shell_wrapper.py and the
+opt-in test_codex_real_compound.py.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import random
@@ -47,10 +54,13 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 from test_claude_phase2 import answered, response_for, started, tool_request, until
 
+from yuki_agent_connector.config import Instance
+from yuki_agent_connector.drivers import claude as claude_module
 from yuki_agent_connector.scope import Scope
 
 PREFIXES = ["pytest", "git log", "git status", "ls"]
@@ -503,3 +513,97 @@ def test_real_shells_run_only_granted_programs_inside_write_paths(tree: dict[str
     assert shells
     assert len(compound) > len(INSIDE)
     assert violations == []
+
+
+# --- R3: a real Claude passes the Bash command through unchanged (opt-in, paid) ------
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(
+    not os.environ.get("YUKI_REAL_CLAUDE") or shutil.which("claude") is None,
+    reason="one real paid Claude run; set YUKI_REAL_CLAUDE=1",
+)
+async def test_real_claude_bash_command_reaches_the_scope_verbatim(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R3: Claude's ``can_use_tool`` carries the model's Bash string as written, with no
+    shell wrapper, so ``cd <write path> && ls`` is auto-approved and ``cd <outside>``
+    is reported. Real driver and CLI; haiku; the user's own settings left out."""
+
+    real_options = claude_module.ClaudeAgentOptions
+
+    def isolated(**kwargs: Any) -> Any:
+        return real_options(**{**kwargs, "setting_sources": [], "model": "haiku"})
+
+    monkeypatch.setattr(claude_module, "ClaudeAgentOptions", isolated)
+    # The session starts elsewhere, so `cd <write path>` is not a no-op Claude may drop.
+    home = (tmp_path / "home").resolve()
+    work, outside = home / "work", home / "outside"
+    work.mkdir(parents=True)
+    outside.mkdir()
+    inside_command, outside_command = f"cd {work} && ls", f"cd {outside} && ls"
+    events: asyncio.Queue[tuple[str, dict[str, Any]]] = asyncio.Queue()
+    judged: list[dict[str, Any]] = []
+
+    async def emit(kind: str, payload: dict[str, Any]) -> None:
+        events.put_nowait((kind, payload))
+
+    driver = claude_module.ClaudeDriver(
+        Instance("claude", "claude", "Claude", str(shutil.which("claude")), cwd=str(home)), emit
+    )
+    judge = driver._inside_scope
+
+    def spy(session: Any, tool: str, arguments: dict[str, Any]) -> bool:
+        inside = judge(session, tool, arguments)
+        judged.append({"tool": tool, "command": arguments.get("command"), "inside": inside})
+        return inside
+
+    driver._inside_scope = spy  # type: ignore[method-assign]
+    await driver.start()
+    reported: list[Any] = []
+    try:
+        await driver.execute(
+            {
+                "id": "real-compound",
+                "action": "prompt",
+                "arguments": {
+                    "prompt": (
+                        "Use the Bash tool twice, once per command, each exactly as written, "
+                        f"then reply DONE:\n1. {inside_command}\n2. {outside_command}\n"
+                        "If one is denied, do not retry it."
+                    ),
+                    "cwd": str(home),
+                    "scope": {"write_paths": [str(work)], "commands": ["ls"]},
+                },
+            }
+        )
+        async with asyncio.timeout(240):
+            while True:
+                kind, value = await events.get()
+                if kind == "permission":
+                    reported.append(value["payload"].get("native_request"))
+                    await driver.execute(
+                        {
+                            "id": f"deny-{len(reported)}",
+                            "action": "respond",
+                            "session_id": value["session_id"],
+                            "execution_id": value["execution_id"],
+                            "arguments": {
+                                "operation_id": "real-compound",
+                                "connection_id": value["payload"]["connection_id"],
+                                "permission_id": value["payload"]["permission_id"],
+                                "option_id": "deny",
+                            },
+                        }
+                    )
+                if kind == "completed" and value.get("operation_id") == "real-compound":
+                    break
+    finally:
+        await driver.stop()
+    ARTIFACT.mkdir(parents=True, exist_ok=True)
+    (ARTIFACT / f"scope-compound-real-claude-{sys.platform}.json").write_text(
+        json.dumps({"judged": judged, "reported": reported}, indent=2, default=str) + "\n"
+    )
+    bash = [item for item in judged if item["tool"] == "Bash"]
+    assert {"tool": "Bash", "command": inside_command, "inside": True} in bash
+    assert {"tool": "Bash", "command": outside_command, "inside": False} in bash
