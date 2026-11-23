@@ -286,6 +286,7 @@ class ConfigFileService:
                     for task in ModelTask
                     if isinstance(routes.get(task.value), str)
                 },
+                "fallbacks": raw.get("fallbacks", {}),
             }
             semantic_section, semantic_valid = self._semantic_from_raw(loaded)
             if semantic_section is not None:

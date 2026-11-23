@@ -183,11 +183,20 @@ class ModelProfile(_FrozenModel):
 
 
 class ModelRoute(_FrozenModel):
-    """Bind one business task to one profile and required capabilities."""
+    """Bind one business task to its head profile, explicit fallbacks and requirements.
+
+    A fallback is tried only after the previous hop was not accepted upstream and only
+    for a request without provider continuation state; see ``TaskModelExecutor``.
+    """
 
     task: ModelTask
     profile_id: str = Field(min_length=1)
     required_capabilities: frozenset[ModelCapability] = frozenset()
+    fallback_profile_ids: tuple[str, ...] = ()
+
+    @property
+    def chain(self) -> tuple[str, ...]:
+        return (self.profile_id, *self.fallback_profile_ids)
 
 
 class ModelInvocationRecord(_FrozenModel):

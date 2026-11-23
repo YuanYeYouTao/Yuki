@@ -65,6 +65,7 @@ from yuki.identity.write_settings import configure_identity_write_settings
 from yuki.memory.embedding.runtime import MemoryEmbeddingRuntime
 from yuki.memory.episode_index import EpisodeIndex
 from yuki.memory.resident import ResidentMemory
+from yuki.model_runtime.health import model_fallback_facts
 from yuki.persistence.database import Database
 from yuki.plugin_host.background_turns import PluginBackgroundTurnWorker
 from yuki.plugin_host.config import BoundConfigFacade
@@ -1028,6 +1029,7 @@ class ApplicationContainer:
                     "state": "failed_jobs",
                     "durable": True,
                 }
+            facts.update(await model_fallback_facts(self.models, self.model_invocations))
             return facts
 
         return Watchdog(

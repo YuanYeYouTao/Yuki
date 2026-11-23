@@ -22,10 +22,12 @@ from yuki.domain.messages import ChatRequest, ChatResponse
 from yuki.execution_trace.phases import current_model_phases, model_detail
 from yuki.execution_trace.recorder import record_http_response, record_trace, trace_span
 from yuki.llm.base import (
+    LLMAuthenticationError,
     LLMConfigurationError,
     LLMError,
     LLMInvalidResponseError,
     LLMProvider,
+    LLMRateLimitError,
     LLMTimeoutError,
     LLMUnavailableError,
     LLMUnsupportedFeatureError,
@@ -42,6 +44,19 @@ from yuki.model_runtime.request_accounting import (
     current_provider_attempts,
 )
 from yuki.runtime.work_activation import current_work_control
+
+# The request never reached the provider (connect, proxy tunnel, local pool wait) or the
+# provider explicitly refused it. A read/write failure or a cut reply may have been
+# accepted and billed, so it is not here.
+NOT_ACCEPTED_ERRORS: tuple[type[BaseException], ...] = (
+    httpx.ConnectError,
+    httpx.ConnectTimeout,
+    httpx.ProxyError,
+    httpx.PoolTimeout,
+    RetryableProviderError,
+    LLMRateLimitError,
+    LLMAuthenticationError,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -262,6 +277,8 @@ class JSONHTTPProvider(LLMProvider):
                         exc.diagnostics = {**exc.diagnostics, "usage": usage}
                     raise
             except BaseException as exc:
+                if attempts is not None and isinstance(exc, NOT_ACCEPTED_ERRORS):
+                    attempts.not_accepted += 1
                 if finish is not None:
                     await finish("failed", None)
                 if isinstance(exc, Exception):
