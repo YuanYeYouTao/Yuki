@@ -298,10 +298,9 @@ python -m pytest tests/integration/test_local_codex_bridge_live.py -q -s
 
 ## 0.9.7：ACP 范围随会话保留
 
-- **detach 不再删除 ACP 范围**：范围记在会话上，不再记在委派上。Yuki 的 prompt 还在运行时 detach 委派（带不带 `release` 都一样），连接器代为执行的 `terminal/create` 与 `fs/write_text_file` 回调仍按该范围检查，范围外返回 `invalid_params`（`outside_delegated_scope`）。这覆盖该回合余下的部分、之后 Agent 自行开启的回合（detach 后无主），直到连接器关闭会话；会话上的下一次 prompt 用它自己的范围替换（不叠加）。权限请求的自动批准仍要有持有该回合的委派，detach 后的请求照旧只能 deny。此前 detach 立刻删掉范围，而 `release` 要等回合结束才关闭会话；这段时间以及不带 `release` 时会话之后的回合里，这两种回调不做检查，直接执行。
-- **关闭会话时释放它的终端**：连接器关闭会话（`release` 在回合边界关闭，或没有 `session/close` 时重启 Agent 进程）前，先结束并释放连接器为该会话启动、Agent 尚未释放的终端。此前这些终端留在连接器里，停止驱动时因会话已不存在而报错。
-- **不在本版本内**：ACP 模式收窄后的恢复；`session/close` 失败或传输异常时的处理与上报。会话在发送 `session/close` 之前已从连接器移除，之后到达的回调返回错误，不执行。
-- 验证：[`test_acp_detach_keeps_scope.py`](../../packages/yuki-agent-connector/tests/test_acp_detach_keeps_scope.py) 用真实驱动对脚本化 ACP Agent：回合中 detach（带与不带 `release`）后，范围内的写入与命令照常执行，范围外的被拒绝且没有落盘或启动；不带 `release` 时 Agent 自行开启的回合同样受限，下一次带新范围的 prompt 按新范围判断；带 `release` 时会话在回合后关闭且终端已释放。产物写到 `test-results/connector-stability/acp-detach-scope-<release>-<platform>.json`。未用真实 ACP Agent 运行。
+- **detach 不再删除 ACP 范围**：范围记在会话上，不再记在委派上。Yuki 的 prompt 还在运行时 detach 委派（带不带 `release` 都一样），连接器代为执行的 `terminal/create` 与 `fs/write_text_file` 回调仍按该范围检查，范围外返回 `invalid_params`（`outside_delegated_scope`）。这覆盖该回合余下的部分、之后 Agent 自行开启的回合（detach 后无主），直到连接器关闭会话；会话上的下一次 prompt 用它自己的范围替换（不叠加）。权限请求的自动批准仍要有持有该回合的委派：detach 后不再自动批准，请求照旧交给仍在接收的监督，没有接收者时只能 deny。此前 detach 立刻删掉范围，而 `release` 要等回合结束才关闭会话；这段时间以及不带 `release` 时会话之后的回合里，这两种回调不做检查，直接执行。
+- **不在本版本内**：ACP 模式收窄后的恢复；`session/close` 失败或传输异常时的处理与上报。会话在发送 `session/close` 之前已从连接器移除，之后到达的回调返回错误，不执行。连接器为会话启动、Agent 到关闭时仍未释放的终端不随会话结束，停止驱动时会因会话已不存在而报错（此前即如此）。
+- 验证：[`test_acp_detach_keeps_scope.py`](../../packages/yuki-agent-connector/tests/test_acp_detach_keeps_scope.py) 用真实驱动对脚本化 ACP Agent：回合中 detach（带与不带 `release`）后，范围内的写入与命令照常执行，范围外的被拒绝且没有落盘或启动；不带 `release` 时 Agent 自行开启的回合同样受限，同一会话上下一次带新范围的 prompt 按新范围判断；带 `release` 时会话在回合后关闭。产物写到 `test-results/connector-stability/acp-detach-scope-<release>-<platform>.json`。未用真实 ACP Agent 运行。
 - Bot 无需改动；需要发布并在 Desktop 点击「更新连接器」后生效。
 
 ## 0.9.6：Codex 移动目的地、本回合授权与 ACP 绝对路径

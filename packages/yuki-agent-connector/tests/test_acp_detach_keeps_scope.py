@@ -11,9 +11,7 @@ Failure cases written before the implementation:
   refused wholesale instead of kept to its scope);
 - D5: a later scoped prompt on the still-loaded session is judged by the old scope
   (scopes stack) instead of its own;
-- D6: ``release`` no longer closes the session after the turn;
-- D7: terminals the connector started for a closed session stay behind, and stopping
-  the driver then fails on them (their session is gone).
+- D6: ``release`` no longer closes the session after the turn.
 
 Artifact: test-results/connector-stability/acp-detach-scope-<release>-<platform>.json
 (the trace of every callback and whether it ran).
@@ -45,8 +43,9 @@ def _steps(work: Path, outside: Path, inside: Path, escape: Path, tag: str) -> l
     return [
         {"write": str(work / f"{tag}-in.txt")},
         {"write": str(outside / f"{tag}-out.txt")},
-        {"terminal": sys.executable, "args": [str(inside)], "output": True},
-        {"terminal": sys.executable, "args": [str(escape)], "output": True},
+        # Released by the agent after use, as real ACP agents do.
+        {"terminal": sys.executable, "args": [str(inside)], "output": True, "release": True},
+        {"terminal": sys.executable, "args": [str(escape)], "output": True, "release": True},
     ]
 
 
@@ -104,16 +103,19 @@ async def test_acp_detach_mid_turn_keeps_the_scope(tmp_path: Path, release: bool
         else:
             # D5: the next scoped prompt on the loaded session is judged by its own scope.
             await driver.execute(
-                acp.prompt(
-                    "second",
-                    {
-                        "during": [
-                            {"write": str(later / "second-in.txt")},
-                            {"write": str(work / "second-out.txt")},
-                        ]
-                    },
-                    scope={"write_paths": [str(later)], "commands": commands},
-                ),
+                {
+                    **acp.prompt(
+                        "second",
+                        {
+                            "during": [
+                                {"write": str(later / "second-in.txt")},
+                                {"write": str(work / "second-out.txt")},
+                            ]
+                        },
+                        scope={"write_paths": [str(later)], "commands": commands},
+                    ),
+                    "session_id": session_id,
+                },
             )
             await acp.until(
                 events,
@@ -133,7 +135,7 @@ async def test_acp_detach_mid_turn_keeps_the_scope(tmp_path: Path, release: bool
             "escape_ran": escape_ran.exists(),
             "inside_ran": inside_ran.exists(),
             "session_closed": [row["session"] for row in acp.traced(trace, "session/close")],
-            "terminals_left": len(driver.terminals),
+            "prompted_sessions": [row["session"] for row in acp.traced(trace, "session/prompt")],
         }
         ARTIFACTS.mkdir(parents=True, exist_ok=True)
         (ARTIFACTS / f"acp-detach-scope-{release}-{sys.platform}.json").write_text(
@@ -164,8 +166,8 @@ async def test_acp_detach_mid_turn_keeps_the_scope(tmp_path: Path, release: bool
             "escape_ran": False,
             "inside_ran": True,
             "session_closed": [session_id] if release else [],
-            # Closed, its terminals are released; loaded, the agent still owns them.
-            "terminals_left": 0 if release else 2,
+            # D5 replaces the scope on the same loaded session, not on a new one.
+            "prompted_sessions": [session_id] if release else [session_id, session_id],
         }
     finally:
         await driver.stop()

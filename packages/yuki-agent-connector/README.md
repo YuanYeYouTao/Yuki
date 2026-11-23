@@ -246,8 +246,8 @@ Since 0.9.7 an ACP scope belongs to the session, not to the delegation: a detach
 `fs/write_text_file` callbacks stay confined to it for the rest of the turn, in later
 agent-initiated turns and until the session is closed; only the next prompt on the
 session replaces it. Auto-approval of permission requests still needs an owning
-delegation (a detached turn's requests are deny-only). Closing a session also
-releases the terminals the connector started for it. Before 0.9.7 a detach while
+delegation: after a detach they are no longer auto-approved and go to whichever
+watches still receive them (deny-only when none do). Before 0.9.7 a detach while
 Yuki's prompt still ran dropped the scope and those callbacks ran unchecked.
 Since 0.9.6 a Codex `fileChange` auto-approval reads, for every change, its
 `path`, `kind.type` and `kind.move_path`, and needs each source `path` and move

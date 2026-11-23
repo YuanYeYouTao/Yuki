@@ -134,6 +134,8 @@ def run(session, steps):
                 terminal = {"sessionId": session, "terminalId": response["result"]["terminalId"]}
                 request("terminal/wait_for_exit", terminal)
                 row["output"] = request("terminal/output", terminal)["result"]["output"]
+                if step.get("release"):
+                    request("terminal/release", terminal)
             if "cwd" in step or step.get("output"):
                 row["cwd"] = step.get("cwd")
             record(**row)

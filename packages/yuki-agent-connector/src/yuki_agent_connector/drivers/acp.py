@@ -620,10 +620,6 @@ class ACPDriver:
     async def _close(self, session: Session) -> str | None:
         """End Yuki's hold on a session: close it, or end an agent with no other session."""
         await self._end_followup(session)
-        # Terminals this connector started for the session: nobody can release them later.
-        for terminal_id, terminal in list(self.terminals.items()):
-            if terminal.session_id == session.id:
-                await self.release_terminal(session.id, terminal_id)
         if self.native_capabilities.get("sessionCapabilities", {}).get("close") is not None:
             self.sessions.pop(session.id, None)
             await self._native_request(self.connection.close_session(session_id=session.id))
@@ -826,8 +822,9 @@ class ACPDriver:
                     # ACP has no standard full-access mode: a full scope keeps the
                     # agent's own mode and approves whatever it still asks.
                     await self._set_scope_mode(session, scope)
-            session.scope = scope
             await self._end_followup(session)
+            # The new scope takes over together with the new owner.
+            session.scope = scope
             session.owner_operation = command["id"]
             session.operation, session.status = command["id"], "running"
             session.prompting = True
