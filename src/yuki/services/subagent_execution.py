@@ -15,8 +15,6 @@ from sqlalchemy import func, select
 
 from yuki.admin.config_service import RuntimeConfigService
 from yuki.admin.models import RuntimeConfigSnapshot
-from yuki.codemode.api_projection import ScriptApi
-from yuki.codemode.tool_visibility import model_definitions
 from yuki.domain.conversations import ConversationScope, ScopeType
 from yuki.domain.messages import (
     ChatMessage,
@@ -82,18 +80,10 @@ class SubagentExecution:
         self.children = children
         self.services = services
         self.definitions: tuple[ChatTool, ...] | None = None
-        self.script_api: ScriptApi | None = None
-
-    @property
-    def code_enabled(self) -> bool:
-        contract = self.services.runner.main_contract
-        return contract is not None and contract.mode == "code"
 
     async def prepare(self) -> None:
         if self.definitions is None:
             self.definitions = await self.services.load_tools()
-        contract = self.services.runner.main_contract
-        self.script_api = contract.script_api if contract is not None else None
 
     async def cancel_commands(self) -> None:
         """Reconcile cancellation outside the database transaction, by original run ID."""
@@ -329,9 +319,7 @@ class SubagentExecution:
                         else None,
                     )
                     runner = self.services.runner
-                    contract = runner.main_contract
                     definitions = await self.services.load_tools()
-                    script_api = contract.script_api if contract is not None else None
                     backend = self.services.backend_factory(tool_runtime, host)
                     brief = json.loads(child["brief_json"])
                     brief.update(
@@ -362,11 +350,7 @@ class SubagentExecution:
                             before_model_request=validate,
                             dynamic_context_prepared=True,
                             work_control=control,
-                            fixed_tools=model_definitions(
-                                definitions,
-                                enabled=self.code_enabled,
-                            ),
-                            script_api=script_api,
+                            fixed_tools=definitions,
                         ),
                         backend,
                     )

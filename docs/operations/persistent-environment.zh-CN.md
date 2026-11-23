@@ -82,7 +82,7 @@ HOME、运行记录、Manager 状态、代码文件、快照与媒体缓存是 D
 
 Docker 自定义 bridge 的 `127.0.0.11` DNS 无法由 gVisor 访问。用 runsc 时把 HOME 内一个文件（如 `.config/resolv.conf`，环境内 `/home/yuki/.config/resolv.conf`）写好可达的 DNS，并设 `YUKI_SANDBOX_RESOLV_CONF=.config/resolv.conf`，Manager 创建环境时把它挂到 `/etc/resolv.conf`。runc 直接使用 Docker 的 DNS。宿主走 fake-ip 代理（如 Clash/mihomo TUN）时，公共 DNS 会返回 `198.18.0.0/15` 的假地址，而这一段按非公网被防火墙丢弃；这时让环境使用能返回真实地址的解析器（例如环境内的本地 DNS 服务）。见 [gVisor DNS 说明](https://gvisor.dev/docs/user_guide/faq/#dns-doesnt-work-on-a-docker-user-defined-bridge-network-including-docker-compose)。
 
-所有 Main 入口、自动化和子 Agent 使用固定能力合同。工具目录不修改已提交声明，环境管理员能力不扩大人物、发送、委托或插件领域授权。可选 Code Mode 的 Monty 仍是无文件系统/网络的编排环境，不能当作持久终端别名。
+所有 Main 入口、自动化和子 Agent 使用固定能力合同。环境管理员能力不扩大人物、发送、委托或插件领域授权。
 
 ## 安装、档位与升级
 

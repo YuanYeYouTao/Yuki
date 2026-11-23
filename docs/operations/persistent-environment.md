@@ -85,7 +85,7 @@ The environment joins the `yuki-sandbox-egress` bridge (`yuki-egress0`, IPv6 dis
 
 On a Docker user-defined bridge, gVisor cannot reach Docker's DNS at `127.0.0.11`. Under runsc, write reachable DNS servers into a file in HOME (for example `.config/resolv.conf`, `/home/yuki/.config/resolv.conf` inside the environment) and set `YUKI_SANDBOX_RESOLV_CONF=.config/resolv.conf`; Manager mounts it at `/etc/resolv.conf` when creating the environment. runc uses Docker's DNS directly. When the host goes through a fake-ip proxy (such as a Clash/mihomo TUN), public DNS answers fake addresses in `198.18.0.0/15`, which the firewall drops as non-public; then let the environment use a resolver that returns real addresses (for example a local DNS service inside the environment). See the [gVisor DNS guidance](https://gvisor.dev/docs/user_guide/faq/#dns-doesnt-work-on-a-docker-user-defined-bridge-network-including-docker-compose).
 
-Main entries, automation and subagents use fixed capability contracts. Directory queries do not modify submitted definitions. Environment root does not extend person/send/delegation/plugin-domain authorization. Optional Code Mode's Monty remains a filesystem/network-free orchestration runtime, not a terminal alias.
+Main entries, automation and subagents use fixed capability contracts. Environment root does not extend person/send/delegation/plugin-domain authorization.
 
 ## Installation, profiles and upgrade
 

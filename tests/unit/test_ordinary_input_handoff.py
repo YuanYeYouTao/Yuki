@@ -104,8 +104,7 @@ async def _scene(
     )
     chat = harness.processor._chat
     state = ShortState(WorkspaceStore(tmp_path / "short-state"))
-    chat.runtime.runner.main_contract = MainAgentContract(chat, state, code_enabled=False)
-    chat.runtime.runner.code_mode_settings = harness.settings
+    chat.runtime.runner.main_contract = MainAgentContract(chat, state)
     chat._tools.short_state = state
     chat._tools.social_service = env.service
     if reason != "group_open":

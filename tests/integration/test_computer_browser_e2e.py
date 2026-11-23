@@ -433,7 +433,7 @@ async def test_sandbox_computer_and_browser_drive_real_desktop_end_to_end(tmp_pa
         started = True
         manifest = {
             tool.name: sorted(tool.parameters.get("properties", {}))
-            for tool in await app.main_agent_contract.model_definitions()
+            for tool in await app.main_agent_contract.definitions()
         }
         code = await app.client_identity.issue_for_operator(owner, str(uuid4()), str(uuid4()))
         device = await app.client_identity.pair(code["code"], "E2E device")

@@ -579,7 +579,7 @@ async def run_snapshot_arm(args) -> None:
     def no_model(_request):
         raise AssertionError("Offline composition cannot invoke a model")
 
-    settings = make_settings(database.url, runtime_work_enabled=True, code_mode_enabled=False)
+    settings = make_settings(database.url, runtime_work_enabled=True)
     harness = build_harness(database, settings, FakeLLMProvider(no_model))
     chat = harness.processor._chat
     state = SimpleNamespace(snapshot=lambda: deepcopy(control["short_state"]))

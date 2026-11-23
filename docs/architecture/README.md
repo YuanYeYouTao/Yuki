@@ -2,6 +2,10 @@
 
 2026-11-23 [Work 续跑剩余问题任务书](Yuki-Work续跑剩余问题任务书-2026-11-23.md)：#646 逐项核对（#636、#700、#665、#701、#702 已处理）；没有原生 continuation 的已配对唤醒改为追加原链，rebase 只留给公共压缩采用（合同变化与来源失效原本另行换链），删除 `exact_recovery` 与按 continuation 的分流，无迁移，draft PR 实施；长等待 Provider 缓存过期（同链间隔超过 60 分钟占有链未命中的 23%）只给数据与选项，待所有者决定。
 
+2026-11-23 [订阅 OAuth 登录调研与任务书](Yuki-订阅OAuth登录任务书-2026-11-23.md)：#493，走官方 Sign in with ChatGPT 计划用量路线（公共 `/v1/responses`，SSE、`store:false`）；SIWC 条款禁止用一人的订阅回答他人请求，故只在执行处放行凭据所属 Person 本人的私聊请求，群聊与他人请求跳过（0 次物理请求，沿 #713 下一跳）；不借用本机 Codex 登录；Bot 持有并刷新凭据，回调首版粘贴交回。只写文档，未实施，Q1（做不做）须所有者表态。
+
+2026-11-23 [长期在意与跨会话感知调研](Yuki-长期在意与跨会话感知调研-2026-11-23.md)：#541、#289 的调研与任务书，未实施。对照 OpenAI dots 的只读主动研究；推荐把“在意的事”作为 SELF 记忆事实渲染进常驻段（至多 5 条），用一个默认关闭的 SELF 只读定时入口去看、经主动私聊告知；跨会话方向推荐转达带来源标签与私聊里一行群指针，私聊内容不自动进群；另记录主 Agent `read_chat` 不按提问者收窄范围的现状，待所有者拍板（§8 五问）。
+
 2026-11-23 [模型 fallback 链调研与任务书](Yuki-模型fallback链任务书-2026-11-23.md)：用途级显式备用 Profile 链按 §9 推荐实施（[现行合同](model-providers.md#显式备用链)），无迁移，默认空链；看门狗复用组件事实（键 `component:model_fallback:<task>:<profile>`），E2E 产物 `test-results/model-fallback-chain-e2e.json`。其中 §9 Q12 已先行实施：Profile 可选 `connect_timeout_seconds` 只限建立连接，未设置取 10 秒且不超过 `timeout_seconds`，不进入 Profile revision；Responses 回复中途断开（`RemoteProtocolError` 等）不再以裸 httpx 异常冒出，统一为 `LLMUnavailableError`，走现有传输失败与回执路径（[现行合同](model-providers.md#传输超时与断连)）。
 
 2026-11-22 记忆分层后两阶段任务书（[架构书](Yuki-记忆分层架构书-2026-11-21.md)、[P1 实施任务书](Yuki-记忆分层P1实施任务书-2026-11-21.md)之后）：[P2 经历目录](Yuki-记忆分层P2经历目录任务书-2026-11-22.md)：#681，经历加标题列（由写经历的那次模型调用给出，存量 CLI 回填），system 末尾常驻段之后渲染按 P1 证据规则过滤的经历目录，水位取最近一次已收尾 Dream 运行，每天最多变一次，水位之后的经历放当前消息；迁移 0163，已实施；[P3 提取收紧](Yuki-记忆分层P3提取收紧任务书-2026-11-22.md)：#682，提取指令不取当次任务指令、类别由 kind 生成（`memory-v2-extraction-v8` / schema 8），Dream 簇上限 12→24 让积压的同义条目轮到现有 merge，存量按同一规则分类后由所有者审阅计划文件、签名校验批量失效，不按时间；无迁移。两份默认按推荐执行；P3 已实现。2026-11-22 所有者决定 P1–P3 不设开关：常驻段、经历目录与 v8 提取合同直接生效，原 `memory.resident_enabled`、`memory.episode_index_enabled`、`memory.extraction_tightened_enabled` 已删除（已存覆盖行加载时按未知键忽略，无迁移）；存量清理须所有者审阅计划后才 apply（[运维](../operations/memory-quality.md#提取收紧与当次任务指令清理)）。[P4 人物画像](Yuki-记忆分层P4人物画像任务书-2026-11-22.md)：#227，每人公共/私人两份画像替代人物核心集，渲染在 system 末尾常驻段（私聊两份全部条目，群里 Dream 收尾时定下的前 5 名成员的公共画像前 5 条），条目级全有或全无；Dream 挑选步骤维护名单、程序清理与签名判到期的画像调用；迁移 0164；存储、渲染、维护与 `yuki memory profile` CLI 已实现（[现行合同](memory-v2.md#人物画像)），`search_memory(fact_id)` 证据回查随 #692 合入。2026-11-23 [P2.1 经历目录精简](Yuki-记忆分层P2.1经历目录精简任务书-2026-11-23.md)：#681，目录改为每个会话受众一行 `memory_episode_indexes`（最近 15 条、至多 10 条长期印象、其余按月计数），经历只在离开最近 15 条时由 Dream 收尾比较一次（现有印象与离开者混成一池、不标新旧），归档后不再回来、改写出的新版本不算新经历；Dream 指令补“重提即重复”一句；删除 `memory_facts.last_injected_at` 并加 `supersedes_id` 部分索引；迁移 0165；存储、渲染、收尾比较与 `yuki memory episodes show/set/lock/unlock/generate/apply`、`status` 两项指标已实现（[现行合同](memory-v2.md#经历目录)），自省减量（§8）见[自省](self-reflection.md)。2026-11-22 [记忆意图召回评估](Yuki-记忆意图召回评估-2026-11-22.md)：近 14 天约 2% 的轮次搜记忆、带回忆线索的消息 7% 去搜，向量分档压住短查询的精确词命中；画像版本加至多 4 个“可查话题”（同一次画像调用输出、同一套可见规则、Dream 收尾更新），`search_memory` 改为查询侧一二三字组、候选池 IDF 与字段加权、人名进候选并删除向量分档；不做词典分词与常驻倒排；迁移 0166。
@@ -27,7 +31,7 @@
 
 2026-11-09 统一 Computer Use 与 Browser Use（#588）见[任务书](Yuki-统一ComputerUse与BrowserUse任务书-2026-11-09.md)：同一组 `computer`/`browser` 工具操作 Yuki 环境与本人 Windows/Mac，含连接器稳定性（阶段 0）；已经独立复审修订，为待实施计划；服务端连接日志与 1011 关闭码已由 #590 合并上线。
 
-2026-11-07 QQ 私聊传文件事故引出的四份任务书：[普通执行连续性与插话接续](Yuki-普通执行连续性与插话接续任务书-2026-11-07.md)（合并 #560）、[服务器文件传到本人电脑](Yuki-服务器文件传到本人电脑任务书-2026-11-07.md)、[Code Mode 评估与收敛](Yuki-CodeMode评估与收敛任务书-2026-11-07.md)、[文件膨胀、函数爆炸与工具面删减](Yuki-文件膨胀与函数爆炸删减任务书-2026-11-07.md)。均为调查与待实施计划；除 Code Mode 外三份已经独立复审修订（连续性与文件传输各两轮）。Code Mode 见 #573，本期不处理，生产已按作者同意关闭；产品代码未改。
+2026-11-07 QQ 私聊传文件事故引出的四份任务书：[普通执行连续性与插话接续](Yuki-普通执行连续性与插话接续任务书-2026-11-07.md)（合并 #560）、[服务器文件传到本人电脑](Yuki-服务器文件传到本人电脑任务书-2026-11-07.md)、[Code Mode 评估与收敛](Yuki-CodeMode评估与收敛任务书-2026-11-07.md)、[文件膨胀、函数爆炸与工具面删减](Yuki-文件膨胀与函数爆炸删减任务书-2026-11-07.md)。均为调查与待实施计划；除 Code Mode 外三份已经独立复审修订（连续性与文件传输各两轮）。Code Mode 已按 #573 整体删除（`execute_code`／`lookup_tools`、Monty worker、codemode 镜像、seccomp/AppArmor 与 native CI），现行声明见 [Tool Kernel](tool-kernel.md)。
 
 Mac 本地迁移、ARM64 Code Mode、完整数据恢复、两端 Connector 与 AGM 分期安排见[2026-11-07 迁移任务书](Yuki-Mac本地迁移与ARM64完整运行环境任务书-2026-11-07.md)。当前为评估与待实施计划，云端盘点、备份演练和正式切换尚未执行。
 
@@ -39,7 +43,7 @@ Mac 本地迁移、ARM64 Code Mode、完整数据恢复、两端 Connector 与 A
 
 代码删除与清理的固定基线计划见[任务书](Yuki-代码删除与清理任务书-2026-10-23.md)，B1–B6 的源码、验证和交付分别记录于[完整执行记录](../operations/code-deletion-20261023.md)；公开接口和连接器配套升级见[兼容说明](../upgrade-code-deletion-20261023.md)。
 
-本入口跟随 **4.0.0 待发布源码**；当前源码迁移 head 为 `0166`、Plugin API 为 `9.0`、个人 Client API revision 为 `12`、Code API 为 `yuki.codemode.api.v2`；Main 工具声明以当前完整 manifest 为准。#448 的共享读取、唯一索引与停写升级见[聊天记录读取](chat-history.md)，实施和交付分开记录于[实施记录](../operations/chat-history-448-implementation-20261022.md)。4.0.0 正式范围和完整 PR 清单仍见 [4.0.0 发布说明](../releases/v4.0.0.md)，前版迁移见 [4.0 升级指南](../upgrade-4.0.0.md)，两套完整评测见 [benchmark 报告](../benchmarks/2026-10-20-yuki-flash-1017/README.md)。#455 的 ACP 方向 A 复用现有个人身份、Main/Work/Social 和原回执，见[个人 API](client-api.md#acp-方向-a)与[原任务书两轮审查](Yuki-控制面重构与多客户端接入任务书-2026-10-14.md#10-455-两轮审查与实施)。前阶段见[299实施记录](Yuki-299与多平台解耦实施记录-2026-10-16.md)和[453实施与验证](Yuki-453人物解耦实施与验证-2026-10-17.md)。历史发行见[3.9.0 发布说明](../releases/v3.9.0.md)。
+本入口跟随 **4.0.0 待发布源码**；当前源码迁移 head 为 `0167`、Plugin API 为 `9.0`、个人 Client API revision 为 `12`；Main 工具声明以当前完整 manifest 为准。#448 的共享读取、唯一索引与停写升级见[聊天记录读取](chat-history.md)，实施和交付分开记录于[实施记录](../operations/chat-history-448-implementation-20261022.md)。4.0.0 正式范围和完整 PR 清单仍见 [4.0.0 发布说明](../releases/v4.0.0.md)，前版迁移见 [4.0 升级指南](../upgrade-4.0.0.md)，两套完整评测见 [benchmark 报告](../benchmarks/2026-10-20-yuki-flash-1017/README.md)。#455 的 ACP 方向 A 复用现有个人身份、Main/Work/Social 和原回执，见[个人 API](client-api.md#acp-方向-a)与[原任务书两轮审查](Yuki-控制面重构与多客户端接入任务书-2026-10-14.md#10-455-两轮审查与实施)。前阶段见[299实施记录](Yuki-299与多平台解耦实施记录-2026-10-16.md)和[453实施与验证](Yuki-453人物解耦实施与验证-2026-10-17.md)。历史发行见[3.9.0 发布说明](../releases/v3.9.0.md)。
 
 提及定点查询、真实重名默认与迁移验证见[0142 修复记录](../operations/mention-resolution-0142.md)。其他 SQLite 热查询的原扫描证据见[10-20 只读审计](../operations/sqlite-query-scan-audit-20261020.md)，0143 修复、两轮终审与交付见[逐项修复记录](../operations/backend-audit-remediation-20261020.md)。
 
@@ -53,7 +57,7 @@ Mac 本地迁移、ARM64 Code Mode、完整数据恢复、两端 Connector 与 A
 | [飞书与 Lark 接入](../operations/feishu.zh-CN.md) | 企业自建应用、长连接、群消息权限与媒体 |
 | [个人客户端 API](client-api.md) | 设备身份、消息、Work 接续、SSE、文件与参考客户端 |
 | [主 Agent](main-agent-runtime.md) | 统一循环、Work 控制、恢复、预算和交付 |
-| [Tool Kernel](tool-kernel.md) | 固定完整清单、direct / Code Mode、目录与执行授权 |
+| [Tool Kernel](tool-kernel.md) | 固定完整清单、目录与执行授权 |
 | [模型供应商与协议](model-providers.md) | 显式 Profile、结构化模式、思考、方言和私有续跑状态 |
 | [Provider 输出](provider-output-boundary.md) | 思考、正文、真实工具调用与显式发送 |
 | [持久工作者](persistent-subagents.md) | 子任务生命周期、Main 完整能力、真实来源恢复与根预算 |
@@ -72,7 +76,6 @@ Mac 本地迁移、ARM64 Code Mode、完整数据恢复、两端 Connector 与 A
 | [插件架构](../plugin-development/architecture.md) | Plugin API 9.0、Host、SDK 与隔离插件会话 |
 | [持久环境](../operations/persistent-environment.zh-CN.md) | 工作区、终端、Manager 与交付 |
 | [桌面电脑与有头环境](../operations/desktop-computer.zh-CN.md) | 可选有头镜像、VNC、控制租约与本机原生 Agent |
-| [Code Mode 运维](../operations/pi-codemode-operations.md) | 可选构建、隔离、原数据和切换 |
 | [独立原生搜索](../deepseek-search-bridge.md) | 独立搜索连接、三种原生协议、网页提取与升级 |
 
 ## 设计报告与后续计划
@@ -163,7 +166,7 @@ Mac 本地迁移、ARM64 Code Mode、完整数据恢复、两端 Connector 与 A
 - [10-09 Memory 删除任务书](Yuki-Memory-Provider分工与后台收尾审查任务书-2026-10-09.md)：D01–D33 原实施、验证、合并与部署回执。
 - [10-09 残留与文档核查](../operations/documentation-residual-audit-20261009.md)：该轮清理、逐份文档结果与当时的缺口；SELF 旧代次领取的后续处理见本轮 Work 与 Memory 审查 C21。
 - [Work 生命周期审查](work-lifecycle-audit-20261008.md)：审查基线、后续实现及仍需核对的运行问题。
-- [Pi/Code 移植来源](pi-port-provenance.md)：设计参考、实现来源与第三方许可；Code Mode 已合入主线，不是待移植实验入口。
+- [Pi 设计参考与依赖来源](pi-port-provenance.md)：设计参考、实现来源与第三方许可。Code Mode 与 Monty 已随 #573 删除；`pi-codemode-*.md` 与 `pi-codemode-evidence/` 保留为当时记录，现行工具声明见 [Tool Kernel](tool-kernel.md)。
 
 真实 Provider 测量、日期部署和自然 QQ 验收按各自证据读取。版本/迁移以实际源码或镜像为准，正式发行范围见[3.9.0 发布说明](../releases/v3.9.0.md)与[升级指南](../upgrade-3.9.0.md)；不改写旧 Release 或历史部署的基线。
 

@@ -4,12 +4,11 @@ Failure cases were listed before the implementation in
 docs/operations/tool-surface-cutover-20261107.md. This file covers the
 cross-cutting ones; each domain has its own E2E test.
 
-* A1/A2/A6: the frozen manifest of the offline application is exactly the 27
-  tools (direct mode; the cutover surface plus computer/browser, minus the two
+* A1/A2: the frozen manifest of the offline application is exactly the 27
+  tools (the cutover surface plus computer/browser, minus the two
   coding-agent tools whose native agents became subtask executors, contract 40),
   no old or deleted name is declared, every history-map successor is declared
-  (except the retired coding-agent name, which has no successor), and Code Mode
-  keeps its frozen direct view.
+  (except the retired coding-agent name, which has no successor).
 * B7: every Host tool carries its capability namespace and effect on the
   declaration itself (no separate name table).
 * B12/D25: a model calling an old name is refused as an unknown tool and
@@ -31,7 +30,6 @@ import subprocess
 import time
 from pathlib import Path
 
-import pytest
 from sqlalchemy import insert
 from tests.conftest import make_settings
 from tests.support.automation_unified_delivery_helpers import setup_run
@@ -43,7 +41,6 @@ from tests.unit.test_client_works import owner, seeded
 from tests.unit.test_sticker_library import LocalDirectoryBridge
 
 from yuki.capabilities.results import ToolExecutionResult
-from yuki.codemode.tool_visibility import DIRECT_TOOL_NAMES
 from yuki.container import ApplicationContainer
 from yuki.domain.messages import ChatResponse, ToolCall, ToolFunction
 from yuki.llm.protocol_state import tool_result_failed
@@ -117,10 +114,7 @@ def _parameter_count(schema: dict) -> int:
     return len(schema.get("properties", {}))
 
 
-@pytest.mark.parametrize("code_enabled", [False, True])
-async def test_offline_app_freezes_exactly_the_new_tool_surface(
-    database, tmp_path, monkeypatch, code_enabled
-):
+async def test_offline_app_freezes_exactly_the_new_tool_surface(database, tmp_path, monkeypatch):
     app = ApplicationContainer(
         make_settings(
             database.url,
@@ -131,7 +125,6 @@ async def test_offline_app_freezes_exactly_the_new_tool_surface(
             conversation_media_cache_directory=tmp_path / "conversation-media",
             social_transfer_directory=tmp_path / "transfer",
             semantic_participation_state_path=tmp_path / "participation.sqlite3",
-            code_mode_enabled=code_enabled,
             web_mode="tavily",
             tavily_api_key="offline-fixture",
             automation_enabled=True,
@@ -160,29 +153,19 @@ async def test_offline_app_freezes_exactly_the_new_tool_surface(
     monkeypatch.setattr(app.sandbox_client, "execute", manager_read_or_file)
     try:
         await app.start()
-        full = {tool.name: tool for tool in await app.main_agent_contract.definitions()}
-        model = {tool.name: tool for tool in await app.main_agent_contract.model_definitions()}
+        model = {tool.name: tool for tool in await app.main_agent_contract.definitions()}
     finally:
         await asyncio.wait_for(app.close(), 5)
 
-    business = set(full) - {"execute_code", "lookup_tools"}
     # A1/A2: exactly the new surface; nothing old or deleted is declared.
-    assert business == TOOLS
-    assert not (set(full) & (set(RECORDED_TOOL_NAMES) | DELETED))
+    assert set(model) == TOOLS
+    assert not (set(model) & (set(RECORDED_TOOL_NAMES) | DELETED))
     assert set(RECORDED_TOOL_NAMES.values()) - DELETED <= TOOLS
-    if code_enabled:
-        # A6: Code Mode keeps its own frozen direct view over the same manifest.
-        assert set(model) == (DIRECT_TOOL_NAMES & set(full))
-        assert {"execute_code", "lookup_tools"} <= set(model)
-    else:
-        assert set(model) == TOOLS
     # B7: registry-bound Host tools carry namespace and effect on the declaration;
     # Work controls and the short note are appended to the manifest directly.
     for name in TOOLS - WORK_CONTROL_NAMES - {"set_short_note"}:
-        assert full[name].namespace and full[name].effect, name
+        assert model[name].namespace and model[name].effect, name
 
-    if code_enabled:
-        return
     manifest = {
         name: {
             "parameters": sorted(tool.parameters.get("properties", {})),
