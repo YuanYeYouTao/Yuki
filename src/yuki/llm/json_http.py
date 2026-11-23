@@ -277,10 +277,17 @@ class JSONHTTPProvider(LLMProvider):
                         exc.diagnostics = {**exc.diagnostics, "usage": usage}
                     raise
             except BaseException as exc:
+                details = getattr(exc, "diagnostics", {})
+                reported = details.get("usage")
                 if (
                     attempts is not None
                     and isinstance(exc, NOT_ACCEPTED_ERRORS)
-                    and getattr(exc, "diagnostics", {}).get("http_status") != 504
+                    and details.get("http_status") != 504
+                    # A rejection reporting nonzero usage was worked on (and may bill).
+                    and not (
+                        isinstance(reported, dict)
+                        and any(type(value) is int and value > 0 for value in reported.values())
+                    )
                 ):
                     attempts.not_accepted += 1
                 if finish is not None:

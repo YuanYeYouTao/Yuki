@@ -549,7 +549,10 @@ class TaskModelExecutor:
             *((request.continuation,) if request.continuation is not None else ()),
             *(
                 message.response_item
-                for message in request.messages
+                for message in (
+                    *request.messages,
+                    *(item for item in request.continuation_items if isinstance(item, ChatMessage)),
+                )
                 if message.response_item is not None
             ),
         )
@@ -647,7 +650,9 @@ class TaskModelExecutor:
                     _chain_diagnostics(exc, hops, physical, unknown_usage)
                     raise
                 assert isinstance(exc, Exception)
-                failure = exc
+                if failure is None or attempts.requests:
+                    # The raised error is the last hop that actually dispatched.
+                    failure = exc
                 if index + 1 < len(chain):
                     logger.warning(
                         "model_fallback task=%s from=%s to=%s reason=%s",

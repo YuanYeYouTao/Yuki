@@ -415,6 +415,10 @@ class ConfigFileService:
                         previous_secret_bytes,
                         encode_model_secrets(saved_keys),
                     )
+                if "fallbacks" not in document and "fallbacks" in existing:
+                    # An older client does not know the field; only an explicit value
+                    # (an empty mapping clears it) changes the saved chain.
+                    document["fallbacks"] = existing["fallbacks"]
                 old_profiles = existing.get("profiles", {})
                 if not isinstance(old_profiles, dict):
                     raise ValueError("invalid previous profiles")

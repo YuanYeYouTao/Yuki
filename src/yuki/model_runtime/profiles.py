@@ -191,6 +191,9 @@ def normalize_model_profile_document(
         ModelProfile.model_validate(
             {"id": profile_id, **_resolve_profile_environment(payload, environment=environment)}
         )
+    unknown = set(validated.fallbacks).difference(task.value for task in ModelTask)
+    if unknown:
+        raise ValueError(f"fallbacks name unknown model tasks: {', '.join(sorted(unknown))}")
     normalized = validated.model_dump(exclude_none=True)
     normalized["fallbacks"] = {task: ids for task, ids in validated.fallbacks.items() if ids}
     if not normalized["fallbacks"]:
@@ -247,7 +250,7 @@ def parse_model_profile_catalog(
         }
         unknown = set(document.fallbacks).difference(task.value for task in routes)
         if unknown:
-            raise ValueError(f"fallbacks name unknown model tasks: {', '.join(sorted(unknown))}")
+            raise ValueError(f"fallbacks name unrouted model tasks: {', '.join(sorted(unknown))}")
         return ModelProfileCatalog(
             profiles=profiles,
             routes=routes,

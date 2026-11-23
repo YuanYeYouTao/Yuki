@@ -42,6 +42,17 @@ F23 the watchdog does not report a task whose latest success is a fallback, or d
     not clear once the head succeeds again;
 F24 a preempted best-effort background request switches to the fallback.
 
+Added after Codex review round 1 (each failed on the first version):
+
+F25 a head HTTP 503 whose body reports token usage still switches (both hops may bill);
+F26 a head-owned ``response_item`` carried in ``continuation_items`` (no
+    ``request.continuation``) walks the chain and reaches a fallback;
+F27 the head was dispatched and failed not-accepted, the last fallback failed without a
+    request (missing key): its 0-request error replaces the dispatched head's error;
+F28 an Admin save whose document omits ``fallbacks`` (an older client) erases the chain;
+    an explicit empty ``fallbacks`` must still clear it;
+F29 a misspelled task with an empty list in ``[fallbacks]`` is accepted.
+
 F7 (empty answer, truncation, content rejection) is the same non-switch rule as the
 HTTP 400 case of F5; F22 (public compact) has no continuation and follows F2, an
 execution compact carries one and follows F8.
@@ -53,7 +64,7 @@ import asyncio
 import hashlib
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 import httpx
 import pytest
@@ -73,6 +84,7 @@ from yuki.domain.messages import (
     ChatTool,
     NativeToolDefinition,
     NativeToolType,
+    ProviderContinuation,
 )
 from yuki.llm.base import (
     LLMConfigurationError,
@@ -143,6 +155,9 @@ EXPECTED = (
     "F21_structured_task",
     "F23_watchdog_fact",
     "F24_preempted_background",
+    "F25_usage_reported_no_switch",
+    "F26_continuation_items_pinned",
+    "F27_last_dispatched_error",
 )
 KEY_ENV = "MODEL_FALLBACK_E2E_KEY"
 MISSING_KEY_ENV = "MODEL_FALLBACK_E2E_ABSENT_KEY"
@@ -232,6 +247,11 @@ def phases(monkeypatch):
     return captured
 
 
+class _Status(NamedTuple):
+    status: int
+    body: dict[str, Any]
+
+
 class _Upstream:
     """Scripted HTTP/1.1 model endpoint.
 
@@ -270,7 +290,7 @@ class _Upstream:
                 self.bodies.append(json.loads(await reader.readexactly(length)))
                 self.received.set()
                 step = self._step()
-                if isinstance(step, tuple):
+                if isinstance(step, tuple) and not isinstance(step, _Status):
                     await asyncio.sleep(step[1])
                     step = self._step()
                 if step == "close":
@@ -278,10 +298,13 @@ class _Upstream:
                     self.server.close()
                     await reader.read()  # until the client gives up on this request
                     return
-                body = json.dumps(
-                    step if isinstance(step, dict) else {"error": {"code": "synthetic"}}
-                ).encode()
-                status = 200 if isinstance(step, dict) else step
+                if isinstance(step, _Status):
+                    status, body = step.status, json.dumps(step.body).encode()
+                else:
+                    body = json.dumps(
+                        step if isinstance(step, dict) else {"error": {"code": "synthetic"}}
+                    ).encode()
+                    status = 200 if isinstance(step, dict) else step
                 if step == "cut":
                     status, body = 200, json.dumps(CHAT_REPLY).encode()
                 writer.write(
@@ -993,10 +1016,29 @@ async def test_admin_snapshot_round_trips_fallbacks(admin):
     )
     assert refused.status_code == 422, refused.text
     assert files.loaded_catalog.routes[ModelTask.CHAT_AGENT].fallback_profile_ids == ("backup",)
+    # F28: an older client's document without the field keeps the chain; an explicit
+    # empty mapping clears it.
+    latest = (await client.get("/admin/v1/models")).json()["data"]
+    older = {key: value for key, value in latest["document"].items() if key != "fallbacks"}
+    kept = await client.post(
+        "/admin/v1/models/apply", json=command(latest["revision"], document=older)
+    )
+    assert kept.status_code == 200, kept.text
+    assert files.loaded_catalog.routes[ModelTask.CHAT_AGENT].fallback_profile_ids == ("backup",)
+    latest = (await client.get("/admin/v1/models")).json()["data"]
+    cleared = await client.post(
+        "/admin/v1/models/apply",
+        json=command(latest["revision"], document=dict(latest["document"], fallbacks={})),
+    )
+    assert cleared.status_code == 200, cleared.text
+    assert files.loaded_catalog.routes[ModelTask.CHAT_AGENT].fallback_profile_ids == ()
+    assert "[fallbacks]" not in files._settings.model_profiles_file.read_text(encoding="utf-8")
     RESULTS["F18_admin_snapshot_round_trip"] = {
         "snapshot_fallbacks": shown["document"]["fallbacks"],
         "kept_after_desktop_save": True,
         "invalid_refused_status": refused.status_code,
+        "kept_when_field_omitted": True,
+        "cleared_by_explicit_empty": True,
     }
 
 
@@ -1048,6 +1090,7 @@ def _toml(
 
 INVALID_CHAINS = {
     "unknown_task": _toml('[fallbacks]\nnot_a_task = ["backup"]'),
+    "unknown_task_empty_list": _toml("[fallbacks]\nchat_agnet = []"),
     "unknown_profile": _toml('[fallbacks]\nchat_agent = ["missing"]'),
     "head_repeated": _toml('[fallbacks]\nchat_agent = ["head"]'),
     "duplicate": _toml('[fallbacks]\nchat_agent = ["backup", "backup"]'),
@@ -1192,4 +1235,77 @@ async def test_watchdog_fact_follows_latest_success(database):
         "before": before[chat],
         "during": during[chat],
         "after": after[chat],
+    }
+
+
+# --------------------------------------------------------------------------- F25-F27
+
+
+async def test_usage_reported_by_a_rejection_never_switches(database):
+    # A 503 whose body reports generated tokens: the provider did work on it.
+    billed = {
+        "error": {"code": "overloaded"},
+        "usage": {"prompt_tokens": 3, "completion_tokens": 5, "total_tokens": 8},
+    }
+    head_upstream = _Upstream(_Status(503, billed))
+    fallback_upstream = _Upstream(CHAT_REPLY)
+    async with head_upstream as head_url, fallback_upstream as fallback_url:
+        executor = _executor(
+            database, _profile("head", head_url), _profile("fallback", fallback_url)
+        )
+        error, _ = await _outcome(executor)
+        await executor.close()
+    assert isinstance(error, LLMUnavailableError)
+    assert fallback_upstream.requests == 0
+    RESULTS["F25_usage_reported_no_switch"] = {
+        "error": type(error).__name__,
+        "fallback_requests": fallback_upstream.requests,
+    }
+
+
+async def test_continuation_items_stay_on_their_profile(database):
+    head_upstream = _Upstream(503)
+    fallback_upstream = _Upstream(RESPONSES_TEXT)
+    async with head_upstream as head_url, fallback_upstream as fallback_url:
+        head = _profile("head", head_url, protocol="responses")
+        executor = _executor(
+            database, head, _profile("fallback", fallback_url, protocol="responses")
+        )
+        owned = ProviderContinuation(
+            provider="openai", protocol="responses", payload=(), profile_id="head"
+        )
+        request = ChatRequest(
+            messages=(ChatMessage("user", "ping"),),
+            model="",
+            continuation_items=(ChatMessage("assistant", "x", response_item=owned),),
+        )
+        error, _ = await _outcome(executor, request)
+        await executor.close()
+    assert isinstance(error, LLMUnavailableError)
+    assert head_upstream.requests == 1 and fallback_upstream.requests == 0
+    RESULTS["F26_continuation_items_pinned"] = {
+        "head_requests": head_upstream.requests,
+        "fallback_requests": fallback_upstream.requests,
+    }
+
+
+async def test_a_zero_request_last_hop_keeps_the_dispatched_error(database):
+    head_upstream = _Upstream(503)
+    async with head_upstream as head_url:
+        executor = _executor(
+            database,
+            _profile("head", head_url),
+            _profile("nokey", head_url, api_key_env=MISSING_KEY_ENV),
+        )
+        error, _ = await _outcome(executor)
+        await executor.close()
+    assert isinstance(error, LLMUnavailableError)
+    assert error.diagnostics["http_status"] == 503
+    assert [(hop["profile_id"], hop["outcome"]) for hop in error.diagnostics["fallback_hops"]] == [
+        ("head", "failed_not_accepted"),
+        ("nokey", "failed_not_accepted"),
+    ]
+    RESULTS["F27_last_dispatched_error"] = {
+        "error": type(error).__name__,
+        "fallback_hops": error.diagnostics["fallback_hops"],
     }
