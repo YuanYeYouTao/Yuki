@@ -701,25 +701,10 @@ class MessageProcessor:
         if decision.reason == "bot_message":
             await self._publish_turn_rejected(message, decision.reason)
             return ProcessResult(False, reason=decision.reason)
-        admin_candidate = bool(
-            is_superuser
-            and direct_match is None
-            and decision.command is None
-            and (
-                decision.should_respond
-                or (
-                    decision.reason == "group_disabled"
-                    and (
-                        message.mentions_bot
-                        or message.text.strip().startswith(self._settings.ai_prefix)
-                    )
-                )
-            )
-        )
         should_observe = (
             message.scope_type is ScopeType.PRIVATE and decision.should_respond
         ) or bool(self._settings.observe_enabled_groups and group_policy and group_policy.enabled)
-        if not decision.should_respond and not should_observe and not admin_candidate:
+        if not decision.should_respond and not should_observe:
             await self._publish_turn_rejected(message, decision.reason)
             return ProcessResult(False, reason=decision.reason)
 
@@ -754,7 +739,7 @@ class MessageProcessor:
         deferred_open = bool(
             decision.reason == "group_open" and decision.command is None and direct_match is None
         )
-        direct_turn = (decision.should_respond or admin_candidate) and not deferred_open
+        direct_turn = decision.should_respond and not deferred_open
 
         async def notify() -> TurnToken:
             return await self._turn_coordinator.notify_message(
@@ -795,7 +780,7 @@ class MessageProcessor:
             item.kind.value in {"image", "video", "file"}
             for item in (*message.attachments, *message.reply_attachments)
         )
-        if decision.should_respond or admin_candidate:
+        if decision.should_respond:
             await publish_notification(
                 self._event_publisher,
                 EventName.MESSAGE_TRIGGERED,
@@ -893,7 +878,7 @@ class MessageProcessor:
         if message.scope_type is ScopeType.GROUP and policy.semantic_participation_enabled:
             self._autonomous.observe_context(
                 message,
-                direct=bool(decision.should_respond or admin_candidate),
+                direct=decision.should_respond,
             )
         turn_snapshot = ConversationTurnSnapshot(
             conversation_id=scope_state.id,

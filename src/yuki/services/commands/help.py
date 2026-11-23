@@ -142,7 +142,7 @@ def admin_usage(family: str) -> str:
 
 
 ADMIN_HELP = "管理员命令：\n" + "\n".join(admin_usage(family) for family in ADMIN_ACTIONS)
-ADMIN_HELP += "\n/ai admin group <current|Space ID> enable|disable"
+ADMIN_HELP += "\n/ai admin group <current|Space ID> enable|disable（群内简写 /ai off、/ai on）"
 ADMIN_HELP += "\n/ai admin operation <operation ID>（查询原操作回执）"
 ADMIN_HELP += "\n/ai admin work list [state|all] [cursor]（下一页沿用 next_cursor）"
 ADMIN_HELP += "\n/ai admin binding list [Person ID|all] [cursor]"

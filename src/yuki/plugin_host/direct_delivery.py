@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal, cast
 from uuid import UUID
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from yuki.conversation.canonical_db_models import CanonicalConversationModel
@@ -19,7 +20,7 @@ from yuki.identity.canonical_repository import (
     find_identity_binding,
     find_space_binding,
 )
-from yuki.identity.db_models import CanonicalPersonModel, PresenceModel
+from yuki.identity.db_models import CanonicalPersonModel, CanonicalSpaceModel, PresenceModel
 from yuki.identity.person_identity import current_person_id
 from yuki.persistence.models import ChatEventModel
 from yuki.persistence.repositories import EventLedgerRepository
@@ -148,6 +149,11 @@ async def validate_delivery_source(
         active = space_binding is not None and space_binding.status == "active"
         binding_id = space_binding.id if space_binding is not None else None
         kind = "space"
+        # The same Space switch that closes inbound and Social sends closes plugin sends.
+        if active and not await session.scalar(
+            select(CanonicalSpaceModel.enabled).where(CanonicalSpaceModel.id == target_id)
+        ):
+            raise SocialError("space_not_allowed")
     else:
         person_binding = await find_identity_binding(session, user_id or "")
         target_id = person_binding.person_id if person_binding is not None else None

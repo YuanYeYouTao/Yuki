@@ -8,6 +8,7 @@ from enum import StrEnum
 from yuki.config import Settings
 from yuki.domain.conversations import ScopeType
 from yuki.domain.messages import InboundMessage
+from yuki.services.commands.group import GROUP_SWITCH
 
 
 class CommandName(StrEnum):
@@ -68,6 +69,8 @@ def parse_command(text: str, ai_prefix: str) -> tuple[CommandName | None, str, b
         command_parts = remainder.split(maxsplit=1)
         first = command_parts[0].casefold()
         argument = command_parts[1].strip() if len(command_parts) > 1 else ""
+        if first in GROUP_SWITCH and not argument:
+            return CommandName.ADMIN, GROUP_SWITCH[first], True
         try:
             return CommandName(first), argument, True
         except ValueError:
