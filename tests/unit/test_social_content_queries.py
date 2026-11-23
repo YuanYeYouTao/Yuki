@@ -93,6 +93,7 @@ async def prepare(database, entry, text, **kwargs):
             text,
             platform="qq",
             space_binding_id=entry.space.id,
+            sender_external_id="70000",
             operations=OneBotSocialOperations(),
             conversation_id=entry.conversation_id,
             **kwargs,
@@ -267,6 +268,7 @@ async def test_private_names_only_come_from_original_participant_accounts(databa
             platform="qq",
             space_binding_id=None,
             participant_assignment_ids=(binding.id,),
+            sender_external_id="70000",
             operations=OneBotSocialOperations(),
         )
     assert content.message.mentions[0].account_id == account.id
