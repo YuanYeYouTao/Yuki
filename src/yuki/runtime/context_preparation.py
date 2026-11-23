@@ -43,10 +43,16 @@ async def select_protocol_recovery(
     payload = json.loads(snapshot.record["payload_json"])
     metadata = payload.get("metadata", {})
     progress = metadata.get("progress", {})
+    compact = progress.get("context_compaction")
+    # Every protocol resumes on its original chain (#646). Only a durable root
+    # public compaction is adopted onto freshly prepared public history.
     exact = bool(
         progress.get("provider_pause_replay")
-        or payload["transcript"].get("continuation")
-        or (control.lease.work_id and progress.get("context_compaction"))
+        or control.lease.work_id
+        or compact is None
+        or compact.get("phase") == "paired"
+        or not compact.get("valid")
+        or compact.get("public") is None
     )
     pending = payload.get("pending", [])
     if pending and not exact:

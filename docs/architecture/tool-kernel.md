@@ -238,10 +238,9 @@ Code Mode 恢复先读取原 accepted 控制及业务回执；普通生命周期
 完整结果存档或展示失败不抹掉已经确认的操作。原效果回执与fallback已持久化时，沿该
 实际结果继续，不以异常必须为OSError另判整项失败；未确认效果与取消仍按原事实处理。
 
-所有 pending composition 原父调用配对并保存后，原链有 Provider 原生 continuation 时沿原链追加
-父结果继续；没有时在下一模型派发前复用 business rebase，携带当前获准公共历史、任务线索、
-必要媒体及未被模型观察的原父结果。未决协议、Provider
-pause 与压缩尚未完成时不提前换链；媒体、来源与 CAS 在原派发边界继续复核。
+所有 pending composition 原父调用配对并保存后，不论原链有无 Provider 原生 continuation，
+都沿原链追加父结果继续（#646）。未决协议、Provider pause 与压缩尚未完成时不提前换链；
+媒体、来源与 CAS 在原派发边界继续复核。
 
 ## 代码定位
 

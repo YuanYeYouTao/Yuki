@@ -81,7 +81,7 @@ created_at/updated_at 是原回执时间，生命周期和计数本身不能证�
 自主触发语义归程序规则。Main、SELF、自动化与子 Agent 复用相同入口。
 角色资料改名或 SOUL 编辑/reload 后，合法新激活使用新值；当前工具往返及原协议请求保持原材料。
 Main 的恢复合同只纳既有 INVARIANT 技术规则、实际模型设置和固定工具合同，SOUL 与名称保存在原请求正文中。
-改名不废弃原已付响应的未决工具尾部或签名，也不使未知派发可重购；新 SOUL 随新链生效：有原生 continuation 的 Work 沿原链追加，到压缩或合同变化换链时才用新值；没有原生 continuation 时，已配对唤醒的 `rebase_business` 使用新 SOUL。
+改名不废弃原已付响应的未决工具尾部或签名，也不使未知派发可重购；新 SOUL 随新链生效：Work 唤醒沿原链追加（不论有无 Provider 原生 continuation），到压缩或合同变化换链时才用新值。
 工具说明使用中性角色称谓，不因改名重建 manifest；历史只认原事件名称快照，不用当前角色名补造旧名。
 桌面与 CLI 共用单 SOUL 读写/重载合同，详见[SOUL 管理与升级](../operations/soul-deployment-20261022.md)。
 Main 的系统约束、
@@ -349,21 +349,17 @@ SDK 先沿原 durable 来源取得实际 Work 租约，再准备上下文和请�
 核验。初始输入没有可容纳的合法切点时仍报告真实容量错误。
 
 恢复从原 journal 核对执行身份、预算、调用和回执；未决协议保持原签名和配对。
-跨唤醒续跑按原检查点有无 Provider 原生 continuation 分流：
+跨唤醒续跑一律按精确恢复处理，不论原检查点有无 Provider 原生 continuation（Responses、Claude
+Messages、Gemini 适配器与带不透明推理状态的 Chat Completions 响应有；普通 Chat Completions 响应没有，
+#646）：接着原链追加，不重建前缀、不改写已付输入。根 Work 在下一次真实模型派发前经公共观察边界
+把原链未见过的新聊天补在末尾（见下文“根 Work 的精确协议恢复”）；Work 材料已在原链中，不再追加
+`work_current_material`，首个请求也不另加参与资料。尚未执行的调用和仍开放的 Code 程序先按原回执
+续跑完，再在同一链上继续。子 Work 不装载公共观察边界，沿私有检查点追加。
 
-- **有原生 continuation**（Responses、Claude Messages、Gemini 适配器，以及带不透明推理状态的 Chat Completions 响应）：一律按精确恢复处理，接着原链追加，不重建前缀、
-  不改写已付输入。根 Work 在下一次真实模型派发前经公共观察边界把原链未见过的新聊天补在
-  末尾（见下文“根 Work 的精确协议恢复”）；Work 材料已在原链中，不再追加
-  `work_current_material`，首个请求也不另加参与资料。
-- **没有原生 continuation**（普通 Chat Completions 响应，及经其接入的其他模型）：原响应完整配对后的唤醒
-  走 `rebase_business`，以新准备的公共上下文为前缀，接上一轮尚未观察的工具轮（portable 证据，
-  保原调用键、参数与结果）、Host 选中的必要媒体和一份 `work_current_material`；旧 opaque、签名、
-  思考和创建时聊天不搬入新链。这是 #646 剩余问题 2 的现状：所有者已决定这些协议将来同样追加
-  到原链末尾，随模型 fallback 链实施，届时 rebase 只留给下述换链条件。实际尚未执行的调用、
-  仍开放的 Code 程序、Provider pause 与未完成的压缩不 rebase，沿原链精确恢复。
-- **子 Work** 不装载公共观察边界。没有原生 continuation 时，只有存在尚未观察的工具轮才 rebase 到
-  自己的初始材料，否则沿私有检查点追加；执行压缩后按精确恢复。新链保原 Work ID、来源、
-  父子关系、消耗和执行回执。
+唯一保留的 `rebase_business` 是压缩本身：根 Work 恢复时采用一份已付、有效、尚未配对的公共压缩，
+本次激活以采用后的公共历史为前缀，接上一轮尚未观察的工具轮（portable 证据，保原调用键、参数与
+结果）、Host 选中的必要媒体和一份 `work_current_material`；旧 opaque、签名、思考和创建时聊天不搬入
+新链。准备阶段（`select_protocol_recovery`）对这一种情况照旧组装新的公共上下文，两处判定同一条件。
 
 换新链只有三种情况：恢复合同哈希变化（INVARIANT 技术规则、固定工具声明与 manifest／Script API
 revision、web 设置、Profile revision）；来源守卫失败（根 Work 的原来源修订变化且原依赖无法再证明）；
@@ -443,7 +439,7 @@ epoch；模型原请求链不变。准备期间正文、附件或身份变化，
 writer 与执行时的 owner/fence/generation/期限条件，不以锁外读取代替 CAS。
 
 未决私有协议恢复在公共历史准备前核原 journal、固定合同和持久来源依赖；合法时复用原
-协议，不准备最终不会派发的新公共窗口。业务恢复按上文原生 continuation 分流（追加原链或
+协议，不准备最终不会派发的新公共窗口。业务恢复按上文沿原链追加（仅采用公共压缩时
 `rebase_business`），最近一次私有 compact 检查点仍归原 Work。整理在完整往返边界建立新链，来源冲突不重购已付响应。
 新 Work source guard 使用 codec 3：普通事件来源按实际 owner、输入、版本和引用核验，
 不绑定无关的诊断 privacy counter；存在 observation 依赖时仍核原隐私依赖。
@@ -482,7 +478,7 @@ opaque 与会改变媒体外置的条目仍按原协议准备；复用不代替
 原 Conversation 的 projection；E 整理实际已配对执行前缀，保留初始材料和切点后的原文。
 完整请求触发后，在原公共片段、前缀与原生协议边界内优先复用 P，不要求 initial 单独越线；
 E 未覆盖的 initial 保留。未交给正常 Main 的完整工具结果先保留，再选择可覆盖前缀；
-rebase／恢复后的 portable 证据沿原调用键接续，compact 自身看过不算正常 Main 已观察。
+公共压缩采用或合同变化后的 portable 证据沿原调用键接续，compact 自身看过不算正常 Main 已观察。
 执行摘要及后续正常请求认本轮原输入与已接纳 Work，不从背景任务推导目标；公共摘要不混入私有目标。
 普通轮的 compact 不自动接纳业务 Work；其付费输入/响应使用既有私有存储记录，不作为公共观察。
 已有 Work 沿原 journal 保存派发、响应与配对，冷恢复重用已付响应，未知派发不盲重试。

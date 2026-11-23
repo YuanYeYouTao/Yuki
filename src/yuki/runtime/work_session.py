@@ -87,7 +87,6 @@ class WorkSession:
         self.progress: dict[str, Any] = {}
         self.handoff_work_id: str | None = None
         self.uses_recovery_transcript = False
-        self.exact_recovery = False
         self.public_event_ids: set[int] = set()
         self.dispatch_boundary: PreparedContextBoundary | None = None
         self.pending_compositions: list[PendingComposition] = []
@@ -137,7 +136,6 @@ class WorkSession:
                 self.source_revision = source.prompt_source_revision
         recovery = control.protocol_recovery_preparation
         control.protocol_recovery_preparation = None
-        self.exact_recovery = False
         if (
             recovery is not None
             and control.current is not None
@@ -146,7 +144,6 @@ class WorkSession:
             and recovery.snapshot.record["contract"] == self.contract
         ):
             loaded = recovery.snapshot
-            self.exact_recovery = True
         else:
             loaded = (
                 await self.journal.load(
@@ -273,10 +270,10 @@ class WorkSession:
         if row:
             self.uses_recovery_transcript = True
             value = json.loads(row["payload_json"])
+            # Every protocol, with or without a provider continuation, resumes by
+            # appending to this original chain (#646). Only an adopted public
+            # compaction below moves the activation onto the new public prefix.
             self.transcript = decode_transcript(value["transcript"])
-            # A native checkpoint is the original paid protocol, even after its
-            # calls were paired. Portable receipts cannot replace its signatures.
-            self.exact_recovery |= self.transcript.continuation is not None
             metadata = value.get("metadata", {})
             self.handoff_work_id = metadata.get("handoff_work_id")
             self.progress = {
@@ -293,7 +290,7 @@ class WorkSession:
             self.source_keys = list(metadata.get("source_keys", []))
             self.input_ids = list(metadata.get("input_ids", []))
             compact = self.progress.get("context_compaction")
-            self.exact_recovery |= bool(control.lease.work_id and compact)
+            public_adopted = False
             if compact is not None and compact.get("phase") != "paired":
                 if (
                     public_compaction is not None
@@ -328,6 +325,7 @@ class WorkSession:
                     # first item after the old public prefix.
                     extras = extras[1:]
                     initial = TurnTranscript((*adopted, *extras))
+                    public_adopted = True
             await control.refresh_effects()
             # Pair recorded/unknown outcomes. A definitely undispatched call or
             # open composition still belongs to the original paid response;
@@ -406,16 +404,15 @@ class WorkSession:
                 and not self.pending
                 and not self.progress.get("provider_pause_replay")
             ):
-                # Resolve the old response against its original call keys before
-                # retiring it. No old tool is executed on the new business input.
+                # Resolve the old response against its original call keys. No old
+                # tool is executed again; the next request appends to this chain.
                 if value["pending"]:
                     await self.save("paired")
-                # A paired response has not yet dispatched its following model
-                # request. Present that original round once on the fresh public
-                # context, including failed/unexecuted receipts. Pairing is not
-                # evidence that the model has observed the result. Never copy
-                # the creation-time chat or opaque provider continuation.
-                await self.rebase_business(initial, append_material=False)
+                if public_adopted:
+                    # The compaction moved the shared prefix. Present the original
+                    # unobserved round once on the adopted public history. Never
+                    # copy the creation-time chat or opaque provider continuation.
+                    await self.rebase_business(initial)
         if control.current is not None and not self.uses_recovery_transcript:
             await self._append_business_material()
         trigger = control.source.get("trigger_event_id")
@@ -442,26 +439,10 @@ class WorkSession:
             )
         return self.transcript
 
-    async def rebase_business(
-        self, initial: TurnTranscript, *, append_material: bool = True
-    ) -> bool:
-        """Retire only a fully paired protocol before the next business dispatch."""
-        control = self.control
-        if (
-            not self.uses_recovery_transcript
-            or self.exact_recovery
-            or self.pending_compositions
-            or self.pending
-            or self.progress.get("provider_pause_replay")
-        ):
-            return False
+    async def rebase_business(self, initial: TurnTranscript) -> None:
+        """Continue a fully paired protocol on an adopted public compaction."""
         assert self.transcript is not None
         unobserved_round = self._unobserved_tool_round()
-        if control.lease.work_id and not unobserved_round:
-            # An isolated worker's task/finding is its private checkpoint, not
-            # stale public history. Only a completed portable tool round can
-            # supply the existing business-resume boundary for that worker.
-            return False
         previous_chain = self.transcript.chain_id
         # Preserve only Host-selected pixels still needed by the Work.
         # A legal business chain does not replay old calls, opaque state,
@@ -489,9 +470,6 @@ class WorkSession:
         # outputs are no longer a second copy of current working data.
         if not unobserved_round:
             self.progress.pop("model_observations", None)
-        if append_material and control.current is not None:
-            await self._append_business_material()
-        return True
 
     def _unobserved_tool_round(self) -> tuple[ChatMessage, ...]:
         """Portable last response/results, derived from the original journal."""
