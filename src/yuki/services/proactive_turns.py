@@ -38,7 +38,6 @@ from yuki.identity.routing import RouteSendError
 from yuki.persistence.unit_of_work import optional_session
 from yuki.runtime.origin import TurnOrigin
 from yuki.runtime.proactive_schema import proactive_turns
-from yuki.services.turn_transcript import dispatch_request
 from yuki.social.db_models import SocialOperationModel
 
 if TYPE_CHECKING:
@@ -66,12 +65,6 @@ class ProactiveSource:
     material: Callable[[str], Awaitable[dict[str, Any] | None]]
     # Runs in the start writer: fix what this turn covers (None: nothing; no history reads).
     on_claim: Callable[[AsyncSession, str, dict[str, Any] | None], Awaitable[None]]
-    # Model requests one attempt may pay; reaching it ends the turn without a retry.
-    max_model_requests: int | None = None
-
-
-class ProactiveRequestCapReached(RuntimeError):
-    """The source's per-turn model request cap is spent; no further request is paid."""
 
 
 async def validate_proactive_turn(
@@ -176,18 +169,14 @@ class ProactivePrivateTurns:
             else:
                 await self._settle(row["id"], "failed", "process_lost", None, expect="running")
 
-    async def due(
-        self, now: float, *, min_interval: float, retry_after: float, source_kind: str
-    ) -> list[str]:
-        """``source_kind``'s pending or once-failed turns whose person is free and past
-        the minimum interval; a running turn and the last start of any source count."""
+    async def due(self, now: float, *, min_interval: float, retry_after: float) -> list[str]:
+        """Pending or once-failed turns whose person is past the minimum interval."""
         async with self.database.read_session() as reader:
             rows = list(
                 (
                     await reader.execute(
                         select(
                             proactive_turns.c.id,
-                            proactive_turns.c.source_kind,
                             proactive_turns.c.person_id,
                             proactive_turns.c.state,
                             proactive_turns.c.attempts,
@@ -207,7 +196,7 @@ class ProactivePrivateTurns:
             busy = {row["person_id"] for row in rows if row["state"] == "running"}
             chosen: list[str] = []
             for row in rows:
-                if row["source_kind"] != source_kind or row["person_id"] in busy:
+                if row["person_id"] in busy:
                     continue
                 if row["state"] == "failed" and now - row["updated"] < retry_after:
                     continue
@@ -293,8 +282,6 @@ class ProactivePrivateTurns:
                     result = await self._run(
                         turn_id, source, material, identity, state, key, token, resolved
                     )
-                except ProactiveRequestCapReached:
-                    return await self._capped(turn_id, conversation.id)
                 except Exception as exc:
                     logger.warning(
                         "proactive_turn_failed turn=%s category=%s",
@@ -355,18 +342,10 @@ class ProactivePrivateTurns:
         )
         presence_id = resolved.presence_id
 
-        paid = 0
-
         async def validate() -> None:
-            nonlocal paid
             await validate_proactive_turn(
                 self.database, turn_id, conversation_id=state.id, presence_id=presence_id
             )
-            if source.max_model_requests is None or dispatch_request() is None:
-                return  # a tool call or preparation, not a model request
-            if paid >= source.max_model_requests:
-                raise ProactiveRequestCapReached(turn_id)
-            paid += 1
 
         context = {"origin": TurnOrigin.PROACTIVE_PRIVATE.value, "proactive_turn_id": turn_id}
         context.update(material)
@@ -450,13 +429,6 @@ class ProactivePrivateTurns:
             return "unknown"
         await self._settle(turn_id, "failed", code, summary, expect="running")
         return "failed"
-
-    async def _capped(self, turn_id: str, conversation_id: str) -> str:
-        """The cap ends this turn for good: what was sent stands, nothing is retried."""
-        sent, claimed = await self._receipts(conversation_id, turn_id)
-        state = "unknown" if claimed and not sent else "finished"
-        await self._settle(turn_id, state, "model_request_cap", None, expect="running")
-        return f"{state}:model_request_cap"
 
     async def _receipts(self, conversation_id: str | None, turn_id: str) -> tuple[bool, bool]:
         if conversation_id is None:

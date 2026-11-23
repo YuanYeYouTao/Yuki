@@ -1,10 +1,10 @@
 """Resident memory: a small deterministic view of active facts in every Main turn.
 
 Current contract: docs/architecture/memory-v2.md "常驻记忆段". Private chats render
-the counterpart's explicit facts, SELF concerns and SELF principles; group chats render
-the group core set, SELF concerns and SELF principles. Person core sets were replaced
-by person profiles (layered memory P4, ``memory.profiles``). Private-origin facts never
-render outside the private chat they came from.
+the counterpart's explicit facts and SELF principles; group chats render the group
+core set and SELF principles. Person core sets were replaced by person profiles
+(layered memory P4, ``memory.profiles``). Private-origin facts never render outside
+the private chat they came from.
 
 Rendering reads in one session, never calls a model and never writes. Every
 filter is re-applied at render time, so stored core sets never need syncing
@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Literal
 
-from sqlalchemy import and_, case, func, or_, select, text
+from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
@@ -33,7 +33,6 @@ from yuki.identity.person_identity import person_family_condition, person_root_i
 from yuki.memory.dream.db_models import (
     MemoryDreamOperationModel,
     MemoryDreamOperationSourceModel,
-    MemoryDreamRunModel,
 )
 from yuki.persistence.database import Database
 from yuki.persistence.models import (
@@ -49,9 +48,6 @@ if TYPE_CHECKING:
 
 MAX_RESIDENT_SET = 10  # per group core set and SELF principles; a prompt budget
 MAX_RESIDENT_EXPLICIT = 30  # explicit facts rendered; the rest stay on demand
-MAX_RESIDENT_CONCERNS = 5  # SELF concerns rendered per conversation (#541)
-CONCERN_CATEGORY = "concern"  # a SELF fact Yuki keeps caring about (#541)
-CONCERNS_TITLE = "[我在意的事]"
 
 _HEADER = (
     "常驻记忆（少量稳定条目；其余记忆用 search_memory 查，可按 fact 编号读取。"
@@ -105,7 +101,6 @@ class ResidentValidationError(ValueError):
 class _Fact:
     id: int
     scope_type: str
-    category: str
     content: str
     explicit: bool
     active: bool
@@ -324,10 +319,7 @@ class ResidentMemory:
                     MemoryFactModel.authority == "explicit",
                 ),
             )
-        concerns = await concern_ids(session)
-        listed, current = await resolve_listed(
-            session, (*lists[owner.kind], *lists["self"], *concerns)
-        )
+        listed, current = await resolve_listed(session, (*lists[owner.kind], *lists["self"]))
         facts = {**listed, **explicit}
         origins = await evidence_origins(
             session, (fact.id for fact in facts.values() if fact.eligible and fact.active)
@@ -362,14 +354,6 @@ class ResidentMemory:
                     chosen.append(fact)
             return chosen
 
-        def pick_concerns() -> list[_Fact]:
-            # Successors keep their concern's place; two concerns merged into one show once.
-            chosen: dict[int, _Fact] = {}
-            for fact in pick(concerns, self_owner):
-                if fact.category == CONCERN_CATEGORY:
-                    chosen.setdefault(fact.id, fact)
-            return list(chosen.values())
-
         # (title, candidates in order, cap after dedupe, trailing note)
         sections: list[tuple[str, list[_Fact], int, str]] = []
         omitted = 0
@@ -386,21 +370,10 @@ class ResidentMemory:
             )
         else:
             sections.append(("[本群]", pick(lists["space"], owner), MAX_RESIDENT_SET, ""))
-        cared = pick_concerns()
-        hidden = max(0, len(cared) - MAX_RESIDENT_CONCERNS)
-        sections.append(
-            (
-                CONCERNS_TITLE,
-                cared[hidden:],
-                MAX_RESIDENT_CONCERNS,
-                f"（另有 {hidden} 件在意的事未常驻，可用 search_memory 查）" if hidden else "",
-            )
-        )
         sections.append(("[我自己的原则]", pick(lists["self"], self_owner), MAX_RESIDENT_SET, ""))
 
-        # Person profiles (layered memory P4 §7) sit before the SELF concerns and
-        # principles. The import is local: the profile module builds on this module's
-        # fact helpers.
+        # Person profiles (layered memory P4 §7) sit before the SELF principles. The
+        # import is local: the profile module builds on this module's fact helpers.
         from yuki.memory.profiles import render_private_profiles, render_space_profiles
 
         if owner.kind == "person":
@@ -413,7 +386,7 @@ class ResidentMemory:
         lines: list[str] = []
         rendered: list[int] = []
         for title, candidates, cap, note in sections:
-            if title == CONCERNS_TITLE:
+            if title == "[我自己的原则]":
                 lines.extend(profile_lines)
             entries: list[_Fact] = []
             for fact in candidates:
@@ -431,40 +404,6 @@ class ResidentMemory:
         if not lines:
             return ResidentRender("", (), omitted)
         return ResidentRender("\n".join((_HEADER, *lines)), tuple(rendered), omitted, profiles)
-
-
-async def concern_ids(session: AsyncSession) -> tuple[int, ...]:
-    """SELF concerns the latest finished Dream run had seen, ascending by ID.
-
-    The section changes with the nightly Dream like the other resident lists: a concern
-    saved after that run's snapshot waits for the next run. Superseded concerns are
-    listed so a correction shows its successor at once; an invalidated one drops at
-    once. ``ix_memory_facts_self_concern`` (partial on the literal category) serves it.
-    """
-    from yuki.memory.episode_index import FINISHED_RUN_STATUSES
-
-    run = MemoryDreamRunModel
-    watermark = (
-        select(run.snapshot_max_fact_id)
-        .where(run.completed_at.is_not(None), run.status.in_(FINISHED_RUN_STATUSES))
-        .order_by(run.completed_at.desc(), run.id.desc())
-        .limit(1)
-        .scalar_subquery()
-    )
-    fact = MemoryFactModel
-    return tuple(
-        await session.scalars(
-            select(fact.id)
-            .where(
-                fact.scope_type == "self",
-                # A literal, not a bound parameter: the partial index's predicate.
-                text("memory_facts.category = 'concern'"),
-                fact.status.in_(("active", "superseded")),
-                fact.id <= func.coalesce(watermark, 0),
-            )
-            .order_by(fact.id)
-        )
-    )
 
 
 def _line(fact: _Fact) -> str:
@@ -544,7 +483,6 @@ async def load_facts(session: AsyncSession, *conditions: Any) -> dict[int, _Fact
         select(
             fact.id,
             fact.scope_type,
-            fact.category,
             fact.content,
             or_(fact.source_type == "explicit", fact.authority == "explicit").label("explicit"),
             (fact.status == "active").label("active"),
@@ -565,7 +503,6 @@ async def load_facts(session: AsyncSession, *conditions: Any) -> dict[int, _Fact
         row.id: _Fact(
             id=row.id,
             scope_type=row.scope_type,
-            category=row.category,
             content=row.content,
             explicit=bool(row.explicit),
             active=bool(row.active),

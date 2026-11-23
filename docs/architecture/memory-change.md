@@ -24,8 +24,7 @@ current_speaker、named_member、member_{id}、replied_message_author、candidat
 它们只能解析到本轮出现者的附带限制也一并删除，不改写成新的授权门槛（存在性核对不是授权）。
 真实来源照旧：人类写入的 evidence 须为真实入站事件，SELF 写入须给 `quote` 并按本轮
 `memory_tool_receipts.result_excerpt` 子串核验。`memory_key` 与 `category` 由 kind 生成（SELF 为
-`self_<kind>`），只作检索标签；`save_memory(kind=concern)` 只接受自己为 target，写 `kind=fact`、`category='concern'`，
-即常驻段的[在意的事](memory-v2.md#在意的事)。`save_memory(kind=episode)` 不带标题（`title` 为空，经历目录显示
+`self_<kind>`），只作检索标签。`save_memory(kind=episode)` 不带标题（`title` 为空，经历目录显示
 “（未命名经历）”，可由所有者 `yuki memory episodes set-title` 补写）；correct 与元数据新版本沿用原标题。
 自动提取同样不让模型给 `category`，写入取 kind 的值。存量事实的 `category` 不改。
 restore、contest、merge、reassign、update_metadata、selector、

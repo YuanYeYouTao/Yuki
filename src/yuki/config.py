@@ -265,12 +265,6 @@ class Settings(BaseSettings):
     watchdog_no_progress_seconds: float = Field(default=900.0, gt=0)
     watchdog_notify_min_interval_seconds: float = Field(default=1800.0, ge=0)
     watchdog_protocol_storage_warn_ratio: float = Field(default=0.8, gt=0, le=1)
-    # SELF "look around" (#541): a daily read-only private turn with each superuser
-    # over the concerns visible there; off by default, its hour is local to
-    # memory_dream_timezone (after the nightly Dream), one turn's model requests capped.
-    self_lookaround_enabled: bool = False
-    self_lookaround_hour: int = Field(default=6, ge=0, le=23)
-    self_lookaround_max_model_requests: int = Field(default=8, gt=0)
     subagents_enabled: bool = False
     subagent_concurrency: int = Field(default=2, ge=1)
     conversation_autonomous_debounce_seconds: float = 3.0

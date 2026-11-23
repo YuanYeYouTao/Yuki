@@ -535,11 +535,7 @@ class AgentToolService:
                                 },
                                 "kind": {
                                     "type": "string",
-                                    "enum": ["fact", "preference", "episode", "concern"],
-                                    "description": (
-                                        "concern 只用于自己：一件会长期放在心上、持续跟进的事，"
-                                        "一句话；事情结束用 edit_memory 撤回"
-                                    ),
+                                    "enum": ["fact", "preference", "episode"],
                                 },
                                 "importance": {
                                     "type": "integer",
@@ -1285,14 +1281,9 @@ class AgentToolService:
         if isinstance(selected, _ToolFailure):
             return self._result(error=selected.code, detail=selected.detail)
         kind_value = arguments.get("kind", "fact")
-        if kind_value not in {"fact", "preference", "episode", "concern"}:
+        if kind_value not in {"fact", "preference", "episode"}:
             return self._result(
-                error="invalid_arguments",
-                detail="kind 必须是 fact、preference、episode 或 concern",
-            )
-        if kind_value == "concern" and selected[0] != "self":
-            return self._result(
-                error="invalid_arguments", detail="kind=concern 只能写给自己（target 为 self=true）"
+                error="invalid_arguments", detail="kind 必须是 fact、preference 或 episode"
             )
         importance = arguments.get("importance")
         if importance is not None and (
@@ -1341,15 +1332,8 @@ class AgentToolService:
                 canonical_subject_space_id=space_id,
             )
         # The fact label is the kind; SELF labels keep the self_ prefix that
-        # decides which SELF facts may be global. A concern is a SELF fact whose
-        # category is ``concern`` (the resident "[我在意的事]" reads that category).
-        label = (
-            "concern"
-            if kind_value == "concern"
-            else f"self_{kind_value}"
-            if kind == "self"
-            else str(kind_value)
-        )
+        # decides which SELF facts may be global.
+        label = f"self_{kind_value}" if kind == "self" else str(kind_value)
         request = MemoryMutationRequest(
             operation=MemoryMutationOperation.CREATE,
             target=MemoryMutationTarget(
@@ -1359,7 +1343,7 @@ class AgentToolService:
             new_content=content.strip(),
             memory_key=label,
             category=label,
-            kind=MemoryKind.FACT if kind_value == "concern" else MemoryKind(kind_value),
+            kind=MemoryKind(kind_value),
             importance=importance,
             **evidence,
         )
