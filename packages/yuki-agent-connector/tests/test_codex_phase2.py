@@ -11,7 +11,7 @@ Failure cases written before the implementation:
 - F13/G9: release leaves Yuki's subscription on the thread (or touches the daemon);
 - §4.16: a read-only view hides queued inputs.
 
-D5 (0.9.4, 2026-11-22 task book §7), written and run red before the change: under a
+D5 (0.9.5, 2026-11-22 task book §7), written and run red before the change: under a
 scope whose commands lack "*", a command approval whose ``kind`` is ``writeStdin``,
 ``humanCommand``, null or any value other than ``command`` (or absent) is
 auto-approved by command prefix instead of reported (K1-K4). K5-K13 already hold:

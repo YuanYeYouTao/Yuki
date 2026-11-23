@@ -1,13 +1,13 @@
 # Yuki Agent Connector
 
-Connector **0.9.4 / wire protocol 5** connects an existing computer to Yuki through
+Connector **0.9.5 / wire protocol 5** connects an existing computer to Yuki through
 one outbound WSS connection. It provides native Codex, Claude SDK and ACP
 connections, and optional local Shell/file capabilities. It does not
 install the Bot, create another business task system or mirror native histories.
 
 Desktop includes this locked Python runtime for the Connector. No user Python
 installation is required. Independent CLI installations use Python 3.12:
-`uv tool install path/to/yuki_agent_connector-0.9.4-py3-none-any.whl`.
+`uv tool install path/to/yuki_agent_connector-0.9.5-py3-none-any.whl`.
 
 ## Installation and ownership
 
@@ -224,19 +224,30 @@ Unicode whitespace, so a trailing newline is dropped), it contains none of
 ``; & | < > ` $ ( )``, newline or carriage return (inside quotes and `2>&1`
 included) and equals a prefix or starts with the prefix plus one ASCII space
 (`git log` matches `git log -5`, not `git logx`, `git push` or `git<TAB>log`);
-only `*` admits the rest. Combined commands stay reported under a narrowed scope
-(#647 not relaxed). The prefix check looks neither at the cwd nor at the paths a
+only `*` admits the rest. Without `*`, combined commands are outside the scope
+(#647 not relaxed): native approvals are reported, an ACP `terminal/create` is
+refused; with `*`, they pass the command check even when `write_paths` or
+`network` are narrowed. The prefix check looks neither at the cwd nor at the paths a
 command writes, so `write_paths` does not confine an approved command: Claude runs
 it under the user's own account with no connector sandbox; Codex sandboxed
 commands never ask, and an `accept` only consents to that one request (where and
 whether it then runs is up to Codex); an ACP agent runs its own commands under its
 own sandbox, if any, while the connector runs an in-scope `terminal/create`
-directly under the user's account. Since 0.9.4, under `commands` without `*`, only
+directly under the user's account. Since 0.9.5, under `commands` without `*`, only
 a Codex command approval whose `kind` is absent or `command` can be auto-approved
 by prefix; `writeStdin` (input to a running terminal), `humanCommand`, null or any
 other kind is reported. Such a card may not show the input; decline or ask the user
 when it does not. The connector does not declare `requiredHumanApproval`, so
-`humanCommand` does not arrive today; under `*` these kinds are still approved.
+`humanCommand` does not arrive today; under `*` the kind is not checked, while the
+other conditions still apply (no `additionalPermissions`, network allowed when a
+`networkApprovalContext` is present, a non-empty string or list command).
+Known defects in 0.9.5, being fixed separately (planned for 0.9.6), so these
+protections do not hold yet: (1) detaching an ACP delegation while Yuki's prompt
+still runs drops its scope before the session closes, and `terminal/create` /
+`fs/write_text_file` callbacks in that window run unchecked; (2) a Codex
+file-change approval checks each change's `path` and `grantRoot` but not a move
+destination (`kind.move_path`); (3) a Codex `item/permissions/requestApproval`
+answer with `scope: "session"` is forwarded as is, beyond one request.
 A full scope (`write_paths` containing `/`,
 `network: true`, `commands: ["*"]`, 0.9.2) narrows nothing: Claude opens in
 permission mode `auto` with only SendMessage forced to ask, Codex gets
