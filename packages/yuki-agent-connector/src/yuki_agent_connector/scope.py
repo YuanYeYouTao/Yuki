@@ -18,6 +18,21 @@ from typing import Any
 
 # A command prefix cannot vouch for what a shell runs after these.
 _SHELL_CONTROL = frozenset(";&|<>`$()\n\r")
+# Side-effect tools a narrowed scope makes Claude (SDK or claude-agent-acp) ask about.
+# `ask` wins over the user's own allow rules while setting sources stay loaded (§15
+# E6). MCP tools are side effects no scope grants: always reported (#650).
+SCOPE_ASK = (
+    "Bash",
+    "Edit",
+    "Write",
+    "MultiEdit",
+    "NotebookEdit",
+    "WebFetch",
+    "WebSearch",
+    "mcp__*",
+)
+# Cross-session messages reach the user's other sessions: always reported (§15 E4).
+SCOPE_REPORTED = ("SendMessage",)
 
 
 @dataclass(frozen=True)
