@@ -60,11 +60,11 @@ from yuki.conversation.autonomy_repository import AutonomyRepository
 from yuki.conversation.canonical_db_models import PersonActiveRouteModel
 from yuki.domain.messages import ChatResponse, ToolCall, ToolFunction
 from yuki.identity.db_models import CanonicalSpaceModel
-from yuki.llm.fake import FakeLLMProvider
-from yuki.persistence.models import MemoryFactModel
+from yuki.persistence.models import MemoryFactModel, MemoryToolReceiptModel
 from yuki.runtime.work_repository import WorkRepository
 from yuki.runtime.work_scheduler import WorkScheduler
 from yuki.runtime.work_schema_v1 import work
+from yuki.services.main_agent_contract import MainAgentContract
 from yuki.services.semantic_participation import SemanticParticipationService
 from yuki.social.db_models import SocialOperationModel
 
@@ -160,6 +160,11 @@ class WakeScene(Scene):
         mutations, facts, _, _ = _service(self.database, self_memory_enabled=True)
         self.chat._tools._memory_mutations = mutations
         self.facts = facts
+        # Main declares save_memory only when the mutation service is wired (as the
+        # container does at startup); freeze the fixed contract again with it.
+        self.chat.runtime.runner.main_contract = MainAgentContract(
+            self.chat, self.chat._tools.short_state
+        )
         self.chat._settings.self_memory_enabled = True
         self.config = RuntimeConfigService(database=self.database, settings=self.chat._settings)
         self.chat._runtime_config = self.config
@@ -225,8 +230,14 @@ class WakeScene(Scene):
                 dict(row)
                 for row in (
                     await reader.execute(
-                        select(work.c.id, work.c.source_key, work.c.state, work.c.goal,
-                               work.c.conversation_id, work.c.source_json)
+                        select(
+                            work.c.id,
+                            work.c.source_key,
+                            work.c.state,
+                            work.c.goal,
+                            work.c.conversation_id,
+                            work.c.source_json,
+                        )
                         .where(work.c.source_key.like("initiative:%"))
                         .order_by(work.c.created)
                     )
@@ -318,9 +329,10 @@ async def test_w4_w5_w6_w11_w13_private_wake_sends_and_remembers(database, tmp_p
                     "send",
                     {"text": "群里说一声：有进展", "target": {"space_id": scene.env.space}},
                 ),
-                ("contacts", "find_contacts", {"type": "space"}),
+                ("contacts", "find_contacts", {"type": "group"}),
             )
         if "contacts" in results and "memory" not in results:
+            saved["sends"] = {key: results[key] for key in ("owner", "group")}
             saved["contacts"] = results["contacts"]
             return _calls(
                 (
@@ -369,6 +381,14 @@ async def test_w4_w5_w6_w11_w13_private_wake_sends_and_remembers(database, tmp_p
                 select(InitiativeFeedbackModel).where(InitiativeFeedbackModel.run_id == run.id)
             )
         )
+        receipts = [
+            (row.tool_name, row.canonical_person_id == scene.env.person, row.canonical_space_id)
+            for row in await reader.scalars(
+                select(MemoryToolReceiptModel).where(
+                    MemoryToolReceiptModel.initiative_run_id == run.id
+                )
+            )
+        ]
         fact = (
             await reader.scalar(
                 select(MemoryFactModel).where(MemoryFactModel.id == saved["memory"]["fact_id"])
@@ -387,10 +407,13 @@ async def test_w4_w5_w6_w11_w13_private_wake_sends_and_remembers(database, tmp_p
         sa_event.remove(engine, "before_cursor_execute", count)
     plans = {}
     async with database.read_session() as reader:
-        from yuki.services.self_wakeup import RECIPIENTS_SQL_FOR_PLAN
+        from yuki.services.self_wakeup import ADMITTED_SQL, SCENES_SQL
 
-        for label, statement in RECIPIENTS_SQL_FOR_PLAN.items():
-            rows = (await reader.execute(text("EXPLAIN QUERY PLAN " + statement))).all()
+        for label, statement, parameters in (
+            ("scenes", SCENES_SQL, {}),
+            ("admitted", ADMITTED_SQL, {"scenes": "[]", "proposal": "timer:1:1"}),
+        ):
+            rows = (await reader.execute(text("EXPLAIN QUERY PLAN " + statement), parameters)).all()
             plans[label] = [str(row[-1]) for row in rows]
     RESULTS["W4_W5_W6_W11_W13"] = {
         "run": {
@@ -401,6 +424,9 @@ async def test_w4_w5_w6_w11_w13_private_wake_sends_and_remembers(database, tmp_p
             "trigger_kind": run.trigger_kind,
         },
         "work": {"state": tasks[0]["state"], "origin": source["origin"]},
+        "send_results": saved.get("sends"),
+        "tool_receipts": receipts,
+        "contacts_excerpt": str(saved.get("contacts"))[:400],
         "trigger_has_path": CONCERNS_PATH in trigger,
         "trigger_text": trigger,
         "private_sends": scene.sends(),
@@ -414,7 +440,7 @@ async def test_w4_w5_w6_w11_w13_private_wake_sends_and_remembers(database, tmp_p
             if fact
             else None,
             "visibility_space": fact.canonical_visibility_space_id if fact else None,
-            "read_back": bool(saved.get("read") and saved["read"].get("memories")),
+            "read_back": saved.get("read"),
         },
         "unchanged_tick_statements": [" ".join(s.split())[:160] for s in statements],
         "query_plans": plans,
@@ -425,7 +451,7 @@ async def test_w4_w5_w6_w11_w13_private_wake_sends_and_remembers(database, tmp_p
     assert source["origin"] == "self_initiative" and source["principal_kind"] == "self"
     assert CONCERNS_PATH in trigger
     # W6
-    assert any("给主人" in sent for sent in scene.sends())
+    assert any("给主人" in json.loads(sent)["message"][0]["data"]["text"] for sent in scene.sends())
     assert len(scene.group_sends()) == 1
     assert sorted((row.target_kind, row.status) for row in social) == [
         ("person", "succeeded"),
@@ -441,10 +467,17 @@ async def test_w4_w5_w6_w11_w13_private_wake_sends_and_remembers(database, tmp_p
     assert fact.canonical_visibility_space_id is None
     assert saved["read"]["memories"][0]["content"] == "定时醒来时给主人和群都说了进展。"
     # W13
-    assert not any(s.lstrip().upper().startswith(("INSERT", "UPDATE", "BEGIN IMMEDIATE"))
-                   for s in statements)
+    assert not any(
+        s.lstrip().upper().startswith(("INSERT", "UPDATE", "BEGIN IMMEDIATE")) for s in statements
+    )
     assert len(statements) <= 4
-    assert all("SCAN" not in step or "USING" in step for plan in plans.values() for step in plan)
+    # The scene query reads the (one row per person) route table once per slot; the
+    # Conversation and the slot's prior run are index lookups.
+    assert any("uq_canonical_conversations_binding" in step for step in plans["scenes"])
+    assert any(
+        "autoindex_autonomy_initiative_runs" in step and "proposal_id=?" in step
+        for step in plans["admitted"]
+    )
 
 
 async def test_w7_w8_same_slot_restart_and_lost_dispatch(database, tmp_path):
@@ -495,7 +528,6 @@ async def test_w7_w8_same_slot_restart_and_lost_dispatch(database, tmp_path):
 
 async def test_w9_w10_group_self_and_ordinary_chat_unchanged(database, tmp_path):
     scene = await _scene(database, tmp_path)
-    await scene.switch("self_wakeup_interval_seconds", INTERVAL)
 
     def group_script(request):
         if not _tool_results(request):
@@ -531,19 +563,21 @@ async def test_w9_w10_group_self_and_ordinary_chat_unchanged(database, tmp_path)
     group_source = json.loads(group_work["source_json"])
     # W10: an ordinary owner chat turn after a timer wake carries no reminder.
     scene.script = _send_both(scene)
+    await scene.switch("self_wakeup_interval_seconds", INTERVAL)
     await scene.wake()
     result = await scene.harness.processor.handle(scene.message("最近怎么样", "later"), _sender())
     ordinary = _plain(scene.ordinary_requests[-1])
     RESULTS["W9_W10"] = {
         "group_trigger_has_path": CONCERNS_PATH in group_trigger,
-        "group_trigger_starts": group_trigger[:12],
+        "group_trigger_has_timer_note": TIMER_MARK in group_trigger,
         "group_source_space": group_source["space_id"] == scene.env.space,
         "group_sends": len(scene.group_sends()),
         "group_work_state": group_work["state"],
         "ordinary_reason": result.reason,
         "ordinary_has_path": CONCERNS_PATH in ordinary,
     }
-    assert CONCERNS_PATH not in group_trigger and group_trigger.startswith(GROUP_MARK)
+    assert GROUP_MARK in group_trigger and TIMER_MARK not in group_trigger
+    assert CONCERNS_PATH not in group_trigger
     assert group_source["space_id"] == scene.env.space and group_source["group_id"] == "20001"
     assert len(scene.group_sends()) >= 1 and scene.group_sends()[0]["message"]
     assert group_work["state"] == "completed"
@@ -617,7 +651,7 @@ async def test_w12_private_self_schedules_its_follow_up(database, tmp_path):
     ):
         await worker._process_guarded(claimed)
     owner_conversation = await scene.conversation()
-    rows = await repository.list_current_for_creator("self")
+    rows = [await repository.get(created["id"])] if created.get("id") else []
     history = await repository.run_history(rows[0].id) if rows else []
     RESULTS["W12"] = {
         "create_result": {k: created.get(k) for k in ("ok", "error", "status")},
@@ -626,10 +660,10 @@ async def test_w12_private_self_schedules_its_follow_up(database, tmp_path):
         if rows and rows[0].canonical_conversation_id == owner_conversation
         else None,
         "run_status": history[0].status.value if history else None,
-        "private_sends": scene.sends(),
+        "private_sends": [json.loads(sent)["message"][0]["data"]["text"] for sent in scene.sends()],
     }
     assert rows and rows[0].creator_kind == "self", created
     assert rows[0].canonical_conversation_id == owner_conversation
     assert history and history[0].status.value == "succeeded"
-    assert any("到点了" in sent for sent in scene.sends())
+    assert any("到点了" in json.loads(sent)["message"][0]["data"]["text"] for sent in scene.sends())
     assert not scene.group_sends()

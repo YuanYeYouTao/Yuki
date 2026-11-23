@@ -7,7 +7,6 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     ForeignKey,
-    ForeignKeyConstraint,
     Index,
     Integer,
     String,
@@ -48,11 +47,6 @@ class AutonomyBindingModel(Base):
 class InitiativeRunModel(Base):
     __tablename__ = "autonomy_initiative_runs"
     __table_args__ = (
-        ForeignKeyConstraint(
-            ["conversation_id", "generation"],
-            ["autonomy_bindings.conversation_id", "autonomy_bindings.generation"],
-            ondelete="RESTRICT",
-        ),
         UniqueConstraint(
             "conversation_id",
             "generation",
@@ -62,7 +56,7 @@ class InitiativeRunModel(Base):
             name="uq_autonomy_proposal_run",
         ),
         CheckConstraint("generation >= 1 AND controller_epoch >= 0 AND feedback_sequence >= 0"),
-        CheckConstraint("owner IN ('legacy', 'semantic')"),
+        CheckConstraint("owner IN ('legacy', 'semantic', 'timer')"),
         CheckConstraint(
             "state IN ('accepted', 'running', 'completed', 'no_reply', 'interrupted', 'failed')"
         ),
@@ -76,12 +70,16 @@ class InitiativeRunModel(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     proposal_id: Mapped[str] = mapped_column(Text, nullable=False)
-    conversation_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    # A timed wake has no group controller selector row (0168).
+    conversation_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("canonical_conversations.id", ondelete="RESTRICT"), nullable=False
+    )
     generation: Mapped[int] = mapped_column(Integer, nullable=False)
     owner: Mapped[str] = mapped_column(String(16), nullable=False)
     controller_epoch: Mapped[int] = mapped_column(Integer, nullable=False)
-    space_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("spaces.id", ondelete="RESTRICT"), nullable=False
+    # None: SELF woke in a private Conversation, not in a group (0168).
+    space_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("spaces.id", ondelete="RESTRICT")
     )
     presence_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("account_assignments.id", ondelete="RESTRICT"), nullable=False

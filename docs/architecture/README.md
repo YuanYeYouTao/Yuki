@@ -6,7 +6,7 @@
 
 2026-11-23 [订阅 OAuth 登录调研与任务书](Yuki-订阅OAuth登录任务书-2026-11-23.md)：#493，走官方 Sign in with ChatGPT 计划用量路线（公共 `/v1/responses`，SSE、`store:false`）；SIWC 条款禁止用一人的订阅回答他人请求，故只在执行处放行凭据所属 Person 本人的私聊请求，群聊与他人请求跳过（0 次物理请求，沿 #713 下一跳）；不借用本机 Codex 登录；Bot 持有并刷新凭据，回调首版粘贴交回。只写文档，未实施，Q1（做不做）须所有者表态。
 
-2026-11-23 [长期在意与跨会话感知调研](Yuki-长期在意与跨会话感知调研-2026-11-23.md)：#541、#289 的调研与任务书，未实施。对照 OpenAI dots 的只读主动研究；推荐把“在意的事”作为 SELF 记忆事实渲染进常驻段（至多 5 条），用一个默认关闭的 SELF 只读定时入口去看、经主动私聊告知；跨会话方向推荐转达带来源标签与私聊里一行群指针，私聊内容不自动进群；另记录主 Agent `read_chat` 不按提问者收窄范围的现状，待所有者拍板（§8 五问）。
+2026-11-23 [长期在意与跨会话感知调研](Yuki-长期在意与跨会话感知调研-2026-11-23.md)：#541、#289 的调研与任务书。所有者 §8 已拍板：P0、P4 不做；P1（转达来源）已合并；在意的事改为工作区 Markdown 清单；P3 改为复用同一 SELF 唤醒链、去掉“SELF 必须在群里”、加一个默认关闭的定时唤醒（迁移 0168，现行合同见[语义参与](semantic-participation.md#定时唤醒与无群场景541)），实施记录见 §8 末尾。
 
 2026-11-23 [模型 fallback 链调研与任务书](Yuki-模型fallback链任务书-2026-11-23.md)：用途级显式备用 Profile 链按 §9 推荐实施（[现行合同](model-providers.md#显式备用链)），无迁移，默认空链；看门狗复用组件事实（键 `component:model_fallback:<task>:<profile>`），E2E 产物 `test-results/model-fallback-chain-e2e.json`。其中 §9 Q12 已先行实施：Profile 可选 `connect_timeout_seconds` 只限建立连接，未设置取 10 秒且不超过 `timeout_seconds`，不进入 Profile revision；Responses 回复中途断开（`RemoteProtocolError` 等）不再以裸 httpx 异常冒出，统一为 `LLMUnavailableError`，走现有传输失败与回执路径（[现行合同](model-providers.md#传输超时与断连)）。
 
@@ -45,7 +45,7 @@ Mac 本地迁移、ARM64 Code Mode、完整数据恢复、两端 Connector 与 A
 
 代码删除与清理的固定基线计划见[任务书](Yuki-代码删除与清理任务书-2026-10-23.md)，B1–B6 的源码、验证和交付分别记录于[完整执行记录](../operations/code-deletion-20261023.md)；公开接口和连接器配套升级见[兼容说明](../upgrade-code-deletion-20261023.md)。
 
-本入口跟随 **4.0.0 待发布源码**；当前源码迁移 head 为 `0167`、Plugin API 为 `9.0`、个人 Client API revision 为 `12`；Main 工具声明以当前完整 manifest 为准。#448 的共享读取、唯一索引与停写升级见[聊天记录读取](chat-history.md)，实施和交付分开记录于[实施记录](../operations/chat-history-448-implementation-20261022.md)。4.0.0 正式范围和完整 PR 清单仍见 [4.0.0 发布说明](../releases/v4.0.0.md)，前版迁移见 [4.0 升级指南](../upgrade-4.0.0.md)，两套完整评测见 [benchmark 报告](../benchmarks/2026-10-20-yuki-flash-1017/README.md)。#455 的 ACP 方向 A 复用现有个人身份、Main/Work/Social 和原回执，见[个人 API](client-api.md#acp-方向-a)与[原任务书两轮审查](Yuki-控制面重构与多客户端接入任务书-2026-10-14.md#10-455-两轮审查与实施)。前阶段见[299实施记录](Yuki-299与多平台解耦实施记录-2026-10-16.md)和[453实施与验证](Yuki-453人物解耦实施与验证-2026-10-17.md)。历史发行见[3.9.0 发布说明](../releases/v3.9.0.md)。
+本入口跟随 **4.0.0 待发布源码**；当前源码迁移 head 为 `0168`、Plugin API 为 `9.0`、个人 Client API revision 为 `12`；Main 工具声明以当前完整 manifest 为准。#448 的共享读取、唯一索引与停写升级见[聊天记录读取](chat-history.md)，实施和交付分开记录于[实施记录](../operations/chat-history-448-implementation-20261022.md)。4.0.0 正式范围和完整 PR 清单仍见 [4.0.0 发布说明](../releases/v4.0.0.md)，前版迁移见 [4.0 升级指南](../upgrade-4.0.0.md)，两套完整评测见 [benchmark 报告](../benchmarks/2026-10-20-yuki-flash-1017/README.md)。#455 的 ACP 方向 A 复用现有个人身份、Main/Work/Social 和原回执，见[个人 API](client-api.md#acp-方向-a)与[原任务书两轮审查](Yuki-控制面重构与多客户端接入任务书-2026-10-14.md#10-455-两轮审查与实施)。前阶段见[299实施记录](Yuki-299与多平台解耦实施记录-2026-10-16.md)和[453实施与验证](Yuki-453人物解耦实施与验证-2026-10-17.md)。历史发行见[3.9.0 发布说明](../releases/v3.9.0.md)。
 
 提及定点查询、真实重名默认与迁移验证见[0142 修复记录](../operations/mention-resolution-0142.md)。其他 SQLite 热查询的原扫描证据见[10-20 只读审计](../operations/sqlite-query-scan-audit-20261020.md)，0143 修复、两轮终审与交付见[逐项修复记录](../operations/backend-audit-remediation-20261020.md)。
 

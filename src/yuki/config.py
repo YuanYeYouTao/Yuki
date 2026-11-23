@@ -251,6 +251,8 @@ class Settings(BaseSettings):
     conversation_auto_reply_enabled: bool = True
     conversation_proactive_wakeup_enabled: bool = True
     conversation_autonomous_enabled: bool = True
+    # Timed SELF wake cadence in seconds (#541); 0 keeps it off.
+    conversation_self_wakeup_interval_seconds: float = Field(default=0.0, ge=0)
     conversation_semantic_participation_enabled: bool = False
     semantic_participation_api_key: SecretStr = Field(default=SecretStr(""), repr=False)
     semantic_participation_model: str = "jev-1.13.0"

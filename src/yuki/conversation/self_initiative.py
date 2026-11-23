@@ -15,7 +15,7 @@ async def validate_self_initiative(
     run_id: str,
     *,
     conversation_id: str,
-    space_id: str,
+    space_id: str | None,
     presence_id: str,
     session: AsyncSession | None = None,
 ) -> None:
@@ -23,7 +23,8 @@ async def validate_self_initiative(
 
     Switching the proposal owner does not revoke accepted work. Generation reset,
     disabled space/presence revoke new effects. Original Work execution retains
-    its own lease and authority after the initiative owner settles.
+    its own lease and authority after the initiative owner settles. A run without a
+    Space woke in a private Conversation (a timed wake, #541) and has no group to check.
     """
     async with optional_session(database, session, write=False) as session:
         run = (
@@ -44,15 +45,14 @@ async def validate_self_initiative(
         ):
             raise PermissionError("self_initiative_unavailable")
         conversation = await session.get(CanonicalConversationModel, conversation_id)
-        space = await session.get(CanonicalSpaceModel, space_id)
+        space = await session.get(CanonicalSpaceModel, space_id) if space_id else None
         presence = await session.get(PresenceModel, presence_id)
         if (
             conversation is None
-            or conversation.kind != "space"
+            or conversation.kind != ("space" if space_id else "private")
             or conversation.generation != run.generation
             or conversation.space_id != space_id
-            or space is None
-            or not space.enabled
+            or (space_id is not None and (space is None or not space.enabled))
             or presence is None
             or not presence.enabled
         ):

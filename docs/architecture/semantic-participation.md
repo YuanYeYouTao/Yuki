@@ -163,13 +163,34 @@ WorkScheduler 调用 `generate_self_initiative`，随后仍经过 `MainAgentTurn
 - 控制器切换本身不取消已接纳工作；reset/generation 失效、原场景权限或 Presence 失效仍
   拒绝继续执行。终态迟到的真实效果可以入账，不能把终态改回运行或触发重新发送。
 
+### 定时唤醒与无群场景（#541）
+
+所有自主唤醒共用这条链：同一 `autonomy_initiative_runs` 接纳行、`initiative:<run_id>` SELF Work、
+固定工具、共同目标选择、授权与回执。除语义参与控制器（semantic/legacy）给出的群机会外，
+宿主每次推进还检查一个按显式节奏的定时触发（`services/self_wakeup.py`）：
+`conversation.self_wakeup_interval_seconds`（全局，默认 0 关闭）大于 0，且全局
+`conversation.autonomous_enabled` 与 `conversation.proactive_wakeup_enabled` 都开着时，
+在每位超级管理员已设置且未暂停的主动路由所对应的私聊里醒一次。它不看群热度，不受
+`auto_reply_enabled`、`semantic_participation_enabled` 或 Space 自主资格影响。
+
+- 场景：没有群时 SELF 在超管的私聊里醒（与主动私聊同一路由解析；路由缺失、暂停或该私聊尚未建立就不醒）。
+  run 的 `owner='timer'`、`space_id` 为空、`controller_epoch=0`，没有控制器选择行；Work 场景是该私聊，
+  省略 target 的 `send` 发给该超管，发到群或别人用 `send` 的 target，走共同路由、授权与回执。
+- 节奏：时间槽为 `floor(now / interval)`，提案键 `timer:<interval>:<slot>` 在每个私聊唯一；同一槽重复推进或重启后
+  返回原 run，不建第二个 Work、不再付模型请求。进程停机期间错过的槽不补；已接纳但 Work 尚未建立的 run 由原 outbox 对账派发。
+- 触发正文：在原自主工作说明前加一段定时说明，提醒一次在意清单的路径 `/workspace/notes/concerns.md`
+  （只给路径与一句说明，不带内容；Yuki 用文件工具自己维护，格式不强制、程序不解析）。群里的唤醒与普通聊天轮不带这段。
+- 预算：与其他 SELF Work 相同，根预算默认无限，不另设上限。
+- 写入事务只复核私聊场景、Presence 与当前开关；不变的推进只读一次全局配置，场景查询每个槽一次。
+
 工作区、终端、沙箱与子 Agent 复用原执行 ID、租约、回执和根预算。子 Agent 仍由既有
 SubagentScheduler 和 Runner 运行，身份保持 SELF，内部结果交给父 Work；Social 仍按其原来源和真实授权执行，
 不因委派增加发送权限。它不继承主 SELF 的“发送正文或沉默”反馈，也不代报参与意愿。没有另起一套工作执行循环。
 
 SELF 使用共同 Social 目标解析、通讯录、历史、发送、结构化 @、戳人和原发送撤回。
 默认当前群仍使用原场景与 Presence；显式目标沿共同路由和真实授权核验。
-Memory 除常驻记忆段外按需查询当前群与该群可见的 SELF 范围。自主轮的常驻记忆段只带本群核心与本群可见的 SELF 原则，不从最后发言者生成个人上下文。
+Memory 除常驻记忆段外按需查询当前场景可见的 SELF 范围：群里是当前群与该群可见范围，私聊里（定时唤醒）是 global 与
+可见人物为对方的 private。自主轮的常驻记忆段按所在会话渲染（群里只带本群核心与本群可见的 SELF 原则），不从最后发言者生成个人上下文。
 完整工具声明仍固定提供；工具是否可执行由上述可信来源和现有权限检查决定。
 
 SELF 当前指令只保简短意图与真实来源编号，不重复附来源正文包；详情沿已有历史和记忆
@@ -282,6 +303,7 @@ Jev 密钥不得写入公开配置、提示词或验收记录。
 | `conversation.proactive_wakeup_enabled` / `CONVERSATION_PROACTIVE_WAKEUP_ENABLED` | 默认 true；只控制新 intrinsic SELF 机会 |
 | `conversation.autonomous_enabled` / `CONVERSATION_AUTONOMOUS_ENABLED` | 保留 SELF 总开关及群 Space 的 enabled/autonomous_enabled；普通真人接话独立 |
 | `conversation.semantic_participation_enabled` / `CONVERSATION_SEMANTIC_PARTICIPATION_ENABLED` | 默认 false；开启使用 semantic，显式关闭使用 legacy；观测故障不自动回退 |
+| `conversation.self_wakeup_interval_seconds` / `CONVERSATION_SELF_WAKEUP_INTERVAL_SECONDS` | 默认 0（关闭）；只有全局作用域，热生效。SELF 定时唤醒的节奏，见上文“定时唤醒与无群场景” |
 | `SEMANTIC_PARTICIPATION_API_KEY` | 默认空。没有 `semantic_observation` 段时，这是 Jev 观测凭据；未配置时不产生新语义观测，不改变 proposer 归属 |
 | `SEMANTIC_PARTICIPATION_MODEL` | 默认 `jev-1.13.0`，只在文件没有语义段时作为请求模型和响应修订。语义段里的模型名以文件为准 |
 | `SEMANTIC_PARTICIPATION_STATE_PATH` | 默认 `data/participation.sqlite3`，控制器快照；不代替 Host 的 run/Work/回执数据库 |

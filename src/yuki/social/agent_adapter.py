@@ -33,8 +33,9 @@ async def invoke_social(
         if actor.proactive_turn_id is not None and name == "send" and arguments.get("target"):
             # A proactive private turn speaks only in its own private Conversation.
             raise SocialError("permission_denied")
-        if actor.proactive_turn_id is not None:
-            # The private turn's own recipient: the Person of its Conversation.
+        if actor.proactive_turn_id is not None or not runtime.space_id:
+            # SELF in a private Conversation (a proactive turn, or a wake without a group,
+            # #541): its counterpart is the Person of that Conversation.
             from yuki.conversation.canonical_db_models import CanonicalConversationModel
 
             async with service.database.read_session() as session:

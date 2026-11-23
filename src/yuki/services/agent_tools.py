@@ -19,6 +19,7 @@ from yuki.admin.config_service import RuntimeConfigService
 from yuki.admin.models import RuntimeConfigSnapshot
 from yuki.capabilities.results import ToolExecutionResult
 from yuki.config import Settings
+from yuki.conversation.canonical_db_models import CanonicalConversationModel
 from yuki.conversation.scope import ConversationTurnSnapshot
 from yuki.domain.conversations import ConversationScope, ScopeType
 from yuki.domain.messages import ChatTool, InboundMessage
@@ -1033,6 +1034,7 @@ class AgentToolService:
                 current_space_id=self._runtime_space_id(runtime),
                 private_scene=runtime.effective_scope_type is ScopeType.PRIVATE,
                 self_actor=requester is None,
+                self_private_person_id=await self._self_private_person(runtime),
                 allowed_scopes=self._readable_scopes(runtime),
             )
             scope = ResolvedReadScope(targets=())
@@ -1183,9 +1185,25 @@ class AgentToolService:
             or (runtime.actor_context.space_id if runtime.actor_context is not None else None)
         )
 
+    async def _self_private_person(self, runtime: ToolRuntime) -> str | None:
+        """SELF in a private Conversation (#541) sees SELF memory private to its counterpart."""
+        actor = runtime.actor_context
+        if (
+            runtime.effective_scope_type is not ScopeType.PRIVATE
+            or actor is None
+            or actor.principal_kind != "self"
+        ):
+            return None
+        async with self._people.database.read_session() as session:
+            return await session.scalar(
+                select(CanonicalConversationModel.person_id).where(
+                    CanonicalConversationModel.id == runtime.effective_conversation_id
+                )
+            )
+
     async def _visible_self_memory_target(self, runtime: ToolRuntime) -> MemoryEntityTarget | None:
         space_id = self._runtime_space_id(runtime)
-        person_id = self._social_requester(runtime)
+        person_id = self._social_requester(runtime) or await self._self_private_person(runtime)
         if runtime.effective_scope_type is ScopeType.GROUP and space_id is not None:
             return MemoryEntityTarget(
                 role=MemoryTargetRole.CURRENT_SELF,
@@ -1528,6 +1546,7 @@ class AgentToolService:
             current_space_id=self._runtime_space_id(runtime),
             private_scene=runtime.effective_scope_type is ScopeType.PRIVATE,
             self_actor=requester is None,
+            self_private_person_id=await self._self_private_person(runtime),
             allowed_scopes=self._readable_scopes(runtime),
         )
         facts = await self._memories.repository.get_active_authorized(scope, (fact_id,))

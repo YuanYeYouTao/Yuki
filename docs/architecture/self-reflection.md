@@ -119,11 +119,12 @@ cycle、每日请求预算、检查点和原 run 恢复机制；管理输出以 
 选择后新增引用、窗口或延长保留期都会阻止该条删除。回执引用查询使用 0083 的
 tool_receipt_id 非空索引；原 receipt、run 和证据仍是唯一事实来源。
 
-主 SELF 入口使用 actorless TurnMemorySession，按真实来源准备当前群与可见 SELF 范围，
+主 SELF 入口使用 actorless TurnMemorySession，按真实来源准备当前场景（群，或定时唤醒所在的私聊）与可见 SELF 范围，
 需要长期事实时通过 `search_memory` 读取；主SELF的 `save_memory`／`edit_memory` 沿实际原发起来源和
 原execution的工具回执写SELF事实，引用按真实摘录查证，不借真人event。
 不借最近发言者或目标人的身份准备上下文。纯工具自省经同一 MutationService 验证、
-冲突处理和原子回执写入；只能影响有相应证据的 SELF global/当前群范围，不能写私人事实。
+冲突处理和原子回执写入；只能影响有相应证据的 SELF global/当前群范围，私聊场景里是 global/对方 private 范围，
+不能写人物或群事实。私聊场景的工具回执与自省批次归该私聊对方的 Person（与其 Memory 分区一致），遗忘该人物时一并清退。
 历史 run 证据可保留，不能因此恢复已失效 generation 的执行权限。
 显式人物遗忘按整个人物族清退实际私人资料和被擦除来源；主动 run 仅以人物作为 target 时清空目标引用，
 不删除其他作者正文、独立群 SELF 经历、原工具证据或原反馈，也不把目标身份当作继续写私人资料的许可。

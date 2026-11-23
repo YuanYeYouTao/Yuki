@@ -70,7 +70,6 @@ class ToolActor:
                 )
                 or not self.conversation_id
                 or not self.presence_id
-                or not self.group_id
                 or not self.bot_user_id
                 or self.user_id
                 or self.person_id

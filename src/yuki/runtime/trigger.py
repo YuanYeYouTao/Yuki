@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from yuki.domain.conversations import ConversationScope
 from yuki.runtime.errors import InvalidTurnTriggerError
 from yuki.runtime.origin import TurnOrigin
 
@@ -17,34 +18,61 @@ _TARGET_TYPES = frozenset({"group", "private"})
 
 @dataclass(frozen=True, slots=True)
 class SelfInitiativeTrigger:
-    """Host-accepted SELF intent, with no borrowed person or synthetic event."""
+    """Host-accepted SELF intent, with no borrowed person or synthetic event.
+
+    A group wake carries its Space and group; a wake in a private Conversation (#541)
+    carries neither and names the counterpart's platform account as ``user_id``.
+    """
 
     run_id: str
     conversation_id: str
     generation: int
-    space_id: str
+    space_id: str | None
     presence_id: str
-    group_id: str
+    group_id: str | None
     bot_user_id: str
     instruction: str
     platform: str = "qq"
     thread_id: str | None = None
+    user_id: str | None = None
     origin: TurnOrigin = field(default=TurnOrigin.SELF_INITIATIVE, init=False)
 
     def __post_init__(self) -> None:
-        if self.generation < 1 or any(
-            not value.strip()
-            for value in (
-                self.run_id,
-                self.conversation_id,
-                self.space_id,
-                self.presence_id,
-                self.group_id,
-                self.bot_user_id,
-                self.instruction,
+        if (
+            self.generation < 1
+            or any(
+                not value.strip()
+                for value in (
+                    self.run_id,
+                    self.conversation_id,
+                    self.presence_id,
+                    self.bot_user_id,
+                    self.instruction,
+                )
             )
+            or (bool(self.space_id and self.group_id) == bool(self.user_id))
         ):
             raise InvalidTurnTriggerError("invalid self initiative trigger")
+
+    def scope(self) -> ConversationScope:
+        if self.group_id:
+            return ConversationScope.group(
+                self.bot_user_id,
+                self.group_id,
+                platform=self.platform,
+                presence_id=self.presence_id,
+                conversation_id=self.conversation_id,
+                thread_id=self.thread_id,
+            )
+        assert self.user_id is not None
+        return ConversationScope.private(
+            self.bot_user_id,
+            self.user_id,
+            platform=self.platform,
+            presence_id=self.presence_id,
+            conversation_id=self.conversation_id,
+            thread_id=self.thread_id,
+        )
 
 
 @dataclass(frozen=True, slots=True)

@@ -451,6 +451,75 @@ class AutonomyRepository:
             await session.flush()
             return AdmissionResult("accepted", _run(row))
 
+    async def accept_timer_wakeup(
+        self,
+        *,
+        proposal_id: str,
+        conversation_id: str,
+        generation: int,
+        presence_id: str,
+        admission_allowed: Callable[[AsyncSession], Awaitable[bool]],
+    ) -> AdmissionResult:
+        """Admit one timed SELF wake in a private Conversation; no group controller is involved.
+
+        The caller selected the scene in a reader. This short writer only rechecks the scene
+        and the current switches, then writes the same run row as any other SELF wake. The
+        unique proposal key makes a replayed slot return its original run.
+        """
+        source_json = support_json = _json([])
+        payload = [None, presence_id, None, source_json, support_json, "intrinsic", None]
+        payload_hash = hashlib.sha256(_json(payload).encode("utf-8")).hexdigest()
+        async with self._database.immediate_session() as session:
+            prior = await session.scalar(
+                select(InitiativeRunModel).where(
+                    InitiativeRunModel.conversation_id == conversation_id,
+                    InitiativeRunModel.generation == generation,
+                    InitiativeRunModel.owner == AutonomyOwner.TIMER.value,
+                    InitiativeRunModel.controller_epoch == 0,
+                    InitiativeRunModel.proposal_id == proposal_id,
+                )
+            )
+            if prior is not None:
+                if prior.payload_hash != payload_hash:
+                    raise AutonomyConflict("initiative_proposal_replay_conflict")
+                return AdmissionResult("duplicate", _run(prior))
+            conversation = await session.get(CanonicalConversationModel, conversation_id)
+            presence = await session.get(PresenceModel, presence_id)
+            if (
+                conversation is None
+                or conversation.kind != "private"
+                or conversation.generation != generation
+                or presence is None
+                or not presence.enabled
+            ):
+                return AdmissionResult("scene_unavailable")
+            if not await admission_allowed(session):
+                return AdmissionResult("disabled")
+            now = datetime.now(UTC)
+            row = InitiativeRunModel(
+                id=str(uuid4()),
+                proposal_id=proposal_id,
+                conversation_id=conversation_id,
+                generation=generation,
+                owner=AutonomyOwner.TIMER.value,
+                controller_epoch=0,
+                space_id=None,
+                presence_id=presence_id,
+                target_person_id=None,
+                payload_hash=payload_hash,
+                sources_json=source_json,
+                support_refs_json=support_json,
+                trigger_kind="intrinsic",
+                thread_key=None,
+                state="accepted",
+                feedback_sequence=0,
+                created_at=now,
+                updated_at=now,
+            )
+            session.add(row)
+            await session.flush()
+            return AdmissionResult("accepted", _run(row))
+
     async def get_run(
         self, run_id: str, *, session: AsyncSession | None = None
     ) -> AcceptedInitiative | None:
@@ -672,7 +741,7 @@ class AutonomyRepository:
             row.proposal_id == run.proposal_id,
             row.conversation_id == run.conversation_id,
             row.generation == run.generation,
-            row.space_id == run.space_id,
+            row.space_id.is_(run.space_id),
             row.presence_id == run.presence_id,
             row.controller_epoch == run.controller_epoch_at_acceptance,
             row.owner == run.owner.value,

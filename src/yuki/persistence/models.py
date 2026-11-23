@@ -1041,8 +1041,9 @@ class MemoryToolReceiptModel(Base):
     __tablename__ = "memory_tool_receipts"
     __table_args__ = (
         CheckConstraint(
+            # A SELF wake in a private Conversation is owned by its Person (0168, #541).
             "initiative_run_id IS NULL OR (tool_call_id IS NOT NULL AND execution_id IS NOT NULL "
-            "AND source_call_key IS NOT NULL AND canonical_person_id IS NULL)",
+            "AND source_call_key IS NOT NULL)",
             name="ck_memory_tool_receipts_initiative_call",
         ),
         Index("uq_memory_tool_receipts_source_call", "source_call_key", unique=True),

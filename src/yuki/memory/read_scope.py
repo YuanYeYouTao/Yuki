@@ -42,6 +42,7 @@ class MemoryReadScopeResolver:
         current_space_id: str | None = None,
         private_scene: bool = False,
         self_actor: bool = False,
+        self_private_person_id: str | None = None,
         allowed_scopes: tuple[MemoryScopeType, ...] = (
             MemoryScopeType.PERSON,
             MemoryScopeType.PERSON_GROUP,
@@ -66,7 +67,11 @@ class MemoryReadScopeResolver:
             requester_person_id=person_id,
             requester_family_ids=family,
             current_space_id=str(space_id) if space_id is not None else None,
-            current_private_person_id=person_id if private_scene else None,
+            # SELF has no requester; in a private Conversation it sees that Conversation's
+            # counterpart's private SELF memory (#541), as a group SELF sees its group's.
+            current_private_person_id=(person_id or self_private_person_id)
+            if private_scene
+            else None,
             current_group_only=self_actor,
             allowed_scopes=allowed_scopes,
         )
