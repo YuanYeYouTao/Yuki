@@ -62,7 +62,12 @@ revision。有效 owner 只有 off、legacy、semantic：总开关关闭始终 o
 两种 proposer 共用同一接纳合同，相同 proposal 重放返回原 run。已有 queued/running Work
 不封住真实新提议，执行容量沿原 Work 调度处理；等待和暂停继续保留原恢复身份。
 
-尚未建立互动时，单纯名字提及仍是优先观察线索，不等同于 `@`。
+群里叫角色名字是明确呼叫，与原生 `@`、回复 Yuki、前缀和命令同属直接入口（#653），
+不受 `require_mention`、`auto_reply_enabled` 与 `semantic_participation_enabled` 影响，沿同一条
+`USER_MESSAGE` 链即时处理（admission reason `group_name_call`）。名字取当前角色资料的 `display_name`
+与 `BOT_ALIASES` 显式别名，`casefold` 后比较；拉丁字母或数字结尾的名字边缘不能紧贴另一个
+ASCII 字母或数字（`Yukiko`、`ayuki` 不算），中日文与标点相邻不阻断（`问问yuki吧` 算）。只看当前正文，
+原生提及位置上的文字是被提及者的名称，不算呼叫；引用原文不算。Bot 与 Yuki 自己的消息仍按原规则不触发。
 Jev 判断为邀请/续聊且回应楼层留给 Yuki 时，即使无法归入已有讨论，
 Controller 可采用 Host 提供并核验的该作者新讨论单元。真人邀请和已有互动的续聊进入
 原 `USER_MESSAGE` 主入口；非直接输入的语义邀请、普通续接与开放群聊的新机会共用
@@ -288,7 +293,7 @@ canonical inspect_configs 沿传入 session 定键读取 global 与指定 owner�
 停用 owner 的控制元数据仍可读取，存在性与真实执行授权分别核验。
 
 两个产品开关不改 binding epoch，不取消已接纳 Work，不限制原 wait/input/repair、明确 @/引用/
-前缀/命令、定时工作或既有工具。新 ordinary 与 SELF 的接纳 writer 读取当前产品键；
+名字/前缀/命令、定时工作或既有工具。新 ordinary 与 SELF 的接纳 writer 读取当前产品键；
 prior/payload 对账先于新接纳 predicate。SELF 仍受原 master/semantic/Space/Presence 约束。
 Host 在原推进边界刷新 scene/runtime，按 auto_reply 允许 conversation，按 proactive_wakeup
 允许 intrinsic，先排除候选种类再计算机会率。
