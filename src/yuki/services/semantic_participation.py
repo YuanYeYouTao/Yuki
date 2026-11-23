@@ -821,8 +821,8 @@ class SemanticParticipationService:
             kind="human" if row.author_is_human() else "self",
             unit_ambiguous=row.author_is_human() and len(options) > 1,
             unit_options=tuple(options) if len(options) > 1 else (),
-            # This affects observation order only. Calling a name still needs
-            # Jev's semantic invitation/floor judgment and Host admission.
+            # Observation order only; a standalone name call is already a direct
+            # input (policies.calls_by_name), like a native @.
             observation_priority=row.author_is_human()
             and any(
                 alias.casefold() in row.perceived_content.casefold()
