@@ -244,24 +244,25 @@ async def test_resumed_work_has_one_current_goal_and_keeps_original_occurrence(d
     scheduler._last_reclaim = time.monotonic()
     await scheduler.drain_once()
     request = case.provider.requests[-1]
-    context = runtime_blocks(request)[0]
-    assert context["goal"] == current_goal
-    assert context["run_id"] == original_run.id and context["automation_id"] == case.row.id
-    materials = [
-        json.loads(message.content)
+    # The resumed Work appends to its paid chain (#646): the original occurrence's
+    # runtime data stays, the current goal is the one its own update recorded, and
+    # the later schedule edit never reaches this occurrence.
+    previous = case.provider.requests[0].messages
+    assert request.messages[: len(previous)] == previous
+    contexts = runtime_blocks(request)
+    assert contexts and all(
+        context["run_id"] == original_run.id and context["automation_id"] == case.row.id
+        for context in contexts
+    )
+    goals = [
+        json.loads(call.function.arguments).get("goal")
         for message in request.messages
-        if (message.content or "").lstrip().startswith('{"kind": "work_current_material"')
+        for call in message.tool_calls
     ]
-    assert len(materials) == 1 and "goal" not in materials[0]
-    host_texts = [
-        message.content
-        for message in request.messages
-        if "<runtime_context>" in (message.content or "")
-        or (message.content or "").lstrip().startswith('{"kind": "work_current_material"')
-        or (message.content or "").startswith("继续原 Work")
-    ]
-    assert "\n".join(host_texts).count(current_goal) == 1
-    assert all("下次安排的新要求" not in text for text in host_texts)
+    assert goals.count(current_goal) == 1
+    assert "下次安排的新要求" not in json.dumps(
+        [(message.content, goals) for message in request.messages], ensure_ascii=False
+    )
     finished_work = await case.works.get(original_work["id"])
     finished_run = (await case.repository.run_history(case.row.id))[0]
     assert finished_work["id"] == original_work["id"]

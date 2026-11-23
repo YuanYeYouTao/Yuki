@@ -194,8 +194,8 @@ async def test_real_work_restore_keeps_private_tail_out_of_ordinary_projection(
     assert state.snapshot()[0]["text"] == "private-work-result"
     state.update({"slot": 1, "text": "new-unsubmitted-state"})
 
-    # A safe paired root resumes current history and task material, retaining
-    # original execution facts while retiring the previous private tool tail.
+    # A safe paired root appends to its original chain (#646): new public chat
+    # arrives once through the observation boundary, the private tail stays private.
     await database.engine.dispose()
     chat.runtime.main_turns = MainAgentTurnService(
         chat._prompt_composer, chat.runtime.runner, database
@@ -256,10 +256,11 @@ async def test_real_work_restore_keeps_private_tail_out_of_ordinary_projection(
     )
     assert await resumer.resume(item) is None
     assert len(provider.requests) == 4
-    serialized = json.dumps([m.content for m in provider.requests[2].messages], ensure_ascii=False)
-    assert "保存工作结果" in serialized and "work_current_material" in serialized
-    assert "new-unsubmitted-state" in serialized
-    assert not any(message.tool_calls for message in provider.requests[2].messages)
+    previous, wake = provider.requests[1].messages, provider.requests[2].messages
+    assert wake[: len(previous)] == previous
+    appended = json.dumps([m.content for m in wake[len(previous) :]], ensure_ascii=False)
+    assert "private-work-result" in appended
+    assert json.dumps([m.content for m in wake], ensure_ascii=False).count("新的普通群消息") == 1
     async with database.read_session() as session:
         saved = await projection_record(
             session, (await session.scalars(select(PromptProjectionModel))).one()

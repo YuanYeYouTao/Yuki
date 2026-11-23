@@ -924,9 +924,11 @@ async def test_g17_work_keeps_its_system_prefix_across_a_watermark_move(database
     observed = [capture_episodes([request]).index for request in phase["work"]]
     for index in observed[:2]:
         assert index == first.index
+    # The resumed Work appends to its paid chain (#646): the system prefix stays
+    # byte-identical; only a new chain (a later turn) renders the new watermark.
     resumed = observed[2]
-    assert fact_marks(resumed) == [e0, e1]
-    assert set(observed[2:]) == {resumed}
+    assert fact_marks(resumed) == [e0]
+    assert set(observed[2:]) == {first.index}
     assert later.index_ids == [e0, e1]
     contract = await scene.contract()
     scene.write(

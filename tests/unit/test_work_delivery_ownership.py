@@ -300,7 +300,12 @@ async def test_accept_handoff_is_atomic_and_recovery_does_not_block_old_work_for
     again = WorkSession(resumed, "fixed-contract")
     transcript = await again.restore(TurnTranscript(()))
     assert resumed.handoff_work_id is None  # Its own background completion may now resume.
-    material = json.loads(transcript.request().messages[-1].content)
+    # The resume appends to the original chain (#646), whose material names the Work.
+    material = next(
+        json.loads(message.content)
+        for message in transcript.request().messages
+        if '"work_current_material"' in (message.content or "")
+    )
     assert (await resumed.runtime_state())["goal"] == old["goal"]
     assert material["work_id"] == old["id"]
     assert (await repo.get(new["id"]))["model_requests"] == 0
