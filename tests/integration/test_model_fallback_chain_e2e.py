@@ -7,14 +7,15 @@ timings, ports or IDs, so two runs of one commit give the same bytes.
 
 Failure cases written before the implementation (task book 2026-11-23 §8):
 
-F1  an empty chain changes today's failure (exception, rows, diagnostics);
+F1  an empty chain changes today's failure (exception, rows, diagnostics), including a
+    missing key, which records no invocation row without a chain;
 F2  the head's connection is refused (retries exhausted) and the fallback is not used,
     or the fallback receives the request more than once;
 F3  head HTTP 429 / 503 (after its own retries) / 401 does not switch;
 F4  a 0-request head failure (missing key) or a local pool timeout does not switch, or
     its row does not record ``physical_request_count=0`` / the attempt;
-F5  a cut reply, a read timeout or HTTP 400/404 (outcome unknown or request-shaped)
-    switches: the fallback receives a request;
+F5  a cut reply, a read timeout, HTTP 504 (outcome unknown, owner decision 2026-11-23)
+    or HTTP 400/404 (request-shaped) switches: the fallback receives a request;
 F6  one hop attempt timed out reading and the retry was refused: the hop is switched
     although one attempt may have been accepted;
 F8  a request carrying a fallback's continuation goes to the head (or anywhere else
@@ -22,7 +23,8 @@ F8  a request carrying a fallback's continuation goes to the head (or anywhere e
 F9  after a switch, the next request of the same chain tries the head again;
 F10 after a restart, a restored continuation of the fallback is refused or rerouted;
 F11 the next new chain does not start at the head once it is healthy (sticky state);
-F12 a fallback lacking a requested capability, native search or capacity is called;
+F12 a fallback lacking a requested capability, native search or capacity is called
+    (a fallback without native search may be configured for a native-search head);
 F13 all hops fail and the raised error is not the last dispatched hop's, or its
     diagnostics miss hops or the summed physical count;
 F14 a provider-native request whose head was refused cannot switch to a capable hop;
@@ -31,7 +33,7 @@ F16 cancelling while the head waits still reaches the fallback;
 F17 a hot catalog change reroutes a pinned activation, or new requests keep the old chain;
 F18 the Admin snapshot drops ``fallbacks`` or a Desktop save of the snapshot loses it;
 F19 an invalid chain is accepted (unknown task, unknown/duplicate/head profile, missing
-    capability, structured or native-search mismatch);
+    capability, structured mismatch), or a non-native fallback of a native head is refused;
 F20 changing the chain or a fallback profile keeps the Profile revision (a persisted
     continuation of the old fallback would be spliced onto a changed one);
 F21 a structured task does not send the head's structured mode to the fallback, or a
@@ -73,6 +75,7 @@ from yuki.domain.messages import (
     NativeToolType,
 )
 from yuki.llm.base import (
+    LLMConfigurationError,
     LLMError,
     LLMInvalidRequestError,
     LLMTimeoutError,
@@ -88,6 +91,7 @@ from yuki.model_runtime.models import (
     ModelProfile,
     ModelProtocol,
     ModelRoute,
+    ModelSearchMode,
     ModelTask,
     StructuredOutputMode,
 )
@@ -114,7 +118,14 @@ admin = admin_fixture
 ARTIFACT = Path(__file__).resolve().parents[2] / "test-results" / "model-fallback-chain-e2e.json"
 RESULTS: dict[str, Any] = {}
 TRIGGERS = ("refused", "http429", "http503", "http401", "missing_key", "pool_timeout")
-NON_TRIGGERS = ("cut_reply", "read_timeout", "http400", "http404", "read_timeout_then_refused")
+NON_TRIGGERS = (
+    "cut_reply",
+    "read_timeout",
+    "http400",
+    "http404",
+    "http504",
+    "read_timeout_then_refused",
+)
 EXPECTED = (
     "F1_empty_chain_unchanged",
     *(f"F2_F4_switch[{name}]" for name in TRIGGERS),
@@ -408,10 +419,18 @@ async def test_empty_chain_keeps_todays_failure(database, phases):
         }
     ]
     assert _hops(phases) == [None]
+    unconfigured = _executor(database, _profile("head", url, api_key_env=MISSING_KEY_ENV))
+    missing, _ = await _outcome(unconfigured)
+    await unconfigured.close()
+    assert isinstance(missing, LLMConfigurationError)
+    assert missing.diagnostics == {}
+    assert await _rows(database) == rows  # no row without a chain, as before
     RESULTS["F1_empty_chain_unchanged"] = {
         "error": type(error).__name__,
         "diagnostic_keys": sorted(error.diagnostics),
         "rows": rows,
+        "missing_key_error": type(missing).__name__,
+        "missing_key_rows_added": 0,
     }
 
 
@@ -506,6 +525,7 @@ async def test_unknown_or_request_shaped_failure_never_switches(database, phases
         "read_timeout": _Upstream(("slow", 2.0), CHAT_REPLY),
         "http400": _Upstream(400),
         "http404": _Upstream(404),
+        "http504": _Upstream(504),
         # The first attempt times out reading (maybe accepted); the retry is refused.
         "read_timeout_then_refused": _Upstream("close"),
     }[case]
@@ -526,6 +546,7 @@ async def test_unknown_or_request_shaped_failure_never_switches(database, phases
         "read_timeout": LLMTimeoutError,
         "http400": LLMInvalidRequestError,
         "http404": LLMError,
+        "http504": LLMUnavailableError,
         "read_timeout_then_refused": LLMUnavailableError,
     }[case]
     assert type(error) is expected, error
@@ -725,7 +746,13 @@ async def test_hop_prechecks_skip_incapable_fallbacks(database, phases):
         {ModelCapability.TOOLS, ModelCapability.NATIVE_WEB_SEARCH, ModelCapability.REASONING}
     )
     async with capable as capable_url, never as never_url:
-        head = _profile("head", head_url, protocol="responses", capabilities=native)
+        head = _profile(
+            "head",
+            head_url,
+            protocol="responses",
+            capabilities=native,
+            search_mode=ModelSearchMode.NATIVE,
+        )
         executor = _executor(
             database,
             head,
@@ -1033,12 +1060,12 @@ INVALID_CHAINS = {
         head_extra='structured_output_mode = "json_schema"\n'
         'capabilities = ["tools", "structured_output"]',
     ),
-    "native_search_mismatch": _toml(
-        '[fallbacks]\nchat_agent = ["backup"]',
-        head_extra='protocol = "responses"\nsearch_mode = "native"\n'
-        'capabilities = ["tools", "native_web_search"]',
-    ),
 }
+NATIVE_HEAD_PLAIN_FALLBACK = _toml(
+    '[fallbacks]\nchat_agent = ["backup"]',
+    head_extra='protocol = "responses"\nsearch_mode = "native"\n'
+    'capabilities = ["tools", "native_web_search"]',
+)
 
 
 def test_invalid_chains_are_rejected():
@@ -1047,6 +1074,9 @@ def test_invalid_chains_are_rejected():
         with pytest.raises(ModelRuntimeConfigurationError) as caught:
             parse_model_profile_catalog(content)
         rejected[name] = type(caught.value).__name__
+    # Owner decision 2026-11-23: allowed; native requests skip it at run time (F12).
+    native = parse_model_profile_catalog(NATIVE_HEAD_PLAIN_FALLBACK)
+    assert native.routes[ModelTask.CHAT_AGENT].fallback_profile_ids == ("backup",)
     valid = parse_model_profile_catalog(_toml('[fallbacks]\nchat_agent = ["backup"]'))
     assert valid.routes[ModelTask.CHAT_AGENT].fallback_profile_ids == ("backup",)
     assert valid.routes[ModelTask.MEMORY_DREAM].fallback_profile_ids == ()
@@ -1054,7 +1084,10 @@ def test_invalid_chains_are_rejected():
         parse_model_profile_catalog(_toml("")).routes[ModelTask.CHAT_AGENT].fallback_profile_ids
         == ()
     )
-    RESULTS["F19_invalid_chains_rejected"] = {"rejected": rejected}
+    RESULTS["F19_invalid_chains_rejected"] = {
+        "rejected": rejected,
+        "native_head_plain_fallback_accepted": True,
+    }
 
 
 # --------------------------------------------------------------------------- F21

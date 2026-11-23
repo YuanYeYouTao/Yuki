@@ -21,7 +21,6 @@ from yuki.model_runtime.models import (
     ModelCapability,
     ModelProfile,
     ModelRoute,
-    ModelSearchMode,
     ModelTask,
     StructuredOutputMode,
 )
@@ -117,15 +116,14 @@ class ModelProfileCatalog(BaseModel):
                     f"model route {task.value} fallbacks must be distinct and differ from "
                     "its head profile"
                 )
-            # Requests are built for the head (structured mode, native search), so
-            # every fallback must accept that same request shape.
+            # Requests are built for the head's structured mode, so every fallback must
+            # accept it. Native search is not required: a request carrying provider-native
+            # tools skips a fallback without them at run time.
             required = set(route.required_capabilities)
             if profile.structured_output_mode is StructuredOutputMode.FUNCTION_TOOL:
                 required.add(ModelCapability.TOOLS)
             elif profile.structured_output_mode is StructuredOutputMode.JSON_SCHEMA:
                 required.add(ModelCapability.STRUCTURED_OUTPUT)
-            if profile.search_mode in {ModelSearchMode.NATIVE, ModelSearchMode.BOTH}:
-                required.add(ModelCapability.NATIVE_WEB_SEARCH)
             for fallback_id in route.fallback_profile_ids:
                 fallback = self.profiles.get(fallback_id)
                 if fallback is None:

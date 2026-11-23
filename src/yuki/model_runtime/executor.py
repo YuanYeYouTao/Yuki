@@ -37,6 +37,7 @@ from yuki.llm.base import (
     LLMAuthenticationError,
     LLMConfigurationError,
     LLMError,
+    LLMProvider,
     LLMRateLimitError,
     LLMTimeoutError,
     LLMUnavailableError,
@@ -622,6 +623,7 @@ class TaskModelExecutor:
                     pool,
                     normalized,
                     attempts,
+                    chained=len(route.chain) > 1,
                     priority=priority,
                     canonical_conversation_id=canonical_conversation_id,
                     request_kind=request_kind,
@@ -711,11 +713,17 @@ class TaskModelExecutor:
         normalized: ChatRequest,
         attempts: ProviderAttemptCounter,
         *,
+        chained: bool,
         priority: ModelExecutionPriority,
         canonical_conversation_id: str | None,
         request_kind: ModelRequestKind | None,
     ) -> ChatResponse:
-        """One logical call on one profile: its own transport retries and invocation row."""
+        """One logical call on one profile: its own transport retries and invocation row.
+
+        Without a chain a missing credential raises before any record, as before; in a
+        chain it is this hop's recorded 0-request failure and may continue the chain.
+        """
+        provider = None if chained else self._provider(task, profile, pool)
         if profile.protocol is ModelProtocol.RESPONSES:
             logger.info(
                 "responses_request_routed task=%s profile_id=%s provider=%s protocol=%s "
@@ -737,12 +745,8 @@ class TaskModelExecutor:
         )
         attempt_token = current_provider_attempts.set(attempts)
         try:
-            # A missing credential is a 0-request failure of this profile, recorded as such.
-            provider = (
-                pool.get(profile, timeout_seconds=self._self_reflection_timeout_seconds)
-                if task is ModelTask.MEMORY_SELF_REFLECTION
-                else pool.get(profile)
-            )
+            if provider is None:
+                provider = self._provider(task, profile, pool)
             response = await self._execute_provider(
                 provider,
                 normalized,
@@ -876,6 +880,15 @@ class TaskModelExecutor:
                 request_chain_id=normalized.request_chain_id,
             )
         return response
+
+    def _provider(
+        self, task: ModelTask, profile: ModelProfile, pool: ModelClientPool
+    ) -> LLMProvider:
+        return (
+            pool.get(profile, timeout_seconds=self._self_reflection_timeout_seconds)
+            if task is ModelTask.MEMORY_SELF_REFLECTION
+            else pool.get(profile)
+        )
 
     async def _record_invocation(self, **values: Any) -> None:
         if self._invocations is None:

@@ -33,7 +33,7 @@ class ProviderAttemptCounter:
     requests: int = 0
     # Dispatched requests that certainly were not accepted upstream: the connection or
     # proxy tunnel was never established, no pool slot was free, or the provider
-    # answered 429/5xx/401/403. Only these let a task switch to its next fallback.
+    # answered 429/5xx (not 504)/401/403. Only these let a task switch to its next fallback.
     not_accepted: int = 0
     reported_usage_requests: int = 0
     _usage: dict[int, dict[str, int]] = field(default_factory=dict)

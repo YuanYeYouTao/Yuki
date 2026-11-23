@@ -46,8 +46,8 @@ from yuki.model_runtime.request_accounting import (
 from yuki.runtime.work_activation import current_work_control
 
 # The request never reached the provider (connect, proxy tunnel, local pool wait) or the
-# provider explicitly refused it. A read/write failure or a cut reply may have been
-# accepted and billed, so it is not here.
+# provider explicitly refused it. A read/write failure, a cut reply or a gateway timeout
+# (HTTP 504) may have been accepted and billed, so they are not here.
 NOT_ACCEPTED_ERRORS: tuple[type[BaseException], ...] = (
     httpx.ConnectError,
     httpx.ConnectTimeout,
@@ -277,7 +277,11 @@ class JSONHTTPProvider(LLMProvider):
                         exc.diagnostics = {**exc.diagnostics, "usage": usage}
                     raise
             except BaseException as exc:
-                if attempts is not None and isinstance(exc, NOT_ACCEPTED_ERRORS):
+                if (
+                    attempts is not None
+                    and isinstance(exc, NOT_ACCEPTED_ERRORS)
+                    and getattr(exc, "diagnostics", {}).get("http_status") != 504
+                ):
                     attempts.not_accepted += 1
                 if finish is not None:
                     await finish("failed", None)
