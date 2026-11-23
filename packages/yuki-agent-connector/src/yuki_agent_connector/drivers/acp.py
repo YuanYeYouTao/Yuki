@@ -1001,6 +1001,12 @@ class ACPDriver:
         )
         raise RequestError.invalid_params({"reason": "outside_delegated_scope"})
 
+    @staticmethod
+    def _require_absolute(path: str) -> None:
+        """ACP callback paths are absolute; a relative one would land beside this process."""
+        if not Path(path).is_absolute():
+            raise RequestError.invalid_params({"reason": "absolute_path_required", "path": path})
+
     async def read_text_file(
         self,
         session_id: str,
@@ -1010,6 +1016,7 @@ class ACPDriver:
         **kwargs: Any,
     ) -> ReadTextFileResponse:
         self._session(session_id)
+        self._require_absolute(path)
         content = await asyncio.to_thread(Path(path).read_text, encoding="utf-8")
         if line is not None or limit is not None:
             start = (line or 1) - 1
@@ -1026,6 +1033,7 @@ class ACPDriver:
         **kwargs: Any,
     ) -> WriteTextFileResponse:
         session = self._session(session_id)
+        self._require_absolute(path)
         scope = self._scope_of(session, "prompt" if session.prompting else "followup")
         if scope is not None and not scope.writes(path, session.cwd):
             await self._refuse(session, "fs/write_text_file")
@@ -1043,6 +1051,9 @@ class ACPDriver:
         **kwargs: Any,
     ) -> CreateTerminalResponse:
         session = self._session(session_id)
+        if cwd is not None:
+            # Absent, the command runs in the session's cwd.
+            self._require_absolute(cwd)
         scope = self._scope_of(session, "prompt" if session.prompting else "followup")
         if scope is not None and not scope.runs([command, *(args or [])]):
             await self._refuse(session, "terminal/create")

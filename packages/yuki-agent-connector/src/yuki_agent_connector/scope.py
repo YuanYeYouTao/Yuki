@@ -47,7 +47,11 @@ class Scope:
         )
 
     def writes(self, path: str, cwd: str) -> bool:
-        target = _absolute(path, cwd)
+        try:
+            target = _absolute(path, cwd)
+        except (RuntimeError, ValueError):
+            # An unknown user's ``~`` or a NUL byte: nobody can say where it lands.
+            return False
         return any(target == root or root in target.parents for root in self.write_paths)
 
     def runs(self, command: str | list[str]) -> bool:
