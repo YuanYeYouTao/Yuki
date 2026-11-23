@@ -76,7 +76,7 @@ def _profile():
     )
 
 
-async def _deployment(database, tmp_path, provider, *, code_enabled=False, **overrides):
+async def _deployment(database, tmp_path, provider, **overrides):
     env = await social_env(database, tmp_path)
     app = ApplicationContainer(
         make_settings(
@@ -90,7 +90,6 @@ async def _deployment(database, tmp_path, provider, *, code_enabled=False, **ove
             runtime_work_enabled=True,
             automation_enabled=True,
             enabled_groups_csv="20001",
-            code_mode_enabled=code_enabled,
             llm_max_output_tokens=4096,
             **overrides,
         ),
@@ -332,12 +331,11 @@ async def test_actual_main_http_separates_host_material_before_final_user_body(
             assert not await app.lifecycle._close_entries(app.lifecycle._entries)
 
 
-@pytest.mark.parametrize("code_enabled", [False, True])
 async def test_current_deployment_three_entries_share_full_contract_and_fresh_material(
-    database, tmp_path, tool_delivery_evidence, code_enabled
+    database, tmp_path, tool_delivery_evidence
 ):
-    # Both deployment modes must expose the completion/wait guidance on the
-    # actual Provider wire. NO_REPLY avoids executing a Code program here.
+    # The deployment must expose the completion/wait guidance on the actual
+    # Provider wire.
     evidence_dir, evidence = tool_delivery_evidence
     wire = []
     sessions = []
@@ -373,7 +371,7 @@ async def test_current_deployment_three_entries_share_full_contract_and_fresh_ma
             client=client,
         )
         app, env, message, sender = await _deployment(
-            database, tmp_path, provider, code_enabled=code_enabled, subagents_enabled=True
+            database, tmp_path, provider, subagents_enabled=True
         )
         try:
             state = app.main_agent_contract.state
@@ -565,15 +563,9 @@ async def test_current_deployment_three_entries_share_full_contract_and_fresh_ma
                         "original_goal_and_delivery_guidance": all(
                             text in system_text for text in ("原目标", "交付")
                         ),
-                        "mode_declarations": (
-                            {"execute_code", "lookup_tools"} <= declared.keys()
-                            if code_enabled
-                            else not ({"execute_code", "lookup_tools"} & declared.keys())
-                        ),
                     }
                 )
             evidence.update(
-                mode="code" if code_enabled else "direct",
                 provider="GeminiProvider over MockTransport",
                 entries=["chat", "self", "schedule", "worker"],
                 entry_sources=[

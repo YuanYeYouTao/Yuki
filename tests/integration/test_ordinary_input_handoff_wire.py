@@ -8,13 +8,13 @@ from pathlib import Path
 import httpx
 import pytest
 from sqlalchemy import select, update
-from tests.integration.test_codemode_provider_wire import (
+from tests.integration.test_current_material_main_contract import _catalog, _deployment, _profile
+from tests.support.provider_wire import (
     DIALECTS,
     SIGNATURE,
     answer,
     wire_calls_and_results,
 )
-from tests.integration.test_current_material_main_contract import _catalog, _deployment, _profile
 from tests.unit.test_auto_reply_merge import _wait_for_worker
 from tests.unit.test_ordinary_input_handoff import A, B, C, _tool, _work_count
 

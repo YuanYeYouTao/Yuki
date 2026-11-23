@@ -7,7 +7,6 @@ import json
 import logging
 from collections.abc import Set
 from copy import deepcopy
-from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import func, select, true
@@ -55,18 +54,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-@dataclass(frozen=True, slots=True)
-class PendingComposition:
-    """An outer code call whose program, not the model, owns the next step."""
-
-    call_id: str
-    operation_id: str
-    snapshot_revision: int
-    snapshot_ref: str | None
-    name: str = "execute_code"
-    arguments: str = "{}"
-
-
 class WorkSession:
     def __init__(self, control: WorkControl, contract: str) -> None:
         self.control = control
@@ -90,7 +77,6 @@ class WorkSession:
         self.exact_recovery = False
         self.public_event_ids: set[int] = set()
         self.dispatch_boundary: PreparedContextBoundary | None = None
-        self.pending_compositions: list[PendingComposition] = []
 
     def record_search_sources(self, sources: list[tuple[str, str] | tuple[str, str, str]]) -> None:
         """Keep bounded public search observations across a provider chain change."""
@@ -329,11 +315,10 @@ class WorkSession:
                     extras = extras[1:]
                     initial = TurnTranscript((*adopted, *extras))
             await control.refresh_effects()
-            # Pair recorded/unknown outcomes. A definitely undispatched call or
-            # open composition still belongs to the original paid response;
-            # retain the whole batch until its receipts and media are paired.
+            # Pair recorded/unknown outcomes. A definitely undispatched call
+            # still belongs to the original paid response; retain the whole
+            # batch until its receipts and media are paired.
             self.pending = []
-            self.pending_compositions = []
             self.pending_readonly_keys = {
                 call["id"]: call["readonly_result_key"]
                 for call in value["pending"]
@@ -342,37 +327,16 @@ class WorkSession:
             paired = self.paired_call_ids()
             recovered_results = []
             for call in value["pending"]:
-                # Code Mode needs an admitted Work; turn-local calls keep the generic path.
-                composition = (
-                    await self.journal.unsettled_composition(
-                        control.current["id"], self.call_key(call["id"])
-                    )
-                    if control.current
-                    else None
-                )
-                if composition is not None:
-                    self.pending_compositions.append(
-                        PendingComposition(
-                            call_id=call["id"],
-                            name=call.get("name", "execute_code"),
-                            arguments=call.get("arguments", "{}"),
-                            **composition,
-                        )
-                    )
                 key = await self._pending_result_key(call, self.call_key(call["id"]))
-                if (
-                    self.pending
-                    or composition is not None
-                    or (
-                        row["phase"] == "response"
-                        and "readonly_result_key" not in call
-                        and (
-                            await self.journal.effect_state(key) is None
-                            or (
-                                control.current is not None
-                                and await control.repository.undispatched_intent(
-                                    control.current["id"], key
-                                )
+                if self.pending or (
+                    row["phase"] == "response"
+                    and "readonly_result_key" not in call
+                    and (
+                        await self.journal.effect_state(key) is None
+                        or (
+                            control.current is not None
+                            and await control.repository.undispatched_intent(
+                                control.current["id"], key
                             )
                         )
                     )
@@ -450,7 +414,6 @@ class WorkSession:
         if (
             not self.uses_recovery_transcript
             or self.exact_recovery
-            or self.pending_compositions
             or self.pending
             or self.progress.get("provider_pause_replay")
         ):
@@ -965,7 +928,6 @@ class WorkSession:
                 or not 0 <= metadata["request_sequence"] <= self.sequence
                 or not isinstance(metadata.get("provider_call_id"), str)
                 or not metadata["provider_call_id"]
-                or metadata.get("parent_effect_key") is not None
                 or direct_operation_id(
                     metadata["chain_id"], metadata["request_sequence"], metadata["provider_call_id"]
                 )

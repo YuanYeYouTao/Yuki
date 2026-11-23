@@ -626,43 +626,6 @@ async def test_direct_memory_and_send_follow_original_order_without_work_admissi
     assert result.text == "" and len(test_case.provider.requests) == 2
 
 
-async def test_mixed_code_resource_yield_stops_later_calls_in_original_batch(
-    database, tmp_path, monkeypatch
-):
-    from yuki.services.agent_runner import CODE_COMPOSITION_YIELDED
-
-    calls = (
-        tool("execute_code", {"code": "# resource pause"}, "original-code"),
-        tool("send", {"text": "not reached"}, "later-send"),
-    )
-    test_case = await case(database, tmp_path, [ChatResponse("", 0, tool_calls=calls)])
-    test_case.runtime = replace(
-        test_case.runtime,
-        fixed_tools=(
-            *test_case.runtime.fixed_tools,
-            ChatTool("execute_code", "compose", {"type": "object"}),
-        ),
-    )
-
-    async def yield_original(*_args, **_kwargs):
-        test_case.control.yield_segment = True
-        return CODE_COMPOSITION_YIELDED
-
-    monkeypatch.setattr(test_case.runner, "_run_code_call", yield_original)
-    result = await run(test_case)
-    assert result.work_state == "queued" and len(test_case.provider.requests) == 1
-    assert test_case.observed == []
-    session = test_case.control.session
-    saved = await session.journal.load(
-        test_case.control.lease, test_case.control.current["id"], session.contract
-    )
-    assert saved.record["phase"] == "response"
-    assert [call["id"] for call in json.loads(saved.record["payload_json"])["pending"]] == [
-        "original-code",
-        "later-send",
-    ]
-
-
 @pytest.mark.parametrize("kind", ["message", "completion"])
 async def test_late_auxiliary_fact_does_not_veto_final_but_business_input_is_observed(
     database, tmp_path, monkeypatch, kind

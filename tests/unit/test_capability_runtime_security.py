@@ -197,7 +197,7 @@ async def test_memory_failure_can_continue_and_reuse_original_effect(database, t
 
     bind_main_contract(harness, tmp_path)
     contract = chat.runtime.runner.main_contract
-    declared = await contract.model_definitions()
+    declared = await contract.definitions()
     backend.refresh_catalog(context)
     assert not any(tool.name.startswith("admin_") for tool in declared)
     calls = []
@@ -241,7 +241,7 @@ async def test_memory_failure_can_continue_and_reuse_original_effect(database, t
     fact = await facts.get_fact(replacement["fact_id"])
     assert fact.content == "现在住在北京"
     backend.refresh_catalog(context)
-    assert await contract.model_definitions() == declared
+    assert await contract.definitions() == declared
     assert (await owner.control.repository.get(owner.control.current["id"]))["tool_calls"] == 4
     await owner.control.repository.release(owner.control.lease)
 

@@ -15,7 +15,6 @@ F5. Current and retired names (terminal_*, web_search, workspace_*, memory,
 F6. An owned-run wait reports another run kind.
 F7. A recovery read of an old-name receipt without typed outcome loses its
     delivered artifacts or message, or rewrites the original tool name.
-F8. Code Mode wrapper names of the environment and workspace tools change.
 F9. A history-map name becomes a declared (callable) tool.
 
 The run writes ``test-results/tool-surface-prep/history-and-rpc.json``.
@@ -41,7 +40,6 @@ from tests.unit.test_client_api import bearer
 from tests.unit.test_client_works import owner, seeded
 
 from yuki.capabilities.invocation import ToolInvocationContext, current_invocation
-from yuki.codemode.api_projection import project
 from yuki.domain.conversations import ScopeType
 from yuki.domain.messages import InboundMessage, SenderIdentity
 from yuki.memory.repository import MemoryFactRepository
@@ -496,18 +494,11 @@ async def test_original_receipts_keep_projection_and_recovery_reads(app_env, dat
     assert recovered["web_read"] == {"ok": True, "side_effecting": False}
 
 
-def test_code_mode_wrappers_and_declarations_keep_current_names():
+def test_declarations_keep_current_names():
     from yuki.runtime.effect_outcomes import RECORDED_TOOL_NAMES
 
     declared = (*sandbox_tools(), *workspace_tools())
-    api = project(declared, "history-prep")
-    wrappers = sorted(api.wrappers.items())
-    write(
-        "code-mode-wrappers.json",
-        {"wrappers": wrappers, "recorded_tool_names": dict(RECORDED_TOOL_NAMES)},
-    )
-    # F8: wrapper names stay the deployed tool names.
-    assert wrappers == sorted((f"yuki_{tool.name}", tool.name) for tool in declared)
+    write("recorded-tool-names.json", {"recorded_tool_names": dict(RECORDED_TOOL_NAMES)})
     # F9: the history map only reads originals; none of its names is declared.
     from yuki.runtime.subagent_tools import subagent_tools
     from yuki.runtime.work_control import work_control_tools

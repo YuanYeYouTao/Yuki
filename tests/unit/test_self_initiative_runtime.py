@@ -531,9 +531,7 @@ async def test_self_worker_runs_with_one_model_slot_without_synthetic_inbound(da
         responded.set()
         return SimpleNamespace(text="checked")
 
-    runner = SimpleNamespace(
-        run=AsyncMock(side_effect=run), main_contract=None, code_mode_settings=None
-    )
+    runner = SimpleNamespace(run=AsyncMock(side_effect=run), main_contract=None)
     chat = SimpleNamespace(
         _agent_runner=runner,
         open_self_memory_session=AsyncMock(return_value=memory),

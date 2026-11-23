@@ -186,7 +186,7 @@ cd Yuki
 uv sync --all-extras --managed-python
 uv run ruff check .
 uv run mypy --platform linux src
-uv run pytest tests/unit -q -m "not native_worker"
+uv run pytest tests/unit -q
 ```
 
 管理命令是 `yuki`，服务入口是 `yuki-bot`。改动架构、运行时、工具或持久化之前，先读[共同架构约束](docs/architecture/development-contract.md)和[架构索引](docs/architecture/README.md)。
