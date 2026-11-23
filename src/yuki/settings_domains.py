@@ -178,7 +178,6 @@ class MemorySettings(DomainSettings):
     memory_context_limit_per_entity: int = Field(gt=0)
     memory_overview_limit_per_entity: int = Field(gt=0)
     memory_query_term_limit: int = Field(gt=0)
-    memory_short_query_fallback_enabled: bool
     memory_semantic_enabled: bool
     memory_semantic_candidate_limit: int = Field(gt=0)
     memory_hybrid_lexical_weight: float = Field(ge=0)

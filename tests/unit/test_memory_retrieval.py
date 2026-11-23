@@ -70,7 +70,6 @@ def _query(
         candidate_limit=50,
         limit_per_target=limit,
         query_term_limit=12,
-        short_query_fallback_enabled=True,
     )
 
 

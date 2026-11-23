@@ -76,7 +76,6 @@ class MemoryQueryBuilder:
                 candidate_limit=memory.lexical_candidate_limit,
                 limit_per_target=limit if limit is not None else default_limit,
                 query_term_limit=memory.query_term_limit,
-                short_query_fallback_enabled=memory.short_query_fallback_enabled,
                 semantic_enabled=memory.semantic_enabled,
                 semantic_candidate_limit=memory.semantic_candidate_limit,
                 hybrid_lexical_weight=memory.hybrid_lexical_weight,

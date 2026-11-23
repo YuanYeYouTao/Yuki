@@ -170,7 +170,6 @@ class MemoryRetrievalRuntimeConfig:
     context_limit_per_entity: int
     overview_limit_per_entity: int
     query_term_limit: int
-    short_query_fallback_enabled: bool
     self_enabled: bool = False
     semantic_enabled: bool = True
     semantic_candidate_limit: int = 50

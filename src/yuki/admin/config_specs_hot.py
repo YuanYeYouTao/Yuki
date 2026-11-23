@@ -168,17 +168,6 @@ def hot_config_specs() -> tuple[ConfigSpec, ...]:
             category="memory",
         ),
         _spec(
-            "memory.short_query_fallback_enabled",
-            "记忆短查询回退",
-            "两字符以内查询是否可在完成主体硬过滤后使用有界 LIKE。",
-            value_type="boolean",
-            scopes=_GGU,
-            env_alias="MEMORY_SHORT_QUERY_FALLBACK_ENABLED",
-            getter=_field("memory_short_query_fallback_enabled"),
-            settings_fields=("memory_short_query_fallback_enabled",),
-            category="memory",
-        ),
-        _spec(
             "memory.semantic_enabled",
             "记忆语义检索",
             "是否在身份硬过滤范围内使用当前 Embedding Profile，并与 FTS 融合。",
