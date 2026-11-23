@@ -480,6 +480,15 @@ def attach_admin_api(app: FastAPI, resolve: Callable[[], AdminApi]) -> None:
             )
         }
 
+    @router.post("/devices/{identity}/delete")
+    async def client_delete(identity: UUID4, body: IdentityRequest, actor: Actor) -> Any:
+        authorize(actor, "identity.client.revoke")
+        return {
+            "data": await resolve().identities.delete_for_operator(
+                str(identity), actor.principal_id.text, str(body.request_id)
+            )
+        }
+
     @router.post("/bindings/{identity}/transfer")
     async def transfer(identity: UUID4, body: TransferBody, actor: Actor) -> Any:
         return {

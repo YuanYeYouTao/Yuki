@@ -670,6 +670,12 @@ def attach_client_api(app: FastAPI, resolve: Callable[[], ClientApi]) -> None:
             )
         }
 
+    @router.post("/devices/{identity}/delete")
+    async def delete_device(identity: UUID4, actor: Actor, body: PersonalRequest) -> Any:
+        return {
+            "data": await resolve().identity.delete(actor, str(identity), str(body.request_id))
+        }
+
     def computer() -> ClientComputer:
         service = resolve().computer
         if service is None:

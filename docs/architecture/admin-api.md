@@ -46,7 +46,7 @@ operator 角色只作描述，能力逐项声明；Person 超管映射到明确�
 | `POST /persons/{id}/superuser/{grant\|revoke}` | `admin person superuser grant\|revoke <id>` | `identity.person.superuser` |
 | `POST /persons`；`GET /persons/{id}`；`POST /persons/{id}/disable` | `admin person create\|show\|disable` | 对应 `identity.person.create\|read\|disable` |
 | `POST /persons/{id}/bindings`；`GET /bindings/{id}`；`POST /bindings/{id}/disable` | `admin binding attach\|show\|disable` | 对应 `identity.binding.attach\|read\|disable` |
-| `POST /persons/{id}/client-pair`；`POST /devices/{id}/revoke` | `admin client pair --person <id>`；`admin client revoke <id>` | `identity.client.pair\|revoke` |
+| `POST /persons/{id}/client-pair`；`POST /devices/{id}/revoke`；`POST /devices/{id}/delete` | `admin client pair --person <id>`；`admin client revoke <id>`；`admin client delete <id>` | `identity.client.pair\|revoke`（删除只接受已撤销的聊天设备，沿用 revoke 资格） |
 | `POST /bindings/{id}/transfer` | `admin binding transfer <id> --to-person <id>` | `identity.binding.transfer` |
 | `POST /persons/{id}/forget` | `admin person forget <id>` | `identity.person.forget` |
 | `POST /persons/{id}/merge`；`POST /persons/{id}/rename` | `admin person merge <id> --to-person <id>`；`admin person rename <id> <name>` | `identity.person.merge\|rename` |
