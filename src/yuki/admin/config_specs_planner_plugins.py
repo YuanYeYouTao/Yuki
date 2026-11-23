@@ -47,6 +47,20 @@ def planner_plugin_config_specs() -> tuple[ConfigSpec, ...]:
             category="conversation",
         ),
         _spec(
+            "conversation.self_wakeup_interval_seconds",
+            "SELF 定时唤醒间隔（秒）",
+            "按这个节奏让 SELF 在每位超级管理员已设主动路由的私聊里醒一次，与其他自主唤醒同一条"
+            "执行链；0 关闭。同样受 SELF 总开关与主动唤醒开关约束，不看群热度和语义参与开关。",
+            value_type="number",
+            minimum=0,
+            maximum=86400 * 30,
+            scopes=_G,
+            env_alias="CONVERSATION_SELF_WAKEUP_INTERVAL_SECONDS",
+            getter=_field("conversation_self_wakeup_interval_seconds"),
+            settings_fields=("conversation_self_wakeup_interval_seconds",),
+            category="conversation",
+        ),
+        _spec(
             "conversation.autonomous_enabled",
             "群聊自主参与",
             "SELF 新机会总开关；须同时满足 Space 自主资格。普通原 Work 与定时安排保持原路径。",

@@ -763,11 +763,11 @@ async def test_f17_work_keeps_its_first_current_message(database, tmp_path):
     # The first activation keeps its original system prefix for every request.
     for segment in observed[:2]:
         assert segment == first.segment
-    # The continuation is a new activation: its prefix is rendered at resume time
-    # (it now carries the newly added rule) and then stays fixed for that activation.
+    # The continuation appends to its paid chain (#646): the original system prefix
+    # stays; the newly added rule reaches the next new chain (the later turn).
     resumed_segment = observed[2]
-    assert resumed_segment == (await _render(scene, "A")).text
-    assert f"fact:{table_rule}" in resumed_segment
+    assert resumed_segment == first.segment
+    assert f"fact:{table_rule}" not in resumed_segment
     assert set(observed[2:]) == {resumed_segment}
     # No request was composed fresh around the original message after the first one.
     assert (

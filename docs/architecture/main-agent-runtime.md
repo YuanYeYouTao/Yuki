@@ -77,7 +77,7 @@ created_at/updated_at 是原回执时间，生命周期和计数本身不能证�
 自主触发语义归程序规则。Main、SELF、自动化与子 Agent 复用相同入口。
 角色资料改名或 SOUL 编辑/reload 后，合法新激活使用新值；当前工具往返及原协议请求保持原材料。
 Main 的恢复合同只纳既有 INVARIANT 技术规则、实际模型设置和固定工具合同，SOUL 与名称保存在原请求正文中。
-改名不废弃原已付响应的未决工具尾部或签名，也不使未知派发可重购；新 SOUL 随新链生效：有原生 continuation 的 Work 沿原链追加，到压缩或合同变化换链时才用新值；没有原生 continuation 时，已配对唤醒的 `rebase_business` 使用新 SOUL。
+改名不废弃原已付响应的未决工具尾部或签名，也不使未知派发可重购；新 SOUL 随新链生效：Work 唤醒沿原链追加（不论有无 Provider 原生 continuation），到压缩或合同变化换链时才用新值。
 工具说明使用中性角色称谓，不因改名重建 manifest；历史只认原事件名称快照，不用当前角色名补造旧名。
 桌面与 CLI 共用单 SOUL 读写/重载合同，详见[SOUL 管理与升级](../operations/soul-deployment-20261022.md)。
 Main 的系统约束、
@@ -137,18 +137,29 @@ SELF 及当前真实授权核验；创建时的 USER 身份不永久封顶。每
 SELF 使用数据库内唯一的 `PrincipalRef(self, self)`，不携带真人 user/person。自主入口的
 `ToolActor` / `TurnAuthority` 使用可信 `initiative_run_id`；SELF 定时入口使用真实
 `automation_run_id` 与 `scheduled_automation`，沿同一时间扫描、唯一到期发生和共同 Main 工具合同执行。`SelfInitiativeTrigger` 固定原 Conversation、
-generation、Space、Presence 与群传输目标。目标成员和资料来源都不授予其私人权限。
+generation、Presence 与传输目标：群里的唤醒带 Space 和群，私聊里的唤醒（定时唤醒，#541）没有 Space，目标是该私聊的对方账号。
+SELF 不必属于任何群；群里醒来只是恰好在某个群里醒。目标成员和资料来源都不授予其私人权限。
 `ConversationTurnSnapshot` 使用原 event、initiative run 或 automation run 三者之一；无事件工作不得借
-最近真人消息补锚点。SELF主入口除常驻记忆段外按需读取当前群及该群可见的SELF Memory；主动SELF写入沿原initiative和原执行的真实工具回执，不借真人事件。
+最近真人消息补锚点。SELF主入口除常驻记忆段外按需读取当前场景可见的SELF Memory：群里是当前群及该群可见范围，
+私聊里是 global 与可见人物为对方的 private；主动SELF写入沿原initiative和原执行的真实工具回执，不借真人事件，
+默认可见范围是当前场景（群里为本群，私聊里为对方），私聊场景的工具回执归该私聊对方的 Person 所有（`0168`）。
 每次模型请求、工具执行和发送准备仍复核原 run 与场景权限。SELF 自动化保留原
-Conversation、Space、Presence 和群绑定；每次新到期发生使用该会话的当前 generation，
-已接纳 Work 则保留原发生代次。SELF 的社交调用沿共同目标选择、资料授权和发送回执处理，不设来源专属四动作、当前群或提及名单。
+Conversation、Presence 和群绑定或私聊入口（在私聊里创建的安排没有 Space，到期后省略 target 的发送仍回原私聊）；
+每次新到期发生使用该会话的当前 generation，
+已接纳 Work 则保留原发生代次。SELF 的社交调用沿共同目标选择、资料授权和发送回执处理，不设来源专属四动作、当前群或提及名单；
+私聊场景里省略 target 的 `send` 发给该私聊的对方。
 固定工具声明不随主体改动，执行处拒绝不获准的能力；详见 [语义参与接入](semantic-participation.md)。
 
 模型侧只用 `send` 发送可见内容：省略 target 时发到当前群或私聊，显式 target 可指定
 其他人或群，后端选择私聊或群聊路由。表情、附件和引用由同一工具的参数表达；提及直接在正文原位置写 `@名字`，同名时复制 `@{account:UUID}`；语音合成与发送已退出；
 真实网关发送和持久回执组成普通工具结果，`uncertain` 不自动重试。一次循环可按实际需要多次发送，也可
-完全不发送；模型最终正文交回原调用方，不会自动作为平台聊天消息发送。`report_progress` 和本轮最终回复
+完全不发送；模型最终正文交回原调用方，不会自动作为平台聊天消息发送。
+发往触发会话以外的消息是**转达**：由真人消息直接触发的执行（`trigger_event_id`）把消息发进另一个 Conversation 时，
+出站事件的 `caused_by_event_id` 记下这条请求事件（#289）；SELF、定时与没有入站请求的续跑不带来源。
+目标会话的历史在该行字段里加 `转达:#请求事件/来源`，来源只写“受 <请求者当时显示名> 私下委托”（私聊请求发进群）、
+“受 <请求者> 委托”（私聊请求发进私聊）或“来自群 <群名>”（群里的请求），不带请求正文；
+需要时模型按事件 ID 用 `read_chat` 的 around 回查，读取仍按[聊天记录读取](chat-history.md)的现行授权。
+请求者被遗忘时这一列清空，消息本身保留、标签消失。`report_progress` 和本轮最终回复
 效果队列不再是模型可调用合同。工作完成可以安静结束，不需要人为制造发送回执。
 固定媒体提示将表情作为聊天语气，按当前话题和任务需要选读附件；讨论图片本身时仍可具体查看与说明。
 自然配图通过 `send.sticker.goal` 表达情绪或含义，正文先发、后台选图；纯表情可省略 `text`，不要求模型等图或逐张复述标签。
@@ -345,21 +356,17 @@ SDK 先沿原 durable 来源取得实际 Work 租约，再准备上下文和请�
 核验。初始输入没有可容纳的合法切点时仍报告真实容量错误。
 
 恢复从原 journal 核对执行身份、预算、调用和回执；未决协议保持原签名和配对。
-跨唤醒续跑按原检查点有无 Provider 原生 continuation 分流：
+跨唤醒续跑一律按精确恢复处理，不论原检查点有无 Provider 原生 continuation（Responses、Claude
+Messages、Gemini 适配器与带不透明推理状态的 Chat Completions 响应有；普通 Chat Completions 响应没有，
+#646）：接着原链追加，不重建前缀、不改写已付输入。根 Work 在下一次真实模型派发前经公共观察边界
+把原链未见过的新聊天补在末尾（见下文“根 Work 的精确协议恢复”）；Work 材料已在原链中，不再追加
+`work_current_material`，首个请求也不另加参与资料。尚未执行的调用先按原回执
+续跑完，再在同一链上继续。子 Work 不装载公共观察边界，沿私有检查点追加。
 
-- **有原生 continuation**（Responses、Claude Messages、Gemini 适配器，以及带不透明推理状态的 Chat Completions 响应）：一律按精确恢复处理，接着原链追加，不重建前缀、
-  不改写已付输入。根 Work 在下一次真实模型派发前经公共观察边界把原链未见过的新聊天补在
-  末尾（见下文“根 Work 的精确协议恢复”）；Work 材料已在原链中，不再追加
-  `work_current_material`，首个请求也不另加参与资料。
-- **没有原生 continuation**（普通 Chat Completions 响应，及经其接入的其他模型）：原响应完整配对后的唤醒
-  走 `rebase_business`，以新准备的公共上下文为前缀，接上一轮尚未观察的工具轮（portable 证据，
-  保原调用键、参数与结果）、Host 选中的必要媒体和一份 `work_current_material`；旧 opaque、签名、
-  思考和创建时聊天不搬入新链。这是 #646 剩余问题 2 的现状：所有者已决定这些协议将来同样追加
-  到原链末尾，随模型 fallback 链实施，届时 rebase 只留给下述换链条件。实际尚未执行的调用、
-  Provider pause 与未完成的压缩不 rebase，沿原链精确恢复。
-- **子 Work** 不装载公共观察边界。没有原生 continuation 时，只有存在尚未观察的工具轮才 rebase 到
-  自己的初始材料，否则沿私有检查点追加；执行压缩后按精确恢复。新链保原 Work ID、来源、
-  父子关系、消耗和执行回执。
+唯一保留的 `rebase_business` 是压缩本身：根 Work 恢复时采用一份已付、有效、尚未配对的公共压缩，
+本次激活以采用后的公共历史为前缀，接上一轮尚未观察的工具轮（portable 证据，保原调用键、参数与
+结果）、Host 选中的必要媒体和一份 `work_current_material`；旧 opaque、签名、思考和创建时聊天不搬入
+新链。准备阶段（`select_protocol_recovery`）对这一种情况照旧组装新的公共上下文，两处判定同一条件。
 
 换新链只有三种情况：恢复合同哈希变化（INVARIANT 技术规则、固定工具声明与 manifest／Script API
 revision、web 设置、Profile revision）；来源守卫失败（根 Work 的原来源修订变化且原依赖无法再证明）；
@@ -439,7 +446,7 @@ epoch；模型原请求链不变。准备期间正文、附件或身份变化，
 writer 与执行时的 owner/fence/generation/期限条件，不以锁外读取代替 CAS。
 
 未决私有协议恢复在公共历史准备前核原 journal、固定合同和持久来源依赖；合法时复用原
-协议，不准备最终不会派发的新公共窗口。业务恢复按上文原生 continuation 分流（追加原链或
+协议，不准备最终不会派发的新公共窗口。业务恢复按上文沿原链追加（仅采用公共压缩时
 `rebase_business`），最近一次私有 compact 检查点仍归原 Work。整理在完整往返边界建立新链，来源冲突不重购已付响应。
 新 Work source guard 使用 codec 3：普通事件来源按实际 owner、输入、版本和引用核验，
 不绑定无关的诊断 privacy counter；存在 observation 依赖时仍核原隐私依赖。
@@ -478,7 +485,7 @@ opaque 与会改变媒体外置的条目仍按原协议准备；复用不代替
 原 Conversation 的 projection；E 整理实际已配对执行前缀，保留初始材料和切点后的原文。
 完整请求触发后，在原公共片段、前缀与原生协议边界内优先复用 P，不要求 initial 单独越线；
 E 未覆盖的 initial 保留。未交给正常 Main 的完整工具结果先保留，再选择可覆盖前缀；
-rebase／恢复后的 portable 证据沿原调用键接续，compact 自身看过不算正常 Main 已观察。
+公共压缩采用或合同变化后的 portable 证据沿原调用键接续，compact 自身看过不算正常 Main 已观察。
 执行摘要及后续正常请求认本轮原输入与已接纳 Work，不从背景任务推导目标；公共摘要不混入私有目标。
 普通轮的 compact 不自动接纳业务 Work；其付费输入/响应使用既有私有存储记录，不作为公共观察。
 已有 Work 沿原 journal 保存派发、响应与配对，冷恢复重用已付响应，未知派发不盲重试。
@@ -504,7 +511,7 @@ SubagentScheduler 同样启动以恢复原子任务；新子任务接纳关闭�
 
 外部 Agent 由 ExternalAgent 服务管理授权和原操作关联，经用户电脑主动建立的设备通道连接原生 Codex、Claude 或通用 ACP 驱动。原生会话归用户／设备／实例。
 
-**外部 Agent 委派**（[第二阶段任务书](Yuki-外部Agent委派与协作第二阶段任务书-2026-11-18.md)）。没有单独的编码 Agent 工具：`start_subtask` 给 `executor={agent, device?}` 时创建委派记录，`relationship` 为 delegate（默认）、observe 或 takeover（仅在用户明确要求时）。委派记录是发起它的 Work 的子 Work，观察记录是原会话的根 Work；二者的执行者资料保存在 `runtime_subagents.executor_json`，两个调度器都不为它们启动 Main。委派时可固定 `scope`（`write_paths`、`network`、`commands`，`commands` 是整词前缀，去掉首尾空白后含控制符的只有 `"*"` 才算范围内，`commands` 含 `"*"` 即全部命令；判定不检查命令写哪些路径，见[连接器范围](../operations/local-agent-connector.zh-CN.md)），随记录保存、写进每次派发；改范围就是新委派。委派（delegate、takeover）省略 `scope` 时由 `start_subtask` 填入完全访问（`write_paths=["/"]`、`network=true`、`commands=["*"]`）并随记录保存，只在用户要求限制时由 Yuki 给更小的范围；observe 不带范围。连接器 0.9.2 起把完全范围映射到原生的完全访问模式：Claude `auto` 权限模式、Codex `dangerFullAccess`＋审批 `never`（回合后恢复线程原设置）、ACP 保留 Agent 自己的模式，见[委派原生完全访问任务书](Yuki-委派原生完全访问任务书-2026-11-20.md)。连接器没有声明 `scope` 能力时，带范围的委派在执行处返回 `connector_outdated`，不在无范围的情况下执行。同一原生会话同时只有一个委派拥有者，第二个返回 `conflict` 与现有拥有者（事实，不是上限；不设并发上限）。
+**外部 Agent 委派**（[第二阶段任务书](Yuki-外部Agent委派与协作第二阶段任务书-2026-11-18.md)）。没有单独的编码 Agent 工具：`start_subtask` 给 `executor={agent, device?}` 时创建委派记录，`relationship` 为 delegate（默认）、observe 或 takeover（仅在用户明确要求时）。委派记录是发起它的 Work 的子 Work，观察记录是原会话的根 Work；二者的执行者资料保存在 `runtime_subagents.executor_json`，两个调度器都不为它们启动 Main。委派时可固定 `scope`（`write_paths`、`network`、`commands`，`commands` 是整词前缀，连接器 0.9.9 起按 `&&`、`||`、`;` 分段逐段判断（另认 `cd` 到 `write_paths` 内的绝对目录），含管道、重定向、`$`、反引号、换行等的段只有 `"*"` 才算范围内，`commands` 含 `"*"` 即全部命令；判定不检查命令写哪些路径，见[连接器范围](../operations/local-agent-connector.zh-CN.md)），随记录保存、写进每次派发；改范围就是新委派。委派（delegate、takeover）省略 `scope` 时由 `start_subtask` 填入完全访问（`write_paths=["/"]`、`network=true`、`commands=["*"]`）并随记录保存，只在用户要求限制时由 Yuki 给更小的范围；observe 不带范围。连接器 0.9.2 起把完全范围映射到原生的完全访问模式：Claude `auto` 权限模式、Codex `dangerFullAccess`＋审批 `never`（回合后恢复线程原设置）、ACP 保留 Agent 自己的模式，见[委派原生完全访问任务书](Yuki-委派原生完全访问任务书-2026-11-20.md)。连接器没有声明 `scope` 能力时，带范围的委派在执行处返回 `connector_outdated`，不在无范围的情况下执行。同一原生会话同时只有一个委派拥有者，第二个返回 `conflict` 与现有拥有者（事实，不是上限；不设并发上限）。
 
 委派记录的状态由原生事实确定性结算：权限或提问 → `waiting_user`（父视角 `waiting_parent`）并以卡片唤醒父 Work；属于该委派的全部运行都结束 → completed／failed／cancelled，结果卡片经子任务结果通知交给父 Work；执行者消失（`status: unknown`、设备离线）只记原因并告诉父 Work 一次，不改判失败、不重派，设备重连后按真实终态结算。进展（文本、工具调用、计划、处置、已解决）只入时间线，不写 Work 输入、不唤醒、不打断时间或 `all` 等待。父 Work 只等消息（`waiting_user`）时，委派的请求也会唤醒它；挂起或终态的父 Work 保存卡片但不被复活。`message_task(id, text, mode?)` 向委派追加输入（默认 queue），`message_task(id, reply_to=permission_id, answer, text=理由)` 回答一个原生请求（先答者生效，回答者、选项、理由与原请求摘要写进时间线，批准只对该请求有效）；`manage_task(cancel)` 取消原生回合并结束关系，`resume` 带 text 在同一会话继续，原父 Work 已终态或已接受完成、且它与上层祖先都没有活动等待时，续接出的运行属于发起 resume 的 Work：记录的父 Work 改为它（限同会话同代，与创建一致），结果通知、`wait(run=)` 与完成收拢都归它，原父 Work 不再收到这些通知，也不被它没有发起的运行挡住完成；原父仍在推进目标时保留原父；派发前失败恢复原状态、原因、原父与发布水位（期间有他人登记的运行则不恢复），同一调用重放只读原回执、不重开（#709），`release` 只结束拥有关系，声明 `release` 的连接器在回合边界关闭 Yuki 自己持有的原生进程，以便用户接回而不分叉。`get_tasks(id)` 读卡片与时间线，`get_tasks(agents=…)` 浏览设备、Agent、会话与历史（在线只读查询）。
 

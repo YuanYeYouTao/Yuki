@@ -27,55 +27,86 @@ from yuki.conversation.scope_models import (
     ConversationPromptSnapshot,
     ConversationScopeState,
 )
-from yuki.domain.conversations import ConversationScope
+from yuki.domain.conversations import ConversationScope, ScopeType
+from yuki.domain.messages import sanitize_display_name
+from yuki.identity.db_models import CanonicalSpaceModel
 from yuki.persistence.database import Database
 from yuki.persistence.models import ChatEventModel
 from yuki.persistence.repository_helpers import _event_record, keeper_event_clause
 from yuki.persistence.repository_records import EventRecord
 
 
-async def _with_proactive_cause_metadata(
+async def _with_cause_metadata(
     session: AsyncSession,
     events: tuple[EventRecord, ...],
 ) -> tuple[EventRecord, ...]:
-    """Bulk-hydrate source/type for causal model projections without N+1 reads."""
+    """Bulk-hydrate cause labels for model projections without N+1 reads.
+
+    A plugin reply shows its external event's source/type. A Yuki message caused by a
+    request in another Conversation shows where it was requested: the requester's
+    event-time name for a private request, the group's name for a group request.
+    """
 
     cause_ids = tuple(
         dict.fromkeys(
             event.caused_by_event_id
             for event in events
-            if event.origin == "plugin_background" and event.caused_by_event_id is not None
+            if event.direction == "outbound" and event.caused_by_event_id is not None
         )
     )
     if not cause_ids:
         return events
-    rows = tuple(
-        (
-            await session.scalars(
-                select(ChatEventModel).where(
-                    ChatEventModel.id.in_(cause_ids),
-                    ChatEventModel.event_kind == "external_event",
-                    ChatEventModel.direction == "external",
-                    keeper_event_clause(),
-                )
+    rows = (
+        await session.execute(
+            select(ChatEventModel, CanonicalSpaceModel.id, CanonicalSpaceModel.name)
+            .outerjoin(
+                CanonicalConversationModel,
+                CanonicalConversationModel.id == ChatEventModel.canonical_conversation_id,
             )
-        ).all()
-    )
-    causes = {row.id: _event_record(row) for row in rows}
+            .outerjoin(
+                CanonicalSpaceModel, CanonicalSpaceModel.id == CanonicalConversationModel.space_id
+            )
+            .where(ChatEventModel.id.in_(cause_ids), keeper_event_clause())
+        )
+    ).all()
+    causes: dict[int, tuple[EventRecord, str | None, str | None]] = {
+        row.id: (_event_record(row), space_id, space_name) for row, space_id, space_name in rows
+    }
     enriched: list[EventRecord] = []
     for event in events:
-        cause = causes.get(event.caused_by_event_id or 0)
-        if cause is None or cause.canonical_conversation_id != event.canonical_conversation_id:
+        found = causes.get(event.caused_by_event_id or 0)
+        if found is None:
             enriched.append(event)
             continue
-        enriched.append(
-            replace(
-                event,
-                caused_by_external_source=cause.external_source,
-                caused_by_external_event_type=cause.external_event_type,
+        cause, space_id, space_name = found
+        if event.origin == "plugin_background":
+            same = cause.canonical_conversation_id == event.canonical_conversation_id
+            external = cause.event_kind == "external_event" and cause.direction == "external"
+            enriched.append(
+                replace(
+                    event,
+                    caused_by_external_source=cause.external_source,
+                    caused_by_external_event_type=cause.external_event_type,
+                )
+                if same and external
+                else event
             )
-        )
+        elif cause.canonical_conversation_id == event.canonical_conversation_id:
+            enriched.append(event)
+        else:
+            enriched.append(
+                replace(event, caused_by_relay=_relay_source(cause, space_id, space_name, event))
+            )
     return tuple(enriched)
+
+
+def _relay_source(
+    cause: EventRecord, space_id: str | None, space_name: str | None, event: EventRecord
+) -> str:
+    if space_id is not None:
+        return f"来自群 {sanitize_display_name(space_name or '') or f'space:{space_id}'}"
+    private_target = event.scope_type is ScopeType.PRIVATE
+    return f"受 {cause.sender_display_name} {'委托' if private_target else '私下委托'}"
 
 
 class ConversationScopeRepository:
@@ -134,9 +165,7 @@ class ConversationScopeRepository:
             if before_event_id is not None:
                 query = query.where(ChatEventModel.id < before_event_id)
             rows = tuple((await session.scalars(query.order_by(ChatEventModel.id))).all())
-            events = await _with_proactive_cause_metadata(
-                session, tuple(_event_record(row) for row in rows)
-            )
+            events = await _with_cause_metadata(session, tuple(_event_record(row) for row in rows))
             return ConversationPromptSnapshot(
                 state,
                 events,
@@ -241,7 +270,7 @@ class ConversationScopeRepository:
                 keeper_event_clause(),
             )
             rows = tuple((await session.scalars(query.order_by(ChatEventModel.id))).all())
-            additions = await _with_proactive_cause_metadata(
+            additions = await _with_cause_metadata(
                 session, tuple(_event_record(row) for row in rows)
             )
             source.extend(additions, through_event_id=through)
@@ -272,7 +301,7 @@ class ConversationScopeRepository:
                 )
                 bodies.update(
                     (row.id, row)
-                    for row in await _with_proactive_cause_metadata(
+                    for row in await _with_cause_metadata(
                         session, tuple(_event_record(row) for row in selected)
                     )
                 )

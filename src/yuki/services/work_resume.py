@@ -15,7 +15,7 @@ from yuki.automation.repository import AutomationRepository
 from yuki.config import Settings
 from yuki.conversation.scope import ConversationTurnSnapshot
 from yuki.conversation.scope_repository import ConversationScopeRepository
-from yuki.domain.conversations import ConversationScope, ScopeType
+from yuki.domain.conversations import ConversationScope
 from yuki.identity.authority import person_is_superuser
 from yuki.persistence.database import write_failure_committed, write_failure_phase
 from yuki.persistence.event_repository import EventLedgerRepository
@@ -354,7 +354,7 @@ class WorkResumer:
                         origin=TurnOrigin.SELF_INITIATIVE,
                         initiative_run_id=recovered.run_id,
                         conversation_id=recovered.conversation_id,
-                        scope_type=ScopeType.GROUP,
+                        scope_type=scene.identity.scope_type,
                         external_target_id=recovered.external_target_id,
                         space_id=recovered.target_space_id,
                         sandbox_source={**source, "work_id": item["id"]},

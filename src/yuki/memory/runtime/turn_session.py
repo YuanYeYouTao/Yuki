@@ -68,7 +68,7 @@ class TurnMemorySession:
             group_id=identity.group_id,
         )
         if (
-            identity.scope_type is not ScopeType.GROUP
+            identity.scope_type is not (ScopeType.GROUP if source.space_id else ScopeType.PRIVATE)
             or identity.conversation_id != source.canonical_conversation_id
             or identity.presence_id != source.presence_id
         ):

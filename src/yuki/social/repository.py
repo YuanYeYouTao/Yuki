@@ -535,12 +535,14 @@ class SocialOperationRepository:
         planned_file_parts: int | None,
         origin: str | None = None,
         caused_by_event_id: int | None = None,
+        relay_event_id: int | None = None,
     ) -> dict[str, Any] | None:
         """Complete delivery facts of one original operation in the caller's snapshot.
 
         The prospective plan is the parent's ``planned_parts`` (a sequence) or the
         caller's reserved file+caption count; a missing plan is never inferred from
-        surviving successes. Absent planned parts read as ``not_sent``.
+        surviving successes. Absent planned parts read as ``not_sent``. A part delivered
+        into another Conversation carries ``relay_event_id`` as its cause.
         """
         parent = await session.get(SocialOperationModel, operation_id)
         if parent is None or (
@@ -670,7 +672,16 @@ class SocialOperationRepository:
                 or event.suppression_status != "keeper"
                 or (
                     origin is not None
-                    and (event.origin != origin or event.caused_by_event_id != caused_by_event_id)
+                    and (
+                        event.origin != origin
+                        or event.caused_by_event_id
+                        != (
+                            caused_by_event_id
+                            if caused_by_event_id is not None
+                            or event.canonical_conversation_id == conversation_id
+                            else relay_event_id
+                        )
+                    )
                 )
             ):
                 continue

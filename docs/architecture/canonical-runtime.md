@@ -134,6 +134,8 @@ compact 检查点、raw history、按需 Memory 工具、Prompt compiler、工�
 最后一条临时 user input，既不落入聊天历史，也不形成插件专属短上下文。Yuki 成功发送的主动消息
 仍是普通 outbound `message`，并通过 `caused_by_event_id` 永久指向来源 external event。模型历史与
 公共消息渲染保留因果来源标签，平台正文不被改写。
+Yuki 的其他出站消息也可以用 `caused_by_event_id` 指向请求它的已入账真人消息（可在另一个 Conversation），
+用于跨会话转达的来源标签（见[主 Agent](main-agent-runtime.md)）；插件回复仍只指向本会话的 external event。
 
 ACP 使用共享 Presence 与每个原 Person 的稳定 Binding；每次 `session/new` 在该入口新建独立 thread／Conversation，`sessionId` 就是 Conversation UUID。原 App、QQ、TG 的空 thread 入口保持不变，人物资料与记忆仍归 Person。请求按实际 ACP Conversation＋原 UUID 查证，不按平台消息号重建归属。协议、结束与取消见[个人 API](client-api.md#acp-方向-a)。
 
@@ -192,7 +194,14 @@ admission 再确认原连接与 pin。探测或 CAS 前取消不安装路由；�
 或反向删除可能已提交的路由。数值日志分别报告初读、探测准备、恢复和 fresh recheck，
 恢复包含 CAS，不能将其耗时称作纯数据库锁等待。
 
-群内超管的 `/ai admin group current enable` 使用共同的确定性控制入口，不是绕过 ingest 的聊天事件：原生平台入口
+群开关只有 Space `enabled` 一处。群内 `/ai off` / `/ai on` 是 `/ai admin group current
+disable|enable` 的简写，由 `parse_command` 归一到同一管理命令，不新增状态。Space 关闭时，
+Processor 在入账前按 `group_disabled` 拒绝该群全部入站：普通消息、@ 与前缀呼叫、`/ai` 命令、
+插件直达命令和 `/ai plugin run` 都不入账、不进 Main 或插件，超管也不例外；非超管的
+`/ai on` 不回复，同样在入账前拒绝。出站同样核这一开关：
+Social 发送（含 Automation 与插件 `messages.send_*`）、插件 `onebot.send_*` 的投递校验、插件通知
+与后台回合的目标核验都拒绝已关闭 Space；已提交的回执按原 operation 读取，不重发、不改写。
+群内超管的 `/ai on`（`/ai admin group current enable`）使用共同的确定性控制入口，不是绕过 ingest 的聊天事件：原生平台入口
 验证真实事件连接与同平台管理员 Binding，恢复服务保留健康接入 pin，否则仅接受唯一通过实时成员
 探针的候选。群启用、必要的两张群路由变更、审计和幂等回执在同一个 `BEGIN IMMEDIATE` 中提交；
 重验身份、路由 revision 与连接快照，冲突整笔退出。命令及回执不进聊天账本、模型或Memory，不修改 ConversationGeneration。普通消息、插件和其他管理命令仍受原围栏限制。

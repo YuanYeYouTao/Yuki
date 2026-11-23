@@ -67,7 +67,12 @@ from yuki.domain.conversations import ConversationScope
 from yuki.domain.memory_config import MemoryConfigScope
 from yuki.domain.messages import InboundMessage, mention_snapshots
 from yuki.execution_trace.recorder import TraceRecorder, trace_span
-from yuki.identity.db_models import CanonicalSpaceModel, PresenceModel, SpaceBindingModel
+from yuki.identity.db_models import (
+    CanonicalSpaceModel,
+    IdentityBindingModel,
+    PresenceModel,
+    SpaceBindingModel,
+)
 from yuki.memory.self_origin import read_self_initiative_revisions
 from yuki.model_runtime.secrets import read_model_secrets
 from yuki.model_runtime.semantic_observation import (
@@ -89,6 +94,7 @@ from yuki.services.participation_parameters import (
     AutonomyParameters,
 )
 from yuki.services.participation_snapshot import AsyncSnapshotStore
+from yuki.services.self_wakeup import TIMER_NOTE, timer_wakeup
 
 logger = logging.getLogger(__name__)
 
@@ -157,8 +163,12 @@ class SemanticParticipationService:
         promote: Callable[[int, OrdinaryParticipationBinding], Awaitable[object]],
         model_config_path: Path | None = None,
         traces: TraceRecorder | None = None,
+        clock: Callable[[], float] = time.time,
     ) -> None:
         self.database = database
+        # The timed SELF wake's slot clock and the last slot it admitted (self_wakeup).
+        self._clock = clock
+        self._timer_slot: str | None = None
         self.settings = settings
         self.ledger = ledger
         self.runtime_config = runtime_config
@@ -821,8 +831,8 @@ class SemanticParticipationService:
             kind="human" if row.author_is_human() else "self",
             unit_ambiguous=row.author_is_human() and len(options) > 1,
             unit_options=tuple(options) if len(options) > 1 else (),
-            # This affects observation order only. Calling a name still needs
-            # Jev's semantic invitation/floor judgment and Host admission.
+            # Observation order only; a standalone name call is already a direct
+            # input (policies.calls_by_name), like a native @.
             observation_priority=row.author_is_human()
             and any(
                 alias.casefold() in row.perceived_content.casefold()
@@ -1380,26 +1390,36 @@ class SemanticParticipationService:
         async with self.database.read_session() as session:
             presence = await session.get(PresenceModel, run.presence_id)
             conversation = await session.get(CanonicalConversationModel, run.conversation_id)
-            bindings = (
-                await session.scalars(
-                    select(SpaceBindingModel).where(
-                        SpaceBindingModel.space_id == run.space_id,
-                        SpaceBindingModel.platform == (presence.platform if presence else ""),
-                        *(
-                            [SpaceBindingModel.id == conversation.space_binding_id]
-                            if conversation and conversation.space_binding_id
-                            else []
-                        ),
-                        SpaceBindingModel.status == "active",
-                    )
+            if run.space_id is None:
+                # A wake in a private Conversation: its counterpart is the default target.
+                private = (
+                    await session.get(IdentityBindingModel, conversation.identity_binding_id)
+                    if conversation is not None and conversation.identity_binding_id
+                    else None
                 )
-            ).all()
-        if presence is None or len(bindings) != 1:
+                targets = [private.external_account_id] if private is not None else []
+            else:
+                targets = [
+                    binding.external_space_id
+                    for binding in await session.scalars(
+                        select(SpaceBindingModel).where(
+                            SpaceBindingModel.space_id == run.space_id,
+                            SpaceBindingModel.platform == (presence.platform if presence else ""),
+                            *(
+                                [SpaceBindingModel.id == conversation.space_binding_id]
+                                if conversation and conversation.space_binding_id
+                                else []
+                            ),
+                            SpaceBindingModel.status == "active",
+                        )
+                    )
+                ]
+        if presence is None or len(targets) != 1:
             await self.repository.record_feedback(
                 run.run_id, sequence=run.feedback_sequence + 1, outcome="interrupted"
             )
             return
-        group_id, bot_user_id = bindings[0].external_space_id, presence.external_account_id
+        target, bot_user_id = targets[0], presence.external_account_id
         packet: list[dict[str, object]] = []
         for source_ref in run.sources:
             if source_ref.kind is InitiativeSourceKind.EVENT:
@@ -1437,7 +1457,7 @@ class SemanticParticipationService:
             if run.trigger_kind == "intrinsic"
             else "所附来源是本次工作的线索，不是某个用户的新请求。"
         )
-        instruction = (
+        instruction = (TIMER_NOTE if run.owner is AutonomyOwner.TIMER else "") + (
             "自主工作唤醒：先按需核对已有 Work、待办及相关资料，静默推进未完成事项、"
             "重要的人已表达的关切或事件进展，也可整理工作区、研究或创作。"
             + origin_note
@@ -1456,7 +1476,7 @@ class SemanticParticipationService:
             "generation": run.generation,
             "space_id": run.space_id,
             "presence_id": run.presence_id,
-            "group_id": group_id,
+            **({"group_id": target} if run.space_id else {"user_id": target}),
             "bot_user_id": bot_user_id,
             "actor_user_id": "",
             "instruction": instruction,
@@ -1549,6 +1569,10 @@ class SemanticParticipationService:
                     if isinstance(result, asyncio.CancelledError):
                         raise result
                     logger.warning("participation_scope_failed category=%s", type(result).__name__)
+            try:
+                await timer_wakeup(self)
+            except Exception as exc:
+                logger.warning("self_timer_wakeup_failed category=%s", type(exc).__name__)
             await self._reconcile_outbox()
         finally:
             for item in pinned.values():

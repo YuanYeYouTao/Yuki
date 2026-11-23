@@ -32,6 +32,10 @@ API 7.0 的普通 user_id/group_id/target_id 参数分别表示内部 Person/Spa
 `send_private_forward_msg`、`send_group_forward_msg`、`send_forward_msg` 尚无同等回执合同，
 当前在发送前明确拒绝，不通过原始动作绕过。其他管理动作保留原有权限与行为。
 
+目标群已被 `/ai off` 关闭时，`messages.send_*`、`onebot.send_*`、通知发布与投递、后台回合都在
+平台调用前拒绝（`space_not_allowed` / `canonical_owner_disabled`），与 Yuki 自身发送使用同一 Space
+开关；关闭前已提交的回执按原 operation 返回，不重发。
+
 发送前先持久化执行意图。只有严格有效的网关消息 ID 才确认成功，通常成功回执和账本在同一
 事务提交；没有真实平台确认的超时、无效回执或取消保留 `unknown` / `uncertain=true`，不自动重试，
 仅该次调用保留未知事实，后续独立显式发送继续执行。已提交成功的回执不会因后续唤醒通知失败而降级。

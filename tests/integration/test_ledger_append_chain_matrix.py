@@ -316,7 +316,7 @@ async def test_ledger_append_chain_failure_matrix(
         outbound(origin_key="c-1", origin="plugin_background", caused_by_event_id=first),
     )
     await step(
-        "causal_user_message_with_cause_not_allowed",
+        "causal_user_message_on_plugin_event_invalid",
         outbound(origin_key="c-1", caused_by_event_id=plugin_event),
     )
     await step(
@@ -356,6 +356,19 @@ async def test_ledger_append_chain_failure_matrix(
     await step(
         "causal_system_task_same_key_other_cause_conflict",
         outbound(origin_key="t-1", origin="system_task", caused_by_event_id=inbound_two.event.id),
+    )
+    other_inbound = await seed_scoped_event(
+        writer,
+        scope=other_private,
+        origin_key="in-other",
+        sender_user_id="1002",
+        direction="inbound",
+        content="please tell 1001",
+        occurred_at=AT,
+    )
+    await step(
+        "causal_user_message_relay_create",
+        outbound(origin_key="relay-1", caused_by_event_id=other_inbound.event.id),
     )
 
     # 5. Group entry without a conversation: SpaceBinding proves the owner.
@@ -581,7 +594,7 @@ async def test_ledger_append_chain_failure_matrix(
         "causal_plugin_reply_without_cause_required": "causal_source_required",
         "causal_plugin_reply_cross_conversation_invalid": "causal_source_invalid",
         "causal_plugin_reply_on_message_invalid": "causal_source_invalid",
-        "causal_user_message_with_cause_not_allowed": "causal_source_not_allowed",
+        "causal_user_message_on_plugin_event_invalid": "causal_source_invalid",
         "causal_system_task_on_plugin_event_invalid": "causal_source_invalid",
         "causal_system_task_same_key_other_cause_conflict": "receipt_conflict",
         "group_wrong_space_binding_mismatch": "canonical_owner_mismatch",

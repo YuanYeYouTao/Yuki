@@ -13,7 +13,12 @@ from sqlalchemy.sql.elements import ColumnElement
 from yuki.conversation.autonomy_db_models import InitiativeRunModel
 from yuki.conversation.canonical_db_models import CanonicalConversationModel
 from yuki.conversation.initiative_sources import MEMORY_REVISION_FIELDS, memory_revision
-from yuki.identity.db_models import CanonicalSpaceModel, PresenceModel, SpaceBindingModel
+from yuki.identity.db_models import (
+    CanonicalSpaceModel,
+    IdentityBindingModel,
+    PresenceModel,
+    SpaceBindingModel,
+)
 from yuki.memory.partition import (
     MemoryPartitionResolutionError,
     format_canonical_memory_partition,
@@ -30,15 +35,23 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True, slots=True)
 class SelfMemoryOrigin:
+    """The scene a SELF execution ran in: a group, or a private Conversation (#541).
+
+    A private scene has no Space or group; ``person_id``/``user_id`` name its counterpart,
+    whose private visibility is the narrowest one that scene can write.
+    """
+
     initiative_run_id: str | None
     canonical_conversation_id: str
-    space_id: str
+    space_id: str | None
     presence_id: str
     group_id: str
     bot_user_id: str
     partition: str
     occurred_at: datetime
     generation: int
+    person_id: str | None = None
+    user_id: str = ""
 
 
 def self_execution_source_sql(execution_id: str) -> str:
@@ -95,7 +108,7 @@ def self_execution_origin_sql(execution_id: str, *, prepared_automation_ids: boo
         "ic.id=json_extract(av.authority_snapshot_json,'$.canonical_conversation_id') "
         "JOIN account_assignments ip ON ip.id=av.canonical_presence_id AND ip.kind='yuki' "
         "JOIN accounts ia ON ia.id=ip.account_id "
-        "JOIN spaces isp ON isp.id=ic.space_id "
+        "LEFT JOIN spaces isp ON isp.id=ic.space_id "
         f"LEFT JOIN runtime_work w ON w.id={source_execution} "
         "AND w.conversation_id=ic.id "
         "AND COALESCE(json_extract(w.source_json,'$.execution_source.parent_execution_id'),"
@@ -105,7 +118,6 @@ def self_execution_origin_sql(execution_id: str, *, prepared_automation_ids: boo
         "ELSE printf('automation:%d:%s:%s',ar.id,"
         f"{step_id},av.script_hash) END "
         f"WHERE ar.id IN ({candidates}) AND a.creator_kind='self' "
-        "AND ic.kind='space' "
         f"AND ({source_execution}=printf('automation:%d:%s',ar.id,av.script_hash) "
         "OR w.id IS NOT NULL)"
     )
@@ -161,20 +173,38 @@ async def resolve_self_origin(
         raise MemoryPartitionResolutionError("initiative_source_mismatch")
     conversation = await session.get(CanonicalConversationModel, conversation_id)
     presence = await session.get(PresenceModel, presence_id)
-    space = await session.get(CanonicalSpaceModel, space_id)
+    space = await session.get(CanonicalSpaceModel, space_id) if space_id else None
     if (
         conversation is None
-        or conversation.kind != "space"
+        or conversation.kind != ("space" if space_id else "private")
         or conversation.space_id != space_id
-        or conversation.person_id is not None
+        or (space_id is not None and (conversation.person_id is not None or space is None))
         or presence is None
-        or space is None
     ):
         raise MemoryPartitionResolutionError("initiative_source_mismatch")
     if require_live and (
-        conversation.generation != generation or not presence.enabled or not space.enabled
+        conversation.generation != generation
+        or not presence.enabled
+        or (space is not None and not space.enabled)
     ):
         raise MemoryPartitionResolutionError("initiative_source_inactive")
+    if space_id is None:
+        counterpart = await session.get(IdentityBindingModel, conversation.identity_binding_id)
+        if counterpart is None:
+            raise MemoryPartitionResolutionError("initiative_source_mismatch")
+        return SelfMemoryOrigin(
+            initiative_run_id,
+            conversation_id,
+            None,
+            presence_id,
+            "",
+            presence.external_account_id,
+            format_canonical_memory_partition(person_id=conversation.person_id),
+            at.replace(tzinfo=UTC) if at.tzinfo is None else at,
+            generation,
+            conversation.person_id,
+            counterpart.external_account_id,
+        )
     bindings = (
         list(
             await session.scalars(
@@ -228,12 +258,25 @@ def sql_self_receipt_evidence_predicate(
     whitespace = "char(9,10,11,12,13,28,29,30,31,32,133,160,5760," + (
         "8192,8193,8194,8195,8196,8197,8198,8199,8200,8201,8202,8232,8233,8239,8287,12288)"
     )
+
+    def visible(space: str) -> str:
+        # Global, the original group, or (a wake in a private Conversation, #541) that
+        # Conversation's counterpart only.
+        return (
+            f"(({f}.visibility_type='global' AND {f}.canonical_visibility_space_id IS NULL "
+            f"AND {f}.canonical_visibility_person_id IS NULL) "
+            f"OR ({f}.visibility_type='group' AND {f}.canonical_visibility_space_id={space} "
+            f"AND {f}.canonical_visibility_person_id IS NULL) "
+            f"OR ({f}.visibility_type='private' AND ic.kind='private' "
+            f"AND {f}.canonical_visibility_space_id IS NULL "
+            f"AND {f}.canonical_visibility_person_id=ic.person_id))"
+        )
+
     return (
         f"({t}.trigger_event_id IS NULL "
         f"AND {e}.event_id IS NULL AND {f}.scope_type='self' "
         f"AND {f}.canonical_subject_person_id IS NULL "
         f"AND {f}.canonical_subject_space_id IS NULL "
-        f"AND {f}.canonical_visibility_person_id IS NULL "
         f"AND {e}.relation='agent_reflection' AND {e}.authority='agent_reflection' "
         f"AND {e}.source_speaker_user_id={t}.bot_user_id "
         f"AND trim({e}.excerpt,{whitespace})!='' AND instr({t}.result_excerpt,{e}.excerpt)>0 "
@@ -242,19 +285,21 @@ def sql_self_receipt_evidence_predicate(
         "JOIN account_assignments ip ON ip.id=ir.presence_id AND ip.kind='yuki' "
         "JOIN accounts ia ON ia.id=ip.account_id "
         f"WHERE ir.id={t}.initiative_run_id "
-        "AND ic.kind='space' AND ic.space_id=ir.space_id AND ic.person_id IS NULL "
+        "AND ic.kind=CASE WHEN ir.space_id IS NULL THEN 'private' ELSE 'space' END "
+        "AND ic.space_id IS ir.space_id "
+        "AND (ir.space_id IS NULL OR ic.person_id IS NULL) "
         f"AND ia.external_account_id={t}.bot_user_id "
-        f"AND {t}.canonical_space_id=ir.space_id AND {t}.canonical_person_id IS NULL "
-        f"AND (({f}.visibility_type='global' AND {f}.canonical_visibility_space_id IS NULL) "
-        f"OR ({f}.visibility_type='group' AND {f}.canonical_visibility_space_id=ir.space_id))) "
+        f"AND {t}.canonical_space_id IS ir.space_id "
+        f"AND {t}.canonical_person_id IS (CASE WHEN ir.space_id IS NULL THEN ic.person_id END) "
+        f"AND {visible('ir.space_id')}) "
         f"OR ({t}.initiative_run_id IS NULL AND EXISTS ("
         + self_execution_origin_sql(
             f"{t}.execution_id", prepared_automation_ids=prepared_automation_ids
         )
-        + f" AND {t}.canonical_space_id=ic.space_id AND {t}.canonical_person_id IS NULL "
+        + f" AND {t}.canonical_space_id IS ic.space_id "
+        f"AND {t}.canonical_person_id IS (CASE WHEN ic.space_id IS NULL THEN ic.person_id END) "
         f"AND {t}.bot_user_id=ia.external_account_id "
-        f"AND (({f}.visibility_type='global' AND {f}.canonical_visibility_space_id IS NULL) "
-        f"OR ({f}.visibility_type='group' AND {f}.canonical_visibility_space_id=ic.space_id))))))"
+        f"AND {visible('ic.space_id')}))))"
     )
 
 

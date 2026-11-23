@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from enum import StrEnum
 
 from yuki.config import Settings
 from yuki.domain.conversations import ScopeType
 from yuki.domain.messages import InboundMessage
+from yuki.services.commands.group import GROUP_SWITCH
 
 
 class CommandName(StrEnum):
@@ -68,6 +70,8 @@ def parse_command(text: str, ai_prefix: str) -> tuple[CommandName | None, str, b
         command_parts = remainder.split(maxsplit=1)
         first = command_parts[0].casefold()
         argument = command_parts[1].strip() if len(command_parts) > 1 else ""
+        if first in GROUP_SWITCH and not argument:
+            return CommandName.ADMIN, GROUP_SWITCH[first], True
         try:
             return CommandName(first), argument, True
         except ValueError:
@@ -114,6 +118,33 @@ def replies_to_bot(
     return message.replies_to_yuki(yuki_account_ids=yuki_account_ids)
 
 
+def _latin(character: str) -> bool:
+    return character.isascii() and character.isalnum()
+
+
+def calls_by_name(message: InboundMessage, names: tuple[str, ...]) -> bool:
+    """Whether the current text calls one of the role's names outside native mentions.
+
+    A Latin name edge may not touch another ASCII letter or digit; CJK names have no
+    word separators. A native mention's text is its target's display name, not a call.
+    """
+
+    text = list(message.text)
+    for mention in message.mentions:
+        text[mention.text_start : mention.text_end] = " " * (mention.text_end - mention.text_start)
+    folded = "".join(text).casefold()
+    for name in names:
+        name = name.strip().casefold()
+        if name and re.search(
+            ("(?<![0-9a-z])" if _latin(name[0]) else "")
+            + re.escape(name)
+            + ("(?![0-9a-z])" if _latin(name[-1]) else ""),
+            folded,
+        ):
+            return True
+    return False
+
+
 def evaluate_message(
     message: InboundMessage,
     settings: Settings,
@@ -125,7 +156,7 @@ def evaluate_message(
     yuki_account_ids: frozenset[str] = frozenset(),
     actor_is_superuser: bool = False,
 ) -> PolicyDecision:
-    """Apply self/bot, allowlist, group, mention, reply-to-bot, prefix, and command rules."""
+    """Apply self/bot, allowlist, group, mention, reply-to-bot, name, prefix and command rules."""
 
     if message.is_self_message or message.sender.is_bot:
         return PolicyDecision(False, reason="bot_message")
@@ -150,11 +181,15 @@ def evaluate_message(
 
     if not group_policy_effective.enabled:
         return PolicyDecision(False, reason="group_disabled")
-    reply_to_bot = replies_to_bot(message, yuki_account_ids=yuki_account_ids)
-    if message.mentions_bot or prefix_triggered or direct_triggered or reply_to_bot:
+    if message.mentions_bot or prefix_triggered or direct_triggered:
         reason = "group_triggered"
-        if reply_to_bot and not (message.mentions_bot or prefix_triggered or direct_triggered):
-            reason = "group_reply_to_bot"
+    elif replies_to_bot(message, yuki_account_ids=yuki_account_ids):
+        reason = "group_reply_to_bot"
+    elif calls_by_name(message, settings.character_identity.aliases):
+        reason = "group_name_call"
+    else:
+        reason = ""
+    if reason:
         return PolicyDecision(
             True,
             content=content,

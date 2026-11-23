@@ -956,9 +956,12 @@ class SelfReflectionRepository:
                         select(MemoryToolReceiptModel)
                         .where(
                             MemoryToolReceiptModel.initiative_run_id == batch.initiative_run_id,
-                            MemoryToolReceiptModel.canonical_space_id
-                            == batch.state.canonical_space_id,
-                            MemoryToolReceiptModel.canonical_person_id.is_(None),
+                            MemoryToolReceiptModel.canonical_space_id.is_(
+                                batch.state.canonical_space_id
+                            ),
+                            MemoryToolReceiptModel.canonical_person_id.is_(
+                                batch.state.canonical_person_id
+                            ),
                             MemoryToolReceiptModel.id >= batch.first_receipt_id,
                             MemoryToolReceiptModel.id <= batch.last_receipt_id,
                         )

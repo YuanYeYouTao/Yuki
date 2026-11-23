@@ -448,6 +448,10 @@ async def test_cold_host_portable_receipt_is_protected_during_hard_preparation(
         control.session = reopened
         await reopened.restore(TurnTranscript(initial))
         session = reopened
+        if fresh_source:
+            # A cold wakeup appends to its chain (#646). The portable layout under
+            # test is the one adopting a paid public compaction produces.
+            await session.rebase_business(TurnTranscript(initial))
         evidence.setdefault("cold_transcripts", []).append(asdict(session.transcript.request()))
         await session.save("paired")
     provider = FakeLLMProvider(
@@ -470,7 +474,7 @@ async def test_cold_host_portable_receipt_is_protected_during_hard_preparation(
     await execution._finalize_initial_layout()
     evidence["frozen_initial"] = [asdict(item) for item in execution.initial_messages]
     if fresh_source:
-        # A real cold Work restore places its portable proof in Host initial
+        # A public compaction adoption places its portable proof in Host initial
         # material. Later fresh inputs follow that frozen block; do not call
         # the already retained Host initial block an unprotected private tail.
         for index in range(4):

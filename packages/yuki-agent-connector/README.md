@@ -1,13 +1,13 @@
 # Yuki Agent Connector
 
-Connector **0.9.8 / wire protocol 5** connects an existing computer to Yuki through
+Connector **0.9.9 / wire protocol 5** connects an existing computer to Yuki through
 one outbound WSS connection. It provides native Codex, Claude SDK and ACP
 connections, and optional local Shell/file capabilities. It does not
 install the Bot, create another business task system or mirror native histories.
 
 Desktop includes this locked Python runtime for the Connector. No user Python
 installation is required. Independent CLI installations use Python 3.12:
-`uv tool install path/to/yuki_agent_connector-0.9.8-py3-none-any.whl`.
+`uv tool install path/to/yuki_agent_connector-0.9.9-py3-none-any.whl`.
 
 ## Installation and ownership
 
@@ -219,15 +219,34 @@ outside the scope is reported, except that ACP client callbacks the connector ru
 itself (`terminal/create`, `fs/write_text_file`) are refused outright (progress
 `scope_refused`, `invalid_params`) without a card. An ACP request inside the scope
 is approved only with the agent's `allow_once` option; without one it is reported.
-A command is inside the scope when, after stripping surrounding whitespace (Python's
-Unicode whitespace, so a trailing newline is dropped), it contains none of
-``; & | < > ` $ ( )``, newline or carriage return (inside quotes and `2>&1`
-included) and equals a prefix or starts with the prefix plus one ASCII space
-(`git log` matches `git log -5`, not `git logx`, `git push` or `git<TAB>log`);
-only `*` admits the rest. Without `*`, combined commands are outside the scope
-(#647 not relaxed): native approvals are reported, an ACP `terminal/create` is
-refused; with `*`, they pass the command check even when `write_paths` or
-`network` are narrowed. The prefix check looks neither at the cwd nor at the paths a
+Since 0.9.9 (#647 D1) a command is cut at every literal `&&`, `||` and `;`
+(inside quotes too: a quoted separator only adds a cut) and is inside the scope
+only when every segment is. The whole command must parse with `shlex`. A segment,
+stripped of surrounding ASCII spaces and tabs, must contain none of
+``; & | < > ` $ ( )``, newline or carriage return, must not end with a backslash
+(`\||` is a literal `|` and a pipe), and either equal a prefix or start with the
+prefix plus one ASCII space (`git log` matches `git log -5`, not `git logx`,
+`git push` or `git<TAB>log`), or be exactly `cd <absolute directory>` whose target,
+resolved through symlinks, lies in `write_paths` (no options, `..`, `~`, glob,
+brace, `^`, `#` or backslash; relative targets are outside because the shell's
+current directory and `CDPATH` are unknown to the connector). Pipes, redirections
+(`2>&1` included), `$`, backticks, newlines, background `&`, subshells and empty
+segments stay outside; only `*` admits them. Outside commands are reported as native
+approvals, and an ACP `terminal/create` is refused (a list is `shlex.join`ed first,
+so an element holding a separator is outside). Before 0.9.9 any of those characters made
+the whole command outside. Not covered: the user's shell aliases, functions and
+`chpwd`-style hooks (a `cd` into `write_paths` runs them), a symlink an earlier
+segment creates before the `cd` runs, and PowerShell or cmd.exe syntax, which was
+not exercised. A `cd` that Claude's Bash runs also moves the cwd of its later calls.
+Codex shows a command approval as the wrapper it runs (`/bin/zsh -lc '<script>'`,
+codex-cli 0.169/0.171), so since 0.9.9 the Codex driver judges the script: exactly
+`<shell> -lc <script>` with `bash`, `zsh` or `sh` named bare or under `/bin`,
+`/usr/bin`, `/usr/local/bin` or `/opt/homebrew/bin`. A command starting with such a
+shell in any other shape (`-c`, extra words, words outside the quotes, unbalanced
+quotes, another directory) is outside; one starting with no shell is judged as is;
+`*` skips this. Claude's Bash command is the model's text, unwrapped; ACP `execute`
+requests are not unwrapped.
+The prefix check looks neither at the cwd nor at the paths a
 command writes, so `write_paths` does not confine an approved command: Claude runs
 it under the user's own account with no connector sandbox; Codex sandboxed
 commands never ask, and an `accept` only consents to that one request (where and

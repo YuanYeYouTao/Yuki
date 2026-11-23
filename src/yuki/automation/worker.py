@@ -19,7 +19,7 @@ from yuki.conversation.canonical_db_models import CanonicalConversationModel
 from yuki.conversation.scope import ConversationTurnSnapshot
 from yuki.conversation.scope_repository import ConversationScopeRepository
 from yuki.domain.conversations import ConversationScope
-from yuki.identity.db_models import PresenceModel
+from yuki.identity.db_models import IdentityBindingModel, PresenceModel
 from yuki.runtime.activation_bindings import ActiveWorkBindings
 from yuki.runtime.activation_outcome import recorded_model_requests
 from yuki.runtime.lease_heartbeat import supervise_lease
@@ -158,7 +158,13 @@ class AutomationWorker:
                 presence = await session.get(PresenceModel, automation.canonical_presence_id)
                 if conversation is None or presence is None:
                     raise ValueError("automation_scene_unavailable")
-                actor_user_id = ""
+                actor_user_id = peer = ""
+                if automation.creator_kind == "self" and conversation.space_id is None:
+                    # A SELF schedule made in a private Conversation (#541): its counterpart.
+                    counterpart = await session.get(
+                        IdentityBindingModel, conversation.identity_binding_id
+                    )
+                    peer = counterpart.external_account_id if counterpart is not None else ""
                 if automation.creator_kind != "self":
                     assert automation.canonical_creator_person_id is not None
                     actor_user_id, _ = await resolve_execution_identity(
@@ -167,7 +173,7 @@ class AutomationWorker:
                         conversation_id=conversation_id,
                         presence_id=presence.id,
                     )
-                    actor_user_id = automation.creator_user_id or actor_user_id
+                    actor_user_id = peer = automation.creator_user_id or actor_user_id
             group_id = (
                 automation.authority_snapshot["current_group_id"] if conversation.space_id else None
             )
@@ -183,7 +189,7 @@ class AutomationWorker:
                 if group_id
                 else ConversationScope.private(
                     automation.bot_user_id,
-                    actor_user_id,
+                    peer,
                     platform=presence.platform,
                     presence_id=presence.id,
                     conversation_id=conversation.id,

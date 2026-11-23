@@ -8,6 +8,12 @@ on:
 permissions:
   contents: read
 
+# A newer push supersedes a branch's older run; main keeps the running one and queues
+# only its latest commit.
+concurrency:
+  group: quality-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 jobs:
   # Documentation and images alone skip the platform, image and isolation jobs.
   # Lint and the test suites still run: some tests read the documents.
