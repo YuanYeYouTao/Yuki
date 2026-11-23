@@ -1,6 +1,6 @@
 # 架构文档入口
 
-2026-11-23 [沙箱代理与环境配置任务书](Yuki-沙箱代理与环境配置任务书-2026-11-23.md)：#509、#524 按现行代码逐项核对。#524 除三档资源实测与 Docker Desktop 网络隔离实测外已由 #567、#607、#621–#624 与 Yuki-Desktop 档位选择完成，建议关闭；#509 只补放行配置的那一个代理端点（`YUKI-PROXY` 链）、保存值与环境实际值分开报告（`recreate_required: proxy`）、从沙箱内 `curl` 分段检测（`yuki setup environment-check --network`），不加管理页面、节点池或轮询。待所有者批准；实施在单独的 draft PR。
+2026-11-23 [沙箱代理与环境配置任务书](Yuki-沙箱代理与环境配置任务书-2026-11-23.md)：#509、#524 按现行代码逐项核对。#524 除三档资源实测与 Docker Desktop 网络隔离实测外已由 #567、#607、#621–#624 与 Yuki-Desktop 档位选择完成，建议关闭；#509 只补放行配置的那一个代理端点（`YUKI-PROXY` 链）、保存值与环境实际值分开报告（`recreate_required: proxy`）、从沙箱内 `curl` 分段检测（`yuki setup environment-check --network`），不加管理页面、节点池或轮询。待所有者批准；实施在 draft PR #719。
 
 2026-11-23 [模型 fallback 链调研与任务书](Yuki-模型fallback链任务书-2026-11-23.md)：用途级显式备用 Profile 链按 §9 推荐实施（[现行合同](model-providers.md#显式备用链)），无迁移，默认空链；看门狗复用组件事实（键 `component:model_fallback:<task>:<profile>`），E2E 产物 `test-results/model-fallback-chain-e2e.json`。其中 §9 Q12 已先行实施：Profile 可选 `connect_timeout_seconds` 只限建立连接，未设置取 10 秒且不超过 `timeout_seconds`，不进入 Profile revision；Responses 回复中途断开（`RemoteProtocolError` 等）不再以裸 httpx 异常冒出，统一为 `LLMUnavailableError`，走现有传输失败与回执路径（[现行合同](model-providers.md#传输超时与断连)）。
 
