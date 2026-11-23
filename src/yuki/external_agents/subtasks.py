@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import time
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import func, or_, select, true, update
@@ -26,6 +27,7 @@ from yuki.external_agents.delegation import (
 from yuki.external_agents.errors import ExternalAgentArgumentError
 from yuki.runtime.work_repository import TERMINAL
 from yuki.runtime.work_schema_v1 import work
+from yuki.runtime.work_tree import ancestors
 from yuki.runtime.work_wait_schema import waits
 
 _BRIEF = ("goal", "context", "acceptance", "files")
@@ -394,35 +396,40 @@ async def manage_external(
                 "resume_text_required", "恢复编码 Agent 子任务需要 text：在同一会话继续的要求。"
             )
         latest = await _latest_operation(control, identity)
+        request_id = _request_id(identity, key, "resume")
         async with database.read_session() as reader:
-            prior, prior_parent = (
-                await reader.execute(
-                    select(work.c.state, work.c.parent_work_id).where(work.c.id == identity)
-                )
-            ).one()
-        async with database.immediate_session() as writer:
-            await control.repository._assert_lease(writer, control.lease)
-            resumer = await _resumer(writer, control, identity)
-            reopened = await writer.execute(
-                update(work)
-                .where(
-                    work.c.id == identity,
-                    work.c.state.in_(("completed", "failed")),
-                    true() if revision is None else work.c.revision == revision,
-                )
-                .values(
-                    state="waiting_external",
-                    reason="native_executor",
-                    parent_work_id=prior_parent if resumer is None else resumer,
-                    revision=work.c.revision + 1,
-                    updated=time.time(),
-                )
+            prior = (
+                (await reader.execute(select(work).where(work.c.id == identity))).mappings().one()
             )
-            if revision is not None and not reopened.rowcount:
-                raise ValueError("version_conflict")
-            if reopened.rowcount and resumer is not None and prior_parent is not None:
-                # The earlier parent no longer owns this record's runs.
-                await control.repository.resettle_deferred(writer, prior_parent)
+            # A replayed call reads its original receipt: nothing is reopened or moved.
+            replayed = await reader.get(AgentOperationModel, request_id) is not None
+        reopened_at = datetime.now(UTC)
+        reopened = False
+        if not replayed:
+            async with database.immediate_session() as writer:
+                await control.repository._assert_lease(writer, control.lease)
+                resumer = await _resumer(writer, control, identity)
+                changed = await writer.execute(
+                    update(work)
+                    .where(
+                        work.c.id == identity,
+                        work.c.state.in_(("completed", "failed")),
+                        true() if revision is None else work.c.revision == revision,
+                    )
+                    .values(
+                        state="waiting_external",
+                        reason="native_executor",
+                        parent_work_id=prior["parent_work_id"] if resumer is None else resumer,
+                        revision=work.c.revision + 1,
+                        updated=time.time(),
+                    )
+                )
+                if revision is not None and not changed.rowcount:
+                    raise ValueError("version_conflict")
+                reopened = bool(changed.rowcount)
+                if reopened and resumer is not None and prior["parent_work_id"] is not None:
+                    # The earlier parent no longer owns this record's runs.
+                    await control.repository.resettle_deferred(writer, prior["parent_work_id"])
         native: dict[str, Any] = {
             "action": "prompt",
             "instance_id": executor["instance_id"],
@@ -434,34 +441,17 @@ async def manage_external(
             native["session_id"] = session
         if "scope" in executor:
             native["scope"] = executor["scope"]
-        request_id = _request_id(identity, key, "resume")
-
-        async def unopen() -> None:
-            # Nothing was written: the record keeps the state and parent it had before.
-            async with database.immediate_session() as writer:
-                await writer.execute(
-                    update(work)
-                    .where(work.c.id == identity, work.c.state == "waiting_external")
-                    .values(
-                        state=prior,
-                        parent_work_id=prior_parent,
-                        revision=work.c.revision + 1,
-                        updated=time.time(),
-                    )
-                )
-
         try:
             result = await service.execute(
                 native, request_id, control.source, owner_work_id=identity
             )
         except Exception:
-            async with database.read_session() as reader:
-                registered = await reader.get(AgentOperationModel, request_id)
-            if reopened.rowcount and registered is None:
-                await unopen()
+            if reopened:
+                await _unopen(database, prior, request_id, reopened_at)
             raise
         if result.get("error") and result.get("executed") is False:
-            await unopen()
+            if reopened:
+                await _unopen(database, prior, request_id, reopened_at)
             _dispatched(result)
         return {"id": identity, "status": "running", "dispatch": result.get("status")}
     if action == "release" and not observe:
@@ -540,12 +530,61 @@ async def _resumer(writer: Any, control: Any, identity: str) -> str | None:
                 func.json_extract(work.c.checkpoint_json, "$.accepted_control.action")
                 == "complete",
             ),
+            # A wait anywhere up the tree reads this record through the tree.
             ~select(waits.c.id)
-            .where(waits.c.work_id == work.c.id, waits.c.status == "active")
+            .where(
+                waits.c.work_id.in_(ancestors(record["parent_work_id"], include_self=True)),
+                waits.c.status == "active",
+            )
             .exists(),
         )
     )
     return resumer if released is not None else None
+
+
+async def _unopen(database: Any, prior: Any, request_id: str, reopened_at: datetime) -> None:
+    """A resume that registered nothing gives the record back exactly as it was.
+
+    Not over another caller's run registered on the reopened record meanwhile; the
+    restored revision keeps the original result's publication watermark, so no second
+    result is published for a run that never started.
+    """
+    from yuki.runtime.subagent_schema import children
+
+    async with database.immediate_session() as writer:
+        if await writer.get(AgentOperationModel, request_id) is not None:
+            return
+        other = await writer.scalar(
+            select(AgentOperationModel.id)
+            .where(
+                AgentOperationModel.work_id == prior["id"],
+                AgentOperationModel.created_at >= reopened_at,
+            )
+            .limit(1)
+        )
+        if other is not None:
+            return
+        restored = await writer.scalar(
+            update(work)
+            .where(work.c.id == prior["id"], work.c.state == "waiting_external")
+            .values(
+                state=prior["state"],
+                reason=prior["reason"],
+                parent_work_id=prior["parent_work_id"],
+                revision=work.c.revision + 1,
+                updated=time.time(),
+            )
+            .returning(work.c.revision)
+        )
+        if restored is not None:
+            await writer.execute(
+                update(children)
+                .where(
+                    children.c.work_id == prior["id"],
+                    children.c.notified_revision == prior["revision"],
+                )
+                .values(notified_revision=restored)
+            )
 
 
 async def authorize_record(control: Any, identity: str) -> None:
