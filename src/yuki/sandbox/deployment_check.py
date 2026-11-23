@@ -1,4 +1,4 @@
-"""Read-only Manager verification for ``yuki setup environment-check``."""
+"""Manager verification for ``yuki setup environment-check`` (and ``--network``)."""
 
 from __future__ import annotations
 
@@ -38,18 +38,7 @@ async def check_environment(
     if not await asyncio.to_thread(_artifact_lock_writable, artifact_store):
         return {"ok": False, "error": "artifact_lock_not_writable"}
     try:
-        async with asyncio.timeout(7):
-            reader, writer = await asyncio.open_unix_connection(str(socket), limit=262144)
-            try:
-                writer.write(
-                    b'{"method":"environment_status","args":{},'
-                    b'"request_id":"deployment-environment-status"}\n'
-                )
-                await writer.drain()
-                status = json.loads(await reader.readline())
-            finally:
-                writer.close()
-                await writer.wait_closed()
+        status = await _manager(socket, "environment_status", {}, seconds=7)
     except (AttributeError, OSError, ValueError, TimeoutError, NotImplementedError):
         return {"ok": False, "error": "manager_connection_failed"}
     if not isinstance(status, dict) or status.get("error"):
@@ -57,3 +46,25 @@ async def check_environment(
     if status.get("ready") is not True or status.get("workspace") != "/workspace":
         return {"ok": False, "error": "persistent_environment_not_ready"}
     return {"ok": True, "uid": expected_uid, "manager": "connected", "workspace": "/workspace"}
+
+
+async def check_network(socket: Path, url: str) -> dict[str, Any]:
+    """One request from inside the environment through its applied proxy, if any."""
+    try:
+        result = await _manager(socket, "environment_network_check", {"url": url}, seconds=90)
+    except (AttributeError, OSError, ValueError, TimeoutError, NotImplementedError):
+        return {"error": "manager_connection_failed"}
+    return result if isinstance(result, dict) else {"error": "manager_connection_failed"}
+
+
+async def _manager(socket: Path, method: str, args: dict[str, Any], *, seconds: float) -> Any:
+    async with asyncio.timeout(seconds):
+        reader, writer = await asyncio.open_unix_connection(str(socket), limit=262144)
+        try:
+            request = {"method": method, "args": args, "request_id": f"deployment-{method}"}
+            writer.write(json.dumps(request).encode() + b"\n")
+            await writer.drain()
+            return json.loads(await reader.readline())
+        finally:
+            writer.close()
+            await writer.wait_closed()
