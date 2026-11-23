@@ -13,7 +13,7 @@ import json
 import time
 from typing import Any
 
-from sqlalchemy import func, select, true, update
+from sqlalchemy import func, or_, select, true, update
 
 from yuki.external_agents.db_models import AgentEventModel, AgentOperationModel
 from yuki.external_agents.delegation import (
@@ -26,6 +26,7 @@ from yuki.external_agents.delegation import (
 from yuki.external_agents.errors import ExternalAgentArgumentError
 from yuki.runtime.work_repository import TERMINAL
 from yuki.runtime.work_schema_v1 import work
+from yuki.runtime.work_wait_schema import waits
 
 _BRIEF = ("goal", "context", "acceptance", "files")
 # A delegation without a scope runs with full access; the connector maps it to the
@@ -394,25 +395,14 @@ async def manage_external(
             )
         latest = await _latest_operation(control, identity)
         async with database.read_session() as reader:
-            prior, prior_parent, conversation_id = (
+            prior, prior_parent = (
                 await reader.execute(
-                    select(work.c.state, work.c.parent_work_id, work.c.conversation_id).where(
-                        work.c.id == identity
-                    )
+                    select(work.c.state, work.c.parent_work_id).where(work.c.id == identity)
                 )
             ).one()
-        # The resumed run is the resumer's own execution (#709): its results, its wait
-        # and its completion's deferral belong to the Work that resumed, never to an
-        # earlier parent that did not start it. A Work tree stays in one conversation
-        # (as at creation; purge and hard boundaries act per conversation), so a resume
-        # from another conversation keeps the record's parent.
-        resumer = (
-            control.current["id"]
-            if control.current is not None and control.lease.conversation_id == conversation_id
-            else prior_parent
-        )
         async with database.immediate_session() as writer:
             await control.repository._assert_lease(writer, control.lease)
+            resumer = await _resumer(writer, control, identity)
             reopened = await writer.execute(
                 update(work)
                 .where(
@@ -423,14 +413,14 @@ async def manage_external(
                 .values(
                     state="waiting_external",
                     reason="native_executor",
-                    parent_work_id=resumer,
+                    parent_work_id=prior_parent if resumer is None else resumer,
                     revision=work.c.revision + 1,
                     updated=time.time(),
                 )
             )
             if revision is not None and not reopened.rowcount:
                 raise ValueError("version_conflict")
-            if reopened.rowcount and prior_parent not in (None, resumer):
+            if reopened.rowcount and resumer is not None and prior_parent is not None:
                 # The earlier parent no longer owns this record's runs.
                 await control.repository.resettle_deferred(writer, prior_parent)
         native: dict[str, Any] = {
@@ -444,11 +434,10 @@ async def manage_external(
             native["session_id"] = session
         if "scope" in executor:
             native["scope"] = executor["scope"]
-        result = await service.execute(
-            native, _request_id(identity, key, "resume"), control.source, owner_work_id=identity
-        )
-        if result.get("error") and result.get("executed") is False:
-            # Nothing was written: the record keeps the state it had before.
+        request_id = _request_id(identity, key, "resume")
+
+        async def unopen() -> None:
+            # Nothing was written: the record keeps the state and parent it had before.
             async with database.immediate_session() as writer:
                 await writer.execute(
                     update(work)
@@ -460,6 +449,19 @@ async def manage_external(
                         updated=time.time(),
                     )
                 )
+
+        try:
+            result = await service.execute(
+                native, request_id, control.source, owner_work_id=identity
+            )
+        except Exception:
+            async with database.read_session() as reader:
+                registered = await reader.get(AgentOperationModel, request_id)
+            if reopened.rowcount and registered is None:
+                await unopen()
+            raise
+        if result.get("error") and result.get("executed") is False:
+            await unopen()
             _dispatched(result)
         return {"id": identity, "status": "running", "dispatch": result.get("status")}
     if action == "release" and not observe:
@@ -507,6 +509,43 @@ async def manage_external(
                     raise ValueError(exc.code) from exc
             await _settled_by_parent(writer, identity)
     return {"id": identity, "status": "cancelled", "relationship": executor["relationship"]}
+
+
+async def _resumer(writer: Any, control: Any, identity: str) -> str | None:
+    """The Work a resume moves the record to, or None when the record stays put (#709).
+
+    The resumed run is the resumer's own execution: its results, its wait and its
+    completion's deferral belong to the Work that resumed. The record moves only from
+    a parent that no longer pursues its goal (ended, or its completion accepted) and
+    holds no active wait, so a live parent keeps its record and waits.
+    A Work tree stays in one conversation and generation, as at creation.
+    """
+    if control.current is None:
+        return None
+    record = (await writer.execute(select(work).where(work.c.id == identity))).mappings().one()
+    resumer = str(control.current["id"])
+    if (
+        record["parent_work_id"] == resumer
+        or record["conversation_id"] != control.lease.conversation_id
+        or record["generation"] != control.lease.generation
+    ):
+        return None
+    if record["parent_work_id"] is None:
+        return resumer
+    released = await writer.scalar(
+        select(work.c.id).where(
+            work.c.id == record["parent_work_id"],
+            or_(
+                work.c.state.in_(TERMINAL),
+                func.json_extract(work.c.checkpoint_json, "$.accepted_control.action")
+                == "complete",
+            ),
+            ~select(waits.c.id)
+            .where(waits.c.work_id == work.c.id, waits.c.status == "active")
+            .exists(),
+        )
+    )
+    return resumer if released is not None else None
 
 
 async def authorize_record(control: Any, identity: str) -> None:

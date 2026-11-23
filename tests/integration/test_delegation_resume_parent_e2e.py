@@ -17,6 +17,16 @@ R3  P is deferred on a Manager run of a child Work that already failed; the run'
     completion goes to that terminal child, so nothing re-settles P (P must end
     ``completed``).
 
+Review round 1 (written before the change that answers it):
+R4  P is still live and waits on ``run=D``; D's run ends and another Work resumes D
+    before the wait is delivered. Moving D away strands P's wait: P must keep D and
+    its wait must be delivered once the resumed run ends.
+R5  The resume's dispatch raises before any operation is registered: D must keep its
+    state and its parent.
+R6  After ``/ai new`` a Work of the next generation resumes a record of the previous
+    one: the record must keep its parent (Work trees stay in one generation, as at
+    creation).
+
 Real TLS device WebSocket, real SQLite, the real Work control tools and writers; the
 native peer is the bridge suite's protocol double and no model is called. P's later
 activation is the writer call its scheduler activation makes for an accepted complete
@@ -42,8 +52,12 @@ from tests.integration.test_external_agent_bridge import (
 )
 from tests.integration.test_external_agent_bridge import bridge as bridge
 
+from yuki.conversation.hydrate import bump_canonical_generation
 from yuki.external_agents.db_models import AgentOperationModel
+from yuki.persistence.models import ChatEventModel
 from yuki.runtime.subagent_repository import SubagentRepository
+from yuki.runtime.work_activation import current_work_control
+from yuki.runtime.work_control import WorkControl
 from yuki.runtime.work_repository import WorkRepository
 from yuki.runtime.work_schema_v1 import inputs, work
 from yuki.runtime.work_wait import WorkWaitRepository
@@ -348,3 +362,121 @@ async def test_manager_run_of_a_failed_child_ending_lets_the_deferred_parent_com
     final = await _activate(bridge, parent)
     await _snapshot(bridge, evidence, "settled", [parent, child])
     assert final["state"] == "completed", dict(final)
+
+
+async def test_live_parent_waiting_on_its_delegation_keeps_it_and_gets_its_wait(bridge, evidence):
+    computer = await NativeComputer(bridge).start()
+    try:
+        instance, session_id = await directory(bridge)
+        async with accepted_work(bridge) as control:
+            parent = control.current["id"]
+            record, first = await _delegate(bridge, control, instance, session_id)
+            waited = await control.tool_outcome("wait", {"for": [{"run": record}]}, "wait-p")
+            assert waited.ok, waited
+            current = await control.repository.get(parent)
+            await control.repository.transition(
+                control.lease, parent, current["revision"], "waiting_external"
+            )
+        await computer.event(first.id, "completed", {"status": "completed", "text": "1"})
+        async with accepted_work(bridge) as resumer:
+            resumed = await resumer.tool_outcome(
+                "manage_task", {"action": "resume", "id": record, "text": "continue"}, "resume-1"
+            )
+            assert resumed.ok, resumed
+            await settled(bridge)
+            second = await _prompt(bridge, record, skip=[first.id])
+            refused = await resumer.tool_outcome("wait", {"for": [{"run": record}]}, "wait-w")
+            assert refused.error_code == "waiting_requires_owned_execution"
+        await _snapshot(bridge, evidence, "after_resume", [parent, record])
+        assert (await _row(bridge, record))["parent_work_id"] == parent
+        await computer.event(second.id, "completed", {"status": "completed", "text": "2"})
+        delivered = await WorkWaitRepository(WorkRepository(bridge.database)).deliver_due()
+        await _snapshot(bridge, evidence, "settled", [parent, record])
+        assert delivered == 1
+        assert (await _row(bridge, parent))["state"] == "queued"
+    finally:
+        await computer.close()
+
+
+async def test_resume_refused_before_registration_keeps_state_and_parent(
+    bridge, evidence, monkeypatch
+):
+    computer = await NativeComputer(bridge).start()
+    try:
+        instance, session_id = await directory(bridge)
+        async with accepted_work(bridge) as control:
+            parent = control.current["id"]
+            record, first = await _delegate(bridge, control, instance, session_id)
+            await computer.event(first.id, "completed", {"status": "completed", "text": "1"})
+            await _accept_complete(control)
+        before = await _row(bridge, record)
+        original = bridge.service.execute
+
+        async def refuse(args, request_id, source, **kwargs):
+            if args.get("resume"):
+                raise ValueError("connector_outdated")
+            return await original(args, request_id, source, **kwargs)
+
+        monkeypatch.setattr(bridge.service, "execute", refuse)
+        async with accepted_work(bridge) as resumer:
+            resumed = await resumer.tool_outcome(
+                "manage_task", {"action": "resume", "id": record, "text": "continue"}, "resume-1"
+            )
+            assert not resumed.ok
+        await _snapshot(bridge, evidence, "refused", [parent, record])
+        after = await _row(bridge, record)
+        assert (after["state"], after["parent_work_id"]) == ("completed", parent)
+        assert after["revision"] > before["revision"]
+    finally:
+        await computer.close()
+
+
+async def test_next_generation_resume_keeps_the_previous_generation_parent(bridge, evidence):
+    computer = await NativeComputer(bridge).start()
+    try:
+        instance, session_id = await directory(bridge)
+        async with accepted_work(bridge) as control:
+            parent = control.current["id"]
+            record, first = await _delegate(bridge, control, instance, session_id)
+            await computer.event(first.id, "completed", {"status": "completed", "text": "1"})
+            await _accept_complete(control)
+        conversation = bridge.env.context.conversation_id
+        async with bridge.database.read_session() as reader:
+            event = await reader.scalar(select(ChatEventModel))
+        async with bridge.database.immediate_session() as writer:
+            generation = await bump_canonical_generation(
+                writer, conversation, event_id=event.id, force=True
+            )
+        repository = WorkRepository(bridge.database)
+        lease = await repository.acquire(conversation, generation)
+
+        async def valid():
+            assert await repository.valid(lease)
+
+        source = {
+            **bridge.source,
+            "principal_kind": "person",
+            "origin": "user_message",
+            "generation": generation,
+            "trigger_event_id": event.id,
+            "bot_user_id": bridge.env.bot.self_id,
+            "presence_id": bridge.env.presence,
+        }
+        resumer = WorkControl(repository, lease, "external-owner", source, valid)
+        resumer.current = await repository.accept(
+            lease, source_key=f"external-owner:{uuid4()}", source=source, goal="Continue"
+        )
+        token = current_work_control.set(resumer)
+        try:
+            resumed = await resumer.tool_outcome(
+                "manage_task", {"action": "resume", "id": record, "text": "continue"}, "resume-1"
+            )
+            assert resumed.ok, resumed
+            await settled(bridge)
+        finally:
+            current_work_control.reset(token)
+            await repository.release(lease)
+        await _snapshot(bridge, evidence, "resumed", [parent, record, resumer.current["id"]])
+        assert (await _row(bridge, record))["parent_work_id"] == parent
+    finally:
+        await computer.close()
