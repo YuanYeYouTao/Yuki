@@ -299,7 +299,10 @@ async def test_real_mentions_preserve_segments_and_replay(social_env, attachment
     result = await env.service.execute("send", args, env.context)
     assert result["status"] == "succeeded"
     messages = [params["message"] for action, params in env.bot.calls if action == "send_group_msg"]
-    assert len(messages) == 1
+    # A picture is its own message after the text; a file is uploaded, not a message.
+    assert len(messages) == (2 if attachment == "image" else 1)
+    if attachment == "image":
+        assert [segment["type"] for segment in messages[1]] == ["image"]
     assert messages[0][:3] == [
         {"type": "text", "data": {"text": "前"}},
         {"type": "at", "data": {"qq": "10001"}},
