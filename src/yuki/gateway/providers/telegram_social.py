@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import html
 import re
-from dataclasses import replace
 from typing import cast
 
 from yuki.domain.conversations import ConversationScope
@@ -56,16 +55,7 @@ class TelegramSocialOperations:
         )
 
     def plan_send(self, message: TransportMessage) -> tuple[TransportMessage, ...]:
-        if (
-            message.media is not None
-            and _media_method(message.media)[0] == "sendSticker"
-            and (message.text or message.mentions)
-        ):
-            # Stickers have no caption. Keep text and sticker as separate receipted effects.
-            return (
-                *self.plan_send(replace(message, media=None)),
-                replace(message, text="", mentions=(), reply_reference=None),
-            )
+        # Pictures arrive alone (``separate_image``); only documents carry a caption.
         # Bot API counts visible characters after entity parsing, not HTML bytes.
         # https://core.telegram.org/bots/api#sendmessage and #senddocument
         limit = 1024 if message.media is not None else 4096
@@ -107,8 +97,6 @@ class TelegramSocialOperations:
             method, field = _media_method(media)
             params[field] = "attach://" + field
             if text:
-                if method == "sendSticker":
-                    raise ValueError("use_separate_delivery_operations")
                 params["parse_mode"] = "HTML"
                 params["caption"] = text
             result = await client.call(

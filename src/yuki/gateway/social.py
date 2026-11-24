@@ -70,6 +70,16 @@ def prepared_transport(
     )
 
 
+def separate_image(message: TransportMessage) -> tuple[TransportMessage, ...]:
+    """A picture is its own message on every platform; text keeps the quote and mentions."""
+    if message.media is None or message.media.kind != "image" or not message.text:
+        return (message,)
+    return (
+        replace(message, media=None),
+        replace(message, text="", mentions=(), reply_reference=None),
+    )
+
+
 def split_transport_message(
     message: TransportMessage, limit: int, *, following_limit: int | None = None
 ) -> tuple[TransportMessage, ...]:

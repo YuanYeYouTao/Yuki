@@ -262,17 +262,20 @@ async def test_child_result_reaches_original_parent_request_and_image_receipt(
             )
             receipts = list(
                 await reader.scalars(
-                    select(SocialOperationModel).where(
-                        SocialOperationModel.action == "send_message"
-                    )
+                    select(SocialOperationModel)
+                    .where(SocialOperationModel.action == "send_message")
+                    .order_by(SocialOperationModel.tool_call_id)
                 )
             )
             assert inbound_after == inbound_before
-            assert len(receipts) == 1 and receipts[0].status == "succeeded"
-            delivery = await reader.get(ChatEventModel, receipts[0].event_id)
+            # The caption and the picture are two messages, each with its own receipt.
+            assert [row.status for row in receipts] == ["succeeded", "succeeded"]
+            caption, picture = [await reader.get(ChatEventModel, row.event_id) for row in receipts]
+            assert artifact["artifact_id"] not in caption.segments_json
+            delivery = picture
             assert artifact["artifact_id"] in delivery.segments_json
             assert delivery.canonical_conversation_id == parent["conversation_id"]
-            assert delivery.native_message_id == receipts[0].platform_reference
+            assert delivery.native_message_id == receipts[1].platform_reference
         assert hashlib.sha256(env.store.read_bytes(artifact["artifact_id"])[1]).hexdigest() == (
             hashlib.sha256(image_bytes).hexdigest()
         )

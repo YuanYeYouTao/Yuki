@@ -19,6 +19,7 @@ from yuki.gateway.social import (
     TransportMessage,
     TransportTarget,
     prepared_transport,
+    separate_image,
     transport_payload,
 )
 from yuki.identity.routing import PresenceRouter, ResolvedSend, RouteSendError
@@ -156,7 +157,8 @@ class PlatformNotificationTransport:
         }
         return tuple(
             {"message": transport_payload(part), "route": provenance}
-            for part in operations.plan_send(message)
+            for item in separate_image(message)
+            for part in operations.plan_send(item)
         )
 
     async def resolve(self, item: OutboxRecord) -> ResolvedSend:
