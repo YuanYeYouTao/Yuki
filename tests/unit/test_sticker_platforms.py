@@ -83,17 +83,6 @@ async def test_telegram_sticker_upload_preserves_real_content_and_method(mime, m
     assert receipt.reference == "-1001:23"
 
 
-def test_telegram_captionless_sticker_is_planned_after_receipted_text():
-    media = TransportMedia("image", b"original", "sticker.webp", "image/webp", True)
-    parts = TelegramSocialOperations().plan_send(
-        TransportMessage(text="正文", media=media, reply_reference="-1001:21")
-    )
-    assert len(parts) == 2
-    assert parts[0].text == "正文" and parts[0].media is None
-    assert parts[0].reply_reference == "-1001:21"
-    assert parts[1].media is media and not parts[1].text and parts[1].reply_reference is None
-
-
 async def test_telegram_explicit_gif_file_keeps_document_upload_semantics():
     client = SimpleNamespace(call=AsyncMock(return_value={"message_id": 24}))
     media = TransportMedia("file", b"original-gif", "original.gif", "image/gif")

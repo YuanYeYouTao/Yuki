@@ -30,6 +30,7 @@ from yuki.gateway.social import (
     TransportMessage,
     TransportTarget,
     prepared_transport,
+    separate_image,
     transport_payload,
 )
 from yuki.identity.db_models import (
@@ -824,9 +825,15 @@ class SocialService:
                 for value in _prepared_parts(prior.prepared)
             )
         else:
-            layout: tuple[TransportMessage, ...] = (message,)
-            if message.media is None and message.text:
-                layout = OutboundMessageSplitter.render_message(message, runtime=snapshot)
+            layout = tuple(
+                part
+                for item in separate_image(message)
+                for part in (
+                    OutboundMessageSplitter.render_message(item, runtime=snapshot)
+                    if item.media is None and item.text
+                    else (item,)
+                )
+            )
             operations = self.router.operations(route)
             planned = tuple(part for item in layout for part in operations.plan_send(item))
         # Re-project the native reference from the trusted internal relation even
