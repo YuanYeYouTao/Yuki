@@ -52,6 +52,10 @@ Failure cases are the §13 list, written before the implementation:
          public eligibility is missing from the next public input;
   H33/H35 Dream overwrites an owner change made during its call, or calls a locked profile;
          unlocking does not hand it back.
+  H36    (regression, prod 2026-11-25) with a group core set and a person profile due
+         together, the Dream health the watchdog reads raises (stored naive core-set time
+         compared with UTC-aware profile time), or its oldest pending time is not the
+         earliest due fact's creation as an aware UTC instant.
 """
 
 from __future__ import annotations
@@ -60,7 +64,7 @@ import asyncio
 import hashlib
 import json
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import select
@@ -86,7 +90,8 @@ from yuki.memory.enums import (
     MemorySourceType,
 )
 from yuki.memory.models import MemoryEvidenceCreate
-from yuki.persistence.models import MemoryEvidenceModel
+from yuki.persistence.models import MemoryEvidenceModel, MemoryFactModel
+from yuki.time.formatting import stored_utc
 
 EXPLICIT = {"source_type": MemorySourceType.EXPLICIT, "authority": MemoryAuthority.EXPLICIT}
 BOT = "80001"
@@ -845,6 +850,38 @@ async def test_h27_cap_and_voiding_profile_moves_to_the_tail(database, tmp_path)
         {
             "attempted_in_root_id_order": attempted == [order[:2], [order[2], voiding], [voiding]],
             "pending_after_each_run": [item.resident_pending_owners for item in health],
+        },
+    )
+
+
+# ---------------------------------------------------------------------------- H36
+async def test_h36_health_with_core_set_and_profile_due_together(scene):
+    """The watchdog's Dream fact holds when both queues are due; the oldest is aware UTC."""
+    g1 = await scene.event("space:G", "B", "本群周五晚上一起打羽毛球", key="g1")
+    group_fact = await scene.fact("g_badminton", "G", "周五晚上一起打羽毛球", evidence=(g1,))
+    g2 = await scene.event("space:G", "B", "我爱下围棋", key="g2")
+    await scene.fact("b_go", "B", "爱下围棋", evidence=(g2,))
+    async with scene.database.read_session() as reader:
+        stored = await reader.scalar(
+            select(MemoryFactModel.created_at).where(MemoryFactModel.id == group_fact)
+        )
+    pending = await scene.dream().selection.pending()
+
+    health = await scene.dream().worker.health()
+
+    oldest = health.resident_oldest_pending_at
+    assert pending.owners and pending.profiles
+    assert health.resident_pending_owners == pending.count
+    assert oldest is not None and oldest.utcoffset() == timedelta(0)
+    assert oldest == stored_utc(stored)
+    scene.write(
+        "H36-health-core-and-profile-due",
+        {
+            "due_core_sets": len(pending.owners),
+            "due_profiles": len(pending.profiles),
+            "resident_pending_owners": health.resident_pending_owners,
+            "oldest_is_aware_utc": oldest.utcoffset() == timedelta(0),
+            "oldest_is_group_fact_creation": oldest == stored_utc(stored),
         },
     )
 
