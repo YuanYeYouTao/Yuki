@@ -46,6 +46,7 @@ from yuki.model_runtime.structured import StructuredTaskError, StructuredTaskRun
 from yuki.persistence.database import Database
 from yuki.persistence.models import MemoryFactModel, MemoryResidentSetModel
 from yuki.services.concurrency import ConcurrencyManager
+from yuki.time.formatting import stored_utc
 
 logger = logging.getLogger(__name__)
 
@@ -313,7 +314,7 @@ class ResidentQueue:
             rows = (
                 await session.execute(select(fact.id, fact.created_at).where(fact.id.in_(fact_ids)))
             ).all()
-        return {int(row.id): row.created_at for row in rows}
+        return {int(row.id): stored_utc(row.created_at) for row in rows}
 
 
 class ResidentSelection:
