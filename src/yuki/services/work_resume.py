@@ -284,7 +284,7 @@ class WorkResumer:
                 )
 
                 await self.services.generate_origin(
-                    content="继续原 Work，当前目标和执行状态见本轮运行资料。",
+                    content="继续原 Work。",
                     identity=scene.identity,
                     runtime=runtime,
                     turn_token=scene.token,
