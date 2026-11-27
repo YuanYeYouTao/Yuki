@@ -33,6 +33,7 @@ from yuki.domain.messages import ChatMessage, FunctionCallOutput
 from yuki.execution_trace.phases import timed_lock
 from yuki.persistence.database import Database
 from yuki.runtime.protocol_schema import objects, refs, usage
+from yuki.runtime.subagent_schema import children
 from yuki.runtime.work_schema_v1 import work
 
 _IDENTITY_CACHE_ENTRIES = 1024
@@ -324,10 +325,44 @@ class ProtocolStore:
                     self.prepared_sizes.clear()
                 self._prepared_sources.clear()
 
+    @staticmethod
+    async def _can_own_refs(session: AsyncSession, work_id: str) -> bool:
+        """Whether ``work_id`` can still resume and retain ``runtime_protocol_refs``.
+
+        Matches ``protocol_refs_closed_work`` and worker archival:
+        ``cancelled`` Works, ``completed`` root Works and archived workers have no
+        journal reader; ``failed``, active Works and unarchived completed workers
+        stay resumable.
+        """
+        state = await session.scalar(select(work.c.state).where(work.c.id == work_id))
+        if state is None or state == "cancelled":
+            return False
+        if state != "completed":
+            return True
+        return (
+            await session.scalar(
+                select(children.c.work_id).where(
+                    children.c.work_id == work_id,
+                    children.c.archived_at.is_(None),
+                )
+            )
+            is not None
+        )
+
     async def publish_refs(
         self, session: AsyncSession, work_id: str, prepared: tuple[dict[str, Any], ...]
     ) -> None:
-        """Batch metadata/ref CAS under the journal's original Work lease."""
+        """Batch metadata/ref CAS under the journal's original Work lease.
+
+        When ``work_id`` can no longer resume (e.g. a late receipt or in-flight
+        save finishing after cancellation), newly written files are still
+        registered in ``runtime_protocol_objects`` without adding
+        ``runtime_protocol_refs``, so existing GC reclaims them and the caller's
+        receipt commit is not blocked by storage capacity.
+        """
+        if not prepared:
+            return
+        owns_refs = await self._can_own_refs(session, work_id)
         added_objects = False
         for offset in range(0, len(prepared), 128):
             batch = prepared[offset : offset + 128]
@@ -337,9 +372,11 @@ class ProtocolStore:
                     insert(objects).on_conflict_do_nothing().returning(objects.c.byte_size), batch
                 )
             )
-            if any(size > self.policy.object_max_bytes for size in added_sizes):
+            if owns_refs and any(size > self.policy.object_max_bytes for size in added_sizes):
                 raise ValueError("work_protocol_object_capacity")
             added_objects = added_objects or bool(added_sizes)
+            if not owns_refs:
+                continue
             await session.execute(
                 update(objects)
                 .where(objects.c.sha256.in_(digests))
@@ -349,7 +386,7 @@ class ProtocolStore:
                 insert(refs).on_conflict_do_nothing(),
                 [{"work_id": work_id, "sha256": digest} for digest in digests],
             )
-        if added_objects:
+        if owns_refs and added_objects:
             used = await session.scalar(select(usage.c.byte_size).where(usage.c.id == 1))
             if used is None or used > self.policy.total_max_bytes:
                 raise ValueError("work_protocol_storage_capacity")
